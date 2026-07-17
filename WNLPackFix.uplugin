@@ -1,0 +1,41 @@
+{
+	"FileVersion": 3,
+	"Version": 0,
+	"VersionName": "0.9.9",
+	"SemVersion": "0.9.9",
+	"FriendlyName": "WNL PackFix",
+	"Description": "Pack-fix + graphics companion for our dedicated server: gates the Stats-sign RPC desync flood, fixes rubber-banding + rain occlusion, and adds a vendor-adaptive perf governor - a native dynamic-resolution controller that auto-detects and routes through the user's live upscaler (DLSS/XeSS/FSR/TSR) plus a full-range quality-stage engine (the user's own settings are the baseline; it earns bonus tiers up to beyond-Cinematic Lumen only with measured GPU headroom, and cuts below only in a floor emergency), NVIDIA Reflex, raw mouse, an adaptive indoor-fog controller, and belt-item + foliage contact-shadow suppression. All composable hooks / runtime CVars - no original mods modified, with per-vendor guards for NVIDIA, AMD, and Intel.",
+	"Category": "Modding",
+	"CreatedBy": "DegradingAnt (with AI assistance, reviewed)",
+	"CreatedByURL": "https://github.com/DegradingAnt",
+	"DocsURL": "https://github.com/DegradingAnt/WNLPackFix",
+	"MarketplaceURL": "",
+	"SupportURL": "https://github.com/DegradingAnt/WNLPackFix/issues",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"AcceptsAnyRemoteVersion": true,
+	"Plugins": [
+		{
+			"Name": "SML",
+			"Enabled": true,
+			"SemVersion": "^3.12.0"
+		},
+		{
+			"Name": "Stats",
+			"Enabled": true,
+			"Optional": true,
+			"SemVersion": "^1.0.0"
+		}
+	],
+	"Modules": [
+		{
+			"Name": "WNLPackFix",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"RequiredOnRemote": false,
+	"GameVersion": ">=495413"
+}

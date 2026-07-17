@@ -1,0 +1,5 @@
+# build artifacts — the public repo is source-only
+Binaries/
+Intermediate/
+Saved/
+*.pdb
