@@ -7,7 +7,7 @@
 #include "Core/FPMOverlay.h"
 
 #include "FGAttachmentPoint.h"
-#include "FGAttachmentPointComponent.h"
+#include "Buildables/FGBuildable.h"
 #include "GameFramework/Actor.h"
 #include "Hologram/FGBuildableHologram.h"
 
@@ -30,6 +30,14 @@ namespace
 	std::atomic<int32> GRepaired{0};
 	std::atomic<int32> GIntact{0};
 	std::atomic<int32> GCancelled{0};
+
+	/*
+	 * The fourth bucket, and the one that proves the narrowing works: a VANILLA class whose rebuild
+	 * yielded nothing, which is normal and must fall through. If this is large and GCancelled is ~0, the
+	 * split is right. If GCancelled climbs on FactoryGame class names, the origin test is wrong and the
+	 * skip is too wide again.
+	 */
+	std::atomic<int32> GVanillaNoPoints{0};
 }
 
 FFPMHologramNetGuard& FFPMHologramNetGuard::Get()
@@ -76,22 +84,47 @@ void FFPMHologramNetGuard::Arm()
 		}
 
 		/*
-		 * THE REPAIR. Rebuild the cache the placement flow never ran, from the components the replicated
-		 * actor already carries.
+		 * ★ THE REPAIR — AND v0.2.0 GOT IT WRONG IN EXACTLY THE WAY THE RAIN FIX DID.
 		 *
-		 * BuildableOnly points are excluded because the enum says they are not for holograms
-		 * (FGAttachmentPointComponent.h:11-16). Default and HologramOnly both belong here.
+		 * That version read `Hologram->GetComponents<UFGAttachmentPointComponent>()` — components on the
+		 * HOLOGRAM. They are not there. Vanilla's own routine is
+		 * `AFGBuildable::CreateAttachmentPointsFromComponents` (FGBuildable.cpp:2539-2566 — REAL code,
+		 * not a link stub), and it reads two places, neither of them the hologram:
+		 *
+		 *     out_points.Empty();
+		 *     ... AFGDecorationTemplate::GetComponentsFromSubclass<UFGAttachmentPointComponent>( GetDecorationTemplate() )
+		 *     for( auto comp : TInlineComponentArray< UFGAttachmentPointComponent* >{ this } )  // `this` = BUILDABLE
+		 *     ... ( Usage == EAPU_HologramOnly && owner->IsA< AFGHologram >() )                 // `owner` only FILTERS
+		 *
+		 * SETTLED FROM ASSET BYTES, not from reading source: of 400 exported assets containing
+		 * `FGAttachmentPointComponent`, 350 are `Deco_*` DECORATION TEMPLATES and nearly all the rest are
+		 * decorators too (`MSS_Deco_*`, `DC_Deco`, `CircuitryDefaultDecorator`). The components live on
+		 * the deco template, reachable only through the buildable. The old code searched a set that is
+		 * empty for essentially every class in the game, so every fire would have fallen through to the
+		 * residual cancel below — shipping the exact regression this fix exists to remove, while the
+		 * header claimed "Expected: zero".
+		 *
+		 * ⚠ SAME MISTAKE AS RAIN: right intent, right hook, WRONG OBJECT. The header even cited rain as
+		 * the lesson while repeating it. Reading the correct object is the lesson; citing it is not.
+		 *
+		 * SO: CALL VANILLA'S OWN ROUTINE ON THE CDO OF THE CLASS THIS GHOST IS PREVIEWING.
+		 *  - `GetBuildClass()` is public FORCEINLINE (FGHologram.h:271) and `mBuildClass` is
+		 *    UPROPERTY(Replicated) (:756), so a simulated proxy genuinely knows what it is previewing.
+		 *  - Using the CDO also fixes the TIMING half. A class default object's subobjects and its
+		 *    `mDecoratorClass` (FGBuildable.h:846, read via the public GetDecorationTemplate() at :495)
+		 *    exist before any BeginPlay, whereas the hologram's own components are copied from the
+		 *    buildable INSIDE BeginPlay by SetupComponents (FGHologram.h:633-636). The old code ran
+		 *    before its own inputs existed.
+		 *  - Vanilla's three-way usage test is applied against `owner`, so passing the Hologram yields
+		 *    Default + HologramOnly and correctly drops BuildableOnly. The hand-rolled filter is gone —
+		 *    it was argued from the enum's NAME rather than from the code that consumes it.
 		 */
-		TArray<UFGAttachmentPointComponent*> Points;
-		Hologram->GetComponents<UFGAttachmentPointComponent>(Points);
-
-		for (const UFGAttachmentPointComponent* Point : Points)
+		const TSubclassOf<AActor> BuildClass = Hologram->GetBuildClass();
+		if (const AFGBuildable* BuildableCDO =
+				BuildClass ? Cast<AFGBuildable>(BuildClass->GetDefaultObject()) : nullptr)
 		{
-			if (!Point || Point->GetAttachmentPointUsage() == EAttachmentPointUsage::EAPU_BuildableOnly)
-			{
-				continue;
-			}
-			Hologram->mCachedAttachmentPoints.Add(Point->CreateAttachmentPoint(Hologram));
+			// Vanilla Empty()s out_points itself, so it owns the array outright — do not pre-clear.
+			BuildableCDO->CreateAttachmentPointsFromComponents(Hologram->mCachedAttachmentPoints, Hologram);
 		}
 
 		if (Hologram->mCachedAttachmentPoints.Num() > 0)
@@ -111,14 +144,56 @@ void FFPMHologramNetGuard::Arm()
 		}
 
 		/*
-		 * ⚠ RESIDUAL ONLY. No usable attachment-point component exists, so the cache cannot be rebuilt and
-		 * a mod that asserts on it would take the joining client down — and a join crash is the mechanism
-		 * that rebinds a player to a fresh character and loses their inventory.
+		 * ⚠⚠ THE RESIDUAL CANCEL IS NARROWED TO MODDED CLASSES, AND THAT IS NOT A DETAIL.
 		 *
-		 * Skipping a preview is cosmetic. Losing a session is not. So the old behaviour survives here and
-		 * ONLY here, and it names the class every single time (no throttle) because the expected count is
-		 * zero and each occurrence is a finding rather than noise.
+		 * Caught in self-review after the data-source fix above: "the rebuild produced nothing" is the
+		 * NORMAL, CORRECT outcome for most of the game. Only 400 exported assets carry an attachment-point
+		 * component at all, so the overwhelming majority of buildings legitimately have none. Cancelling on
+		 * an empty result would therefore skip BeginPlay for nearly every vanilla ghost — the exact
+		 * regression Ant reported ("sometimes the holograms never rendered when sunfry held them in front
+		 * of me"), reintroduced one layer further down. Fixing the source and leaving this here would have
+		 * shipped the same bug with a better excuse.
+		 *
+		 * VANILLA WITH NO POINTS IS SAFE. Vanilla ships those classes and singleplayer does not assert on
+		 * them; an empty cache is simply what they have. The assert belongs to a MOD
+		 * (ModularStations' carousel) that requires points and never checks. So the honest split is by
+		 * ORIGIN, not by emptiness:
+		 *   - FactoryGame class, no points  -> normal. Fall through. The preview renders.
+		 *   - modded class, no points       -> the carousel shape. Skip BeginPlay rather than hand a
+		 *                                      joining client an assert, because a join crash rebinds a
+		 *                                      player to a fresh character and costs an inventory.
+		 *
+		 * ⚠ HYPOTHESIS, STATED AS ONE: that no VANILLA hologram asserts on an empty cache. It follows from
+		 * those classes shipping in a game that works, but it has not been exercised here. The Warning
+		 * below names every skipped class precisely so one boot can settle it.
 		 */
+		const UPackage* Package = Hologram->GetClass()->GetOutermost();
+		const FString PackageName = Package ? Package->GetName() : FString();
+		const bool bVanilla = PackageName.StartsWith(TEXT("/Script/FactoryGame"))
+			|| PackageName.StartsWith(TEXT("/Game/"));
+
+		if (bVanilla)
+		{
+			/*
+			 * Falls through — vanilla behaviour, the preview renders. But it must SAY SO periodically,
+			 * because this is the branch the whole narrowing rests on and a silent counter cannot settle
+			 * a hypothesis. Caught in self-review: the first draft incremented and returned, so one boot
+			 * would have produced no evidence either way.
+			 */
+			const int32 N = ++GVanillaNoPoints;
+			if (N == 1 || (N % 200) == 0)
+			{
+				UE_LOG(LogFicsitsPerformanceManager, Display,
+					TEXT("[FPM] hologram-net: %s is a VANILLA class with no attachment points (#%d) - "
+					     "normal, falling through so the preview renders. repaired=%d intact=%d skipped=%d"),
+					*Actor->GetClass()->GetName(), N, GRepaired.load(), GIntact.load(), GCancelled.load());
+				FPMOverlay::Post(TEXT("hologram-net"),
+					FString::Printf(TEXT("repaired %d · intact %d · vanilla-no-points %d · SKIPPED %d"),
+						GRepaired.load(), GIntact.load(), N, GCancelled.load()));
+			}
+			return;
+		}
+
 		Scope.Cancel();
 
 		const int32 N = ++GCancelled;

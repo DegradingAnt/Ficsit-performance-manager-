@@ -34,6 +34,51 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-08 17:56 — CODE — hologram net repair read the WRONG OBJECT, twice over
+
+- **What:** the repair now calls vanilla's own
+  `AFGBuildable::CreateAttachmentPointsFromComponents` on the CDO of the replicated `mBuildClass`,
+  instead of reading `UFGAttachmentPointComponent`s off the hologram actor. The residual skip is
+  narrowed to **modded** classes only. A fourth counter and a log line were added for the
+  vanilla-no-points path.
+- **Why — found by the `vox-review` pass that 0.2.0 owed, and it was a BLOCKER.** `0.2.0` read
+  `Hologram->GetComponents<UFGAttachmentPointComponent>()`. Vanilla does not put them there.
+  `FGBuildable.cpp:2539-2566` (real code, not a link stub) reads the buildable's DECORATION TEMPLATE
+  plus the buildable's own components, and uses the hologram only as `owner` to filter by usage.
+  Settled independently from asset bytes: of **400** exported assets containing
+  `FGAttachmentPointComponent`, **350** are `Deco_*` decoration templates and nearly all the rest are
+  decorators. So the old read would have returned empty on every fire and sent all ~475 into the
+  residual cancel — **shipping the exact regression the fix exists to remove**, while its header
+  claimed "Expected: zero".
+- **⚠ THE SAME MISTAKE AS THE RAIN FIX — right intent, right hook, WRONG OBJECT — made in a file whose
+  own comment cited rain as the lesson.** Citing a lesson is not applying it.
+- **Second defect, caught in self-review after the first fix:** the residual `Scope.Cancel()` fired
+  whenever the rebuild produced nothing — which is the NORMAL outcome for most of the game, since only
+  400 assets have the component at all. That would have skipped BeginPlay for nearly every vanilla
+  ghost: the same regression, one layer further down. Now split by ORIGIN — a FactoryGame class with no
+  points falls through (they ship that way and do not assert); a modded class with no points is the
+  carousel shape and is still skipped rather than crashing a joining client.
+- **Timing half:** reading the CDO also fixes it. A CDO's subobjects and `mDecoratorClass` exist before
+  any BeginPlay; the hologram's own components are copied in by `SetupComponents` DURING BeginPlay
+  (`FGHologram.h:633-636`), so the old code ran before its own inputs existed.
+- **Files:** `Private/Fixes/Interop/FPMHologramNetGuard.cpp`,
+  `Public/Fixes/Interop/FPMHologramNetGuard.h`.
+- **Revert:** drop `FPMFixes::Arm(FFPMHologramNetGuard::Get())` from `StartupModule`.
+- **Verified:** FactoryEditor Win64 Development compiles clean; `VANILLA class with no attachment
+  points` and `vanilla-no-points` present as UTF-16 literals in the built DLL. **NOT boot-tested** —
+  and the load-bearing hypothesis (that no vanilla hologram asserts on an empty cache) is settled by
+  one boot reading the four counters.
+
+## 2026-08-08 17:56 — VERSION — 0.2.0 → 0.2.1
+
+- **What:** `VersionName` / `SemVersion` → `0.2.1`.
+- **Why:** a repair to an existing fix with no new capability is a **PATCH** under SemVer. Bumped rather
+  than amended in place because a `0.2.0` binary already exists on disk, and two builds carrying one
+  version with different behaviour is the defect this changelog's own header warns about.
+- **Files:** `FicsitsPerformanceManager.uplugin`, `CHANGELOG.md`.
+- **Revert:** set both fields back. Never published, so no consumer to migrate.
+- **Verified:** build-only. **NOT boot-tested.**
+
 ## 2026-08-08 08:07 — VERSION — 0.1.0 → 0.2.0
 
 - **What:** `VersionName` and `SemVersion` → `0.2.0`. Also fills in the `.uplugin` `Description`, which

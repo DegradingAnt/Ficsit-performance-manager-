@@ -38,15 +38,24 @@
  *
  * ★ THE CORE ISSUE. `mCachedAttachmentPoints` is VANILLA, not ModularStations —
  * FGBuildableHologram.h:523, a plain TArray with no UPROPERTY, therefore never replicated. The points
- * are derived locally during the placement flow, which a network-received observer copy never runs. So
- * the ghost arrives with the components that describe its attachment points, and an empty cache
- * summarising them.
+ * are derived locally during the placement flow, which a network-received observer copy never runs.
  *
- * THE DATA IS ALREADY THERE. `UFGAttachmentPointComponent::CreateAttachmentPoint(AActor*)` is public
- * and FACTORYGAME_API (FGAttachmentPointComponent.h:28); the components themselves are ordinary scene
- * components on the received actor. So the repair is to rebuild the cache from them and then let
- * BeginPlay run exactly as vanilla intended. Same lesson the rain fix was rebuilt on: the old code
- * failed because it read the wrong place, not because the data was missing.
+ * WHERE THE DATA ACTUALLY LIVES — SETTLED FROM ASSET BYTES, AFTER GETTING IT WRONG ONCE. Of 400
+ * exported assets containing `FGAttachmentPointComponent`, 350 are `Deco_*` DECORATION TEMPLATES and
+ * nearly all the rest are decorators as well. Vanilla assembles a hologram's points in
+ * `AFGBuildable::CreateAttachmentPointsFromComponents` (FGBuildable.cpp:2539-2566, real code) from the
+ * BUILDABLE's decoration template plus the buildable's own components — the hologram is passed only as
+ * `owner`, to filter by usage. Nothing reads components off the hologram actor.
+ *
+ * ⚠ v0.2.0 DID READ THE HOLOGRAM'S COMPONENTS, AND WOULD HAVE FOUND NOTHING. Every fire would have
+ * fallen through to the residual cancel below, shipping the regression this fix removes while claiming
+ * "Expected: zero". Caught in review before it ever booted. It is the RAIN MISTAKE EXACTLY — right
+ * intent, right hook, wrong object — made in a file whose own comment cited rain as the lesson.
+ *
+ * So the repair calls vanilla's routine on the CDO of the replicated `mBuildClass` (UPROPERTY(Replicated),
+ * FGHologram.h:756) and lets BeginPlay run as intended. Reading the CDO also sidesteps the timing
+ * problem: a CDO's subobjects exist before any BeginPlay, whereas the hologram's own components are
+ * copied in by SetupComponents DURING BeginPlay (FGHologram.h:633-636).
  *
  * ⚠ WHY POPULATING A PROXY'S CACHE IS GAMEPLAY-INERT. A simulated proxy never makes a placement
  * decision — snapping is resolved on the machine that owns the hologram and committed by the server.
