@@ -4,6 +4,7 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMHookLedger.h"
+#include "Core/FPMDiag.h"
 #include "Core/FPMOverlay.h"
 
 #include "FGAttachmentPoint.h"
@@ -145,7 +146,8 @@ void FFPMHologramNetGuard::Arm()
 		{
 			// Fall through: BeginPlay runs, components begin play, the ghost renders, the assert holds.
 			const int32 N = ++GRepaired;
-			if (N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
+			if ((N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
+			&& FPMDiag::IsOn(FPMDiag::EChannel::HologramNet))
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Display,
 					TEXT("[FPM] hologram-net: rebuilt %d attachment point(s) on a replicated %s (#%d) - "
@@ -195,7 +197,8 @@ void FFPMHologramNetGuard::Arm()
 			 * would have produced no evidence either way.
 			 */
 			const int32 N = ++GVanillaNoPoints;
-			if (N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
+			if ((N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
+			&& FPMDiag::IsOn(FPMDiag::EChannel::HologramNet))
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Display,
 					TEXT("[FPM] hologram-net: %s is a VANILLA class with no attachment points (#%d) - "
@@ -211,6 +214,14 @@ void FFPMHologramNetGuard::Arm()
 		Scope.Cancel();
 
 		const int32 N = ++GCancelled;
+
+		/*
+		 * Gated like everything else. The COUNTER still climbs when silenced, so FPM.Diag.List can
+		 * still report it after the fact — which is the property that lets "0 = silent" be honest
+		 * without losing the measurement.
+		 */
+		if (!FPMDiag::IsOn(FPMDiag::EChannel::HologramNet)) { return; }
+
 		UE_LOG(LogFicsitsPerformanceManager, Warning,
 			TEXT("[FPM] hologram-net: %s (#%d) is a replicated hologram with NO usable attachment-point "
 			     "component, so its cache cannot be rebuilt. Skipped BeginPlay to stop the assert that "

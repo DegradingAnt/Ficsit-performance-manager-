@@ -9,6 +9,7 @@
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
 #include "Fixes/Interop/FPMNoOwnerRpcGate.h"
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
+#include "Fixes/Interop/FPMSchematicProbe.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 
@@ -55,6 +56,12 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// that was missing and let vanilla run.
 	FPMFixes::Arm(FFPMInventoryInitGuard::Get());
 	FPMFixes::Arm(FFPMHologramNetGuard::Get());
+
+	// LOG-ONLY. Ant, on the old mod's forced-TRUE milestone override: "maybe carry it with just
+	// diagnostics and we'll see what happens?" and "diagnostics are good either way so we KNOW what
+	// breaks and why". It overrides nothing - the crash dumps show this is a VANILLA crash (one has
+	// neither FPM nor KPrivateCodeLib on the stack), so there is nothing here for us to guard yet.
+	FPMFixes::Arm(FFPMSchematicProbe::Get());
 
 	// Always printed, even when empty - an empty inventory is itself a finding.
 	FPMHookLedger::LogInventory();

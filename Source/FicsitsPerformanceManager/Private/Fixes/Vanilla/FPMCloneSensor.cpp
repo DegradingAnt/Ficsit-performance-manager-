@@ -3,6 +3,7 @@
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMDiag.h"
 #include "Core/FPMHookLedger.h"
 
 #include "FGGameMode.h"
@@ -32,6 +33,15 @@ void FFPMCloneSensor::Arm()
 	auto OnBeforeMatch = [](auto& Scope, AFGGameMode* Self, APlayerController* PC)
 	{
 		if (!Self || !PC || !Self->HasAuthority()) { return; }
+
+		/*
+		 * FPM.Diag.Clone 0 silences the sensor outright. Safe as a single early return BECAUSE THIS
+		 * FIX HAS NO BEHAVIOUR TO LOSE - it destroys nothing, moves nothing, binds nothing, and its
+		 * entire output is log lines. Wired 2026-08-08 after review found the channel was declared
+		 * and connected to nothing: a switch that silently does nothing is worse than no switch,
+		 * because setting it teaches you to distrust the rest of them.
+		 */
+		if (!FPMDiag::IsOn(FPMDiag::EChannel::CloneSensor)) { return; }
 
 		const AFGPlayerState* JoinerState = Cast<AFGPlayerState>(PC->PlayerState);
 		if (!JoinerState)
@@ -121,16 +131,29 @@ void FFPMCloneSensor::Arm()
 			 * share one. Equal uid twice => a genuine duplicate ENTRY. Different uids => 26 real
 			 * states and the name collision was the illusion.
 			 */
-			UE_LOG(LogFicsitsPerformanceManager, Display,
-				TEXT("[FPM]   candidate: state=%s(uid %u)  name='%s'%s  ownsPawn=%s  offlineId='%s'(%s)  "
-				     "onlineIds=%d shared=%d  -> reconstructed: %s"),
-				*GetNameSafe(FGCandidate), FGCandidate->GetUniqueID(),
-				CandidateName.IsEmpty() ? TEXT("(EMPTY)") : *CandidateName,
-				CandidateName.IsEmpty() ? TEXT("  <-- DEGENERATE") : TEXT(""),
-				FGCandidate->GetOwnedPawn() ? TEXT("yes") : TEXT("NO"),
-				*CandidateId.OfflineId, bOfflineMatch ? TEXT("SAME") : TEXT("differs"),
-				CandidateId.AccountIds.Num(), SharedOnlineIds,
-				bWouldMatch ? TEXT("WOULD match") : TEXT("would NOT match"));
+			/*
+			 * Verbose tier: 26 lines per join on Ant's save, which is detail for one deliberate boot
+			 * rather than for every join.
+			 *
+			 * ⚠ A BRACED `if`, NOT AN EARLY `continue`. The counters above (`++Considered`,
+			 * `++PlausibleMatches`) already ran, so a `continue` here happens to be correct TODAY — and
+			 * would silently skip anything a later edit appends after this log. Scoping the gate to the
+			 * statement it guards cannot rot that way. An unbraced `if` before a UE_LOG macro has the
+			 * same shape of problem and is avoided for the same reason.
+			 */
+			if (FPMDiag::IsOn(FPMDiag::EChannel::CloneSensor, 2))
+			{
+				UE_LOG(LogFicsitsPerformanceManager, Display,
+					TEXT("[FPM]   candidate: state=%s(uid %u)  name='%s'%s  ownsPawn=%s  offlineId='%s'(%s)  "
+					     "onlineIds=%d shared=%d  -> reconstructed: %s"),
+					*GetNameSafe(FGCandidate), FGCandidate->GetUniqueID(),
+					CandidateName.IsEmpty() ? TEXT("(EMPTY)") : *CandidateName,
+					CandidateName.IsEmpty() ? TEXT("  <-- DEGENERATE") : TEXT(""),
+					FGCandidate->GetOwnedPawn() ? TEXT("yes") : TEXT("NO"),
+					*CandidateId.OfflineId, bOfflineMatch ? TEXT("SAME") : TEXT("differs"),
+					CandidateId.AccountIds.Num(), SharedOnlineIds,
+					bWouldMatch ? TEXT("WOULD match") : TEXT("would NOT match"));
+			}
 		}
 
 		UE_LOG(LogFicsitsPerformanceManager, Display,
@@ -170,6 +193,7 @@ void FFPMCloneSensor::Arm()
 
 	auto OnAfterMatch = [](const bool& bClaimed, AFGGameMode* Self, APlayerController* PC)
 	{
+		if (!FPMDiag::IsOn(FPMDiag::EChannel::CloneSensor)) { return; }
 		// Signature is fixed by SML: the return arrives by CONST REFERENCE, not by value, and there is
 		// no scope parameter on an _AFTER handler.
 		if (!Self || !PC || !Self->HasAuthority()) { return; }

@@ -4,6 +4,7 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMHookLedger.h"
+#include "Core/FPMDiag.h"
 #include "Core/FPMOverlay.h"
 
 #include "FGInventoryComponent.h"
@@ -86,7 +87,8 @@ void FFPMInventoryInitGuard::Arm()
 		if (Self->HasAuthority())
 		{
 			const int32 N = ++GAuthorityObserved;
-			if (N == 1 || (N % FPMLog::ThrottleNotable) == 0)
+			if ((N == 1 || (N % FPMLog::ThrottleNotable) == 0)
+			&& FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit))
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Warning,
 					TEXT("[FPM] inventory-init: a ZERO-SLOT inventory on %s exists ON THE AUTHORITY (#%d). "
@@ -116,7 +118,8 @@ void FFPMInventoryInitGuard::Arm()
 		Self->Resize(Authored);
 
 		const int32 N = ++GInitialised;
-		if (N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
+		if ((N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
+			&& FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit))
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,
 				TEXT("[FPM] inventory-init: sized an uninitialised inventory on %s to its authored %d slot(s) "
@@ -159,6 +162,7 @@ void FFPMInventoryInitGuard::Arm()
 		if (Self->HasAuthority())
 		{
 			const int32 N = ++GAuthorityObserved;
+			if (!FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit)) { return; }
 			UE_LOG(LogFicsitsPerformanceManager, Error,
 				TEXT("[FPM] inventory-init: AddStack hit a ZERO-SLOT inventory on %s ON THE AUTHORITY (#%d). "
 				     "Falling through to vanilla unchanged - repairing here would write SaveGame state, and "
@@ -175,6 +179,7 @@ void FFPMInventoryInitGuard::Arm()
 		if (!IsInGameThread())
 		{
 			const int32 N = ++GRefused;
+			if (!FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit)) { return; }
 			UE_LOG(LogFicsitsPerformanceManager, Error,
 				TEXT("[FPM] inventory-init: AddStack reached a ZERO-SLOT inventory on %s from OFF the game "
 				     "thread (#%d). Cannot Resize safely, so vanilla runs unchanged. This branch was believed "
@@ -195,7 +200,8 @@ void FFPMInventoryInitGuard::Arm()
 		if (Authored <= 0)
 		{
 			const int32 N = ++GAuthoredZero;
-			if (N == 1 || (N % FPMLog::ThrottleNotable) == 0)
+			if ((N == 1 || (N % FPMLog::ThrottleNotable) == 0)
+			&& FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit))
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Warning,
 					TEXT("[FPM] inventory-init: something is adding to an inventory on %s that its own asset "
@@ -218,6 +224,7 @@ void FFPMInventoryInitGuard::Arm()
 		 * and the claim was unknowable. It reports what it actually did: gave the inventory its slots.
 		 */
 		const int32 N = ++GLateRepaired;
+		if (!FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit)) { return; }
 		UE_LOG(LogFicsitsPerformanceManager, Warning,
 			TEXT("[FPM] inventory-init: AddStack hit an UNINITIALISED inventory on %s that BeginPlay did not "
 			     "size (#%d). Gave it its authored %d slot(s); vanilla's AddStack now runs against a real "

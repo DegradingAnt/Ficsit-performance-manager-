@@ -34,6 +34,74 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-08 19:40 — VERSION — 0.2.2 → 0.3.0
+
+- **What:** `VersionName` / `SemVersion` → `0.3.0`.
+- **Why:** MINOR, not patch. Two new capabilities: the schematic probe (a new fix) and `FPMDiag` (a new
+  runtime surface with six console variables). SemVer bumps MINOR for new functionality in the `0.y.z`
+  band; PATCH is for repairing an existing fix.
+- **Files:** `FicsitsPerformanceManager.uplugin`, `CHANGELOG.md`.
+- **Revert:** set both fields back. Never published.
+- **Verified:** build-only. **NOT boot-tested.**
+
+## 2026-08-08 19:40 — CODE — the schematic probe: measure the theory instead of guessing a fourth guard
+
+- **What:** `FPMSchematicProbe`, LOG-ONLY on both `CanGiveAccessToSchematic` entry points
+  (`UFGSchematic::` static, `FGSchematic.h:160`; `AFGSchematicManager::`, `FGSchematicManager.h:314`).
+  No `Override`, no `Cancel`, no refusal — every answer is vanilla's. It counts calls, and logs
+  **unthrottled** when a schematic has a NULL default object.
+- **Why — Ant ruled "carry it with just diagnostics" and "check what is needed here". I checked, and the
+  answer was NO GUARD.** Of 31 crash dumps, **6** carry `CanGiveAccessToSchematic` in the CALLSTACK (not
+  merely in the log, which every dump does because the mod loads). All 6 are `EXCEPTION_ACCESS_VIOLATION`
+  at `0x2c0`, all 6 on the GRANT path via `Internal_CommitCurrentSchematicTransaction`. **4 have an FPM
+  frame; 2 do not; and one — `A981D1D4` — has neither FPM nor KPrivateCodeLib.** A crash that happens
+  with no mod on the stack is a VANILLA crash.
+- **So the retired guard's premise is dead.** It tested `GetDefaultObject(false) != nullptr` on the
+  theory that `0x2c0` is a null-CDO read; that guard shipped and the crashes continued. The old file's
+  own comment records the ruling: *"DO NOT narrow this guard again without understanding the refusal.
+  That is now the third time that instruction has had to be written down in this file."* A fourth
+  narrowing would be a fourth guess. This probe MEASURES the theory instead: if a `0x2c0` crash lands
+  while the null-CDO counter is still zero, the theory is dead by measurement rather than by argument.
+- **It emits an ARMED line** — the one thing the old override never had, which is precisely why "never
+  fired in 13 sessions" could not be told apart from "never installed".
+- **The hot path is protected.** `0.58.54` logged and flushed on every call and Ant reported *"the
+  entire game freezes when opening the hub"*. Here the per-call cost is an atomic increment and a
+  pointer compare; no string work, no I/O, unless something anomalous is found. Measured context: the
+  export holds 623 `.json` in the Schematics tree, of which **611** are BlueprintGeneratedClasses whose
+  Super is `FGSchematic` — that bounds how many schematics EXIST, and says nothing about call rate,
+  which `GQueries` will answer on the first boot.
+- **Files:** `Public/Fixes/Interop/FPMSchematicProbe.h`, `Private/.../FPMSchematicProbe.cpp`,
+  `Private/FicsitsPerformanceManager.cpp`.
+- **Revert:** drop `FPMFixes::Arm(FFPMSchematicProbe::Get())`.
+- **Verified:** compiles clean; `FPM.Diag.Schematic` and `schematic-probe ARMED` present UTF-16 in the
+  DLL. **NOT boot-tested.**
+
+## 2026-08-08 19:40 — CODE — FPMDiag: diagnostics you can switch from the console
+
+- **What:** `Core/FPMDiag.{h,cpp}` — a master `FPM.Diag` plus five channels (`FPM.Diag.Schematic`,
+  `.Hologram`, `.Inventory`, `.Clone`, `.Overlay`) and `FPM.Diag.List` to print the effective state.
+  Levels: `0` silent · `1` on · `2` verbose. Wired into all four fixes and the overlay.
+- **Why:** Ant, *"we should add debug stuff to every feature we make in the mod so everything has a
+  known log or whatever when it fails"* and *"diagnostics are good either way so we KNOW what breaks and
+  why"*. Before this, the rain fix had two hand-rolled cvars and nothing else had any, so silencing a
+  noisy log meant a rebuild.
+- **A disabled channel never disables a FIX.** Only the printing stops; every counter still climbs, so
+  `FPM.Diag.List` still reports after the fact. Turning diagnostics off must not change what the mod
+  DOES, or a quiet log becomes evidence of nothing rather than evidence of calm.
+- **One stated exception to "0 = silent": the ARMED line**, which fires from `StartupModule` before any
+  console command could exist, and is the line that distinguishes "armed and saw nothing" from "never
+  armed". Documented in the header — an unstated exception is a broken contract.
+- **Found by review, twice.** Round 1: **seven** log sites ignored the switch the header promised, and
+  `FPMOverlay::Post` bypassed it entirely. Round 2: `FPM.Diag.Clone` was a **dangling channel** —
+  declared and wired to nothing, which is worse than dead code because setting it teaches you to
+  distrust every other switch. Also reordered 8 gates so the cheap modulo short-circuits before the
+  cvar read.
+- **Files:** `Public/Core/FPMDiag.h`, `Private/Core/FPMDiag.cpp`, plus gating in the four fixes and
+  `FPMOverlay.cpp`.
+- **Revert:** the channels default to on, so deleting the gates restores previous behaviour exactly.
+- **Verified:** compiles clean; `FPM.Diag`, `FPM.Diag.Schematic`, `FPM.Diag.Overlay`, `FPM.Diag.List`
+  present UTF-16 in the DLL. **NOT boot-tested.**
+
 ## 2026-08-08 18:30 — CODE — false comments removed, and one throttle policy instead of five literals
 
 No version bump: behaviour is unchanged, the divisors keep the same values, and no log string moved.

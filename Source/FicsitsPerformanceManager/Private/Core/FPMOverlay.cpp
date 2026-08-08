@@ -18,6 +18,8 @@
 
 #include "Core/FPMOverlay.h"
 
+#include "Core/FPMDiag.h"
+
 #include "FicsitsPerformanceManager.h"
 
 #include "Engine/Engine.h"
@@ -36,9 +38,24 @@ FPMOverlay& FPMOverlay::Get()
 
 void FPMOverlay::Post(const TCHAR* Category, const FString& Line)
 {
-	// ALWAYS LOG, whether or not the panel is up. A line visible on screen but absent from
-	// FactoryGame.log is one nobody can send us afterwards.
-	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM] %s: %s"), Category, *Line);
+	/*
+	 * LOG WHETHER OR NOT THE PANEL IS UP. A line visible on screen but absent from FactoryGame.log is
+	 * one nobody can send us afterwards — the log is the durable half, the panel is the convenient one.
+	 *
+	 * ⚠ BUT IT HONOURS THE MASTER SWITCH, ADDED 2026-08-08 AFTER REVIEW CALLED IT A BYPASS. Post is
+	 * shared by every fix and receives only a category STRING, so it cannot know which channel it
+	 * belongs to and must not guess — per-channel gating belongs at the call site, and every current
+	 * caller does it. What Post can and must honour is `FPM.Diag 0`, because a master switch that one
+	 * function ignores is not a master switch. Without this, "silence everything" left a hole exactly
+	 * wide enough for the next caller who forgets to wrap their Post.
+	 *
+	 * The FEED below is deliberately still written when silenced, so turning diagnostics back on
+	 * mid-session shows the history instead of starting blank.
+	 */
+	if (!FPMDiag::IsSilenced())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM] %s: %s"), Category, *Line);
+	}
 
 	FPMOverlay& Self = Get();
 	{
@@ -125,8 +142,13 @@ void FPMOverlay::EnsureAttached()
 	// ZOrder above the loading screen. This is the whole point of the widget.
 	GEngine->GameViewport->AddViewportWidgetContent(Root.ToSharedRef(), 1000);
 
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] overlay: attached to the game viewport"));
+	// Honours the master switch: FPM.Diag.Overlay can now detach and reattach the panel mid-session,
+	// so an ungated line here would print on every toggle.
+	if (!FPMDiag::IsSilenced())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] overlay: attached to the game viewport"));
+	}
 }
 
 FString FPMOverlay::ComposeText() const
@@ -139,6 +161,22 @@ FString FPMOverlay::ComposeText() const
 bool FPMOverlay::Tick(float DeltaSeconds)
 {
 	if (!bVisible) { return true; }
+
+	/*
+	 * FPM.Diag.Overlay 0 detaches the panel without tearing the feed down: Post() keeps recording, so
+	 * turning it back on mid-session shows the history rather than starting blank. Ant asked for a
+	 * keybind; until the Game Instance Module's keybind registry is wired up, this is the switch.
+	 */
+	if (!FPMDiag::IsOn(FPMDiag::EChannel::Overlay))
+	{
+		if (Root.IsValid() && GEngine && GEngine->GameViewport)
+		{
+			GEngine->GameViewport->RemoveViewportWidgetContent(Root.ToSharedRef());
+			Root.Reset();
+			TextBlock.Reset();
+		}
+		return true;
+	}
 
 	EnsureAttached();
 
