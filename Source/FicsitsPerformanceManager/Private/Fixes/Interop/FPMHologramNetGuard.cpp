@@ -22,10 +22,17 @@ namespace
 	 *   Intact    — the cache already had points. We did nothing. (Expected: some, harmless.)
 	 *   Cancelled — repair produced nothing, so BeginPlay was skipped to save the joiner. (Expected: ZERO.)
 	 *
-	 * Process-lifetime by design: these count hook fires, not per-world work, so unlike the old mod's
-	 * sweep counters there is nothing here that a second world load should reset. (That bug was real —
-	 * file-static sweep totals re-printed the first world's numbers on the second load — so the
-	 * distinction is stated rather than assumed.)
+	 * Process-lifetime by design: these count hook fires, not per-world work, so the TOTALS are correct
+	 * across a second world load — unlike the old mod's sweep counters, which re-printed the first
+	 * world's numbers as if they were the second's.
+	 *
+	 * ⚠ BUT THE THROTTLE IS NOT TOTALS, AND THE FIRST VERSION OF THIS COMMENT OVERSTATED IT by saying
+	 * "there is nothing here that a second world load should reset". The `N == 1` arm fires once per
+	 * PROCESS, so a second world load in the same session prints no first-sighting line and the periodic
+	 * arm lands at whatever offset the first load left behind. The counts stay true; the READOUT is
+	 * quieter than it looks on load two. Left as-is deliberately — the totals are what settle the
+	 * hypotheses below, and resetting per world would break exactly that — but stated, because a comment
+	 * claiming more than the code does is the defect class this project keeps paying for.
 	 */
 	std::atomic<int32> GRepaired{0};
 	std::atomic<int32> GIntact{0};
@@ -62,10 +69,17 @@ void FFPMHologramNetGuard::Arm()
 	auto OnDispatchBeginPlay = [](auto& Scope, AActor* Actor, bool bFromLevelStreaming)
 	{
 		/*
-		 * CHEAPEST TEST FIRST. This runs for every actor that ever begins play, so the role compare — an
-		 * enum load and a branch that rejects essentially everything — is the gate, and the cast comes
-		 * second. ROLE_SimulatedProxy is precisely "an observer's network-received copy"; the local
-		 * player's own hologram is spawned locally and is never this.
+		 * CHEAPEST TEST FIRST — but not for the reason the first version claimed.
+		 *
+		 * ⚠ IT DOES NOT "REJECT ESSENTIALLY EVERYTHING". That was written as if this ran on a server. It
+		 * does not: this fix is client-only, and on a CLIENT most replicated actors ARE
+		 * ROLE_SimulatedProxy, so the role compare passes often and the `IsA` cast behind it is what
+		 * actually does the narrowing. The ordering is still right — an enum compare before an RTTI cast
+		 * is strictly cheaper — but the justification was wrong, and a wrong reason is what stops the next
+		 * reader noticing when the ordering stops being right.
+		 *
+		 * ROLE_SimulatedProxy is precisely "an observer's network-received copy"; the local player's own
+		 * hologram is spawned locally and is never this.
 		 */
 		if (!Actor || Actor->GetLocalRole() != ROLE_SimulatedProxy) { return; }
 
@@ -131,7 +145,7 @@ void FFPMHologramNetGuard::Arm()
 		{
 			// Fall through: BeginPlay runs, components begin play, the ghost renders, the assert holds.
 			const int32 N = ++GRepaired;
-			if (N == 1 || (N % 100) == 0)
+			if (N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Display,
 					TEXT("[FPM] hologram-net: rebuilt %d attachment point(s) on a replicated %s (#%d) - "
@@ -181,7 +195,7 @@ void FFPMHologramNetGuard::Arm()
 			 * would have produced no evidence either way.
 			 */
 			const int32 N = ++GVanillaNoPoints;
-			if (N == 1 || (N % 200) == 0)
+			if (N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Display,
 					TEXT("[FPM] hologram-net: %s is a VANILLA class with no attachment points (#%d) - "

@@ -86,7 +86,7 @@ void FFPMInventoryInitGuard::Arm()
 		if (Self->HasAuthority())
 		{
 			const int32 N = ++GAuthorityObserved;
-			if (N == 1 || (N % 50) == 0)
+			if (N == 1 || (N % FPMLog::ThrottleNotable) == 0)
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Warning,
 					TEXT("[FPM] inventory-init: a ZERO-SLOT inventory on %s exists ON THE AUTHORITY (#%d). "
@@ -116,7 +116,7 @@ void FFPMInventoryInitGuard::Arm()
 		Self->Resize(Authored);
 
 		const int32 N = ++GInitialised;
-		if (N == 1 || (N % 200) == 0)
+		if (N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,
 				TEXT("[FPM] inventory-init: sized an uninitialised inventory on %s to its authored %d slot(s) "
@@ -195,7 +195,7 @@ void FFPMInventoryInitGuard::Arm()
 		if (Authored <= 0)
 		{
 			const int32 N = ++GAuthoredZero;
-			if (N == 1 || (N % 50) == 0)
+			if (N == 1 || (N % FPMLog::ThrottleNotable) == 0)
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Warning,
 					TEXT("[FPM] inventory-init: something is adding to an inventory on %s that its own asset "

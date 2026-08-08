@@ -152,6 +152,32 @@ public:
 	virtual void Disarm() {}
 };
 
+/**
+ * ONE LOG-THROTTLE POLICY FOR EVERY FIX, STATED ONCE.
+ *
+ * The divisor encodes how EXPECTED an event is — not how much we happen to want to see it. Before this
+ * existed, five sites across two fixes used 50 / 100 / 200 as bare literals with no stated rule, which
+ * is how a log becomes unreadable by accretion and how two readers draw opposite conclusions from the
+ * same gap between lines.
+ *
+ * A third tier is deliberately NOT here. An event believed unreachable is logged UNTHROTTLED, because
+ * every occurrence is a finding — and a `% 1` divisor would be dead code dressed as policy.
+ *
+ * ⚠ IT LIVES IN THIS HEADER, NOT IN EACH .cpp, AND THAT IS NOT A STYLE CHOICE. UE builds this module as
+ * a UNITY BUILD: the .cpp files are concatenated into one translation unit, so two anonymous namespaces
+ * declaring the same name are one namespace declaring it twice — `error C2374: redefinition`. File-local
+ * constants are not file-local here. Anything shared belongs in a header; anything genuinely per-fix
+ * needs a name that is unique across the whole module.
+ */
+namespace FPMLog
+{
+	/** Happens constantly and correctly — sample it. */
+	inline constexpr int32 ThrottleRoutine = 200;
+
+	/** Happens sometimes and is worth watching. */
+	inline constexpr int32 ThrottleNotable = 50;
+}
+
 namespace FPMFixes
 {
 	/** Applies the side gate, calls Arm(), logs one line, and remembers the fix so DisarmAll can reach it. */

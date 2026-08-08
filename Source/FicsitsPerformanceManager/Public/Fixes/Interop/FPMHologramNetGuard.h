@@ -78,9 +78,19 @@ public:
 	virtual const TCHAR* Name() const override { return TEXT("hologram-net"); }
 
 	/*
-	 * A build preview is renderer work and a dedicated server draws nothing, so no hologram is ever
-	 * replicated TO a server. The old mod reached the same side by an early return inside the handler;
-	 * the contract expresses it once, at arm time, where it can be read.
+	 * ⚠ THE SIDE IS RIGHT; THE FIRST REASON GIVEN FOR IT WAS NOT.
+	 *
+	 * It said "a build preview is renderer work and a dedicated server draws nothing". The fix contract
+	 * rejects that shape of argument explicitly — `NeverOnDedicatedServer` is not justified by "this
+	 * feels like a client thing", and holograms are gameplay objects the server has authority over, not
+	 * purely renderer state.
+	 *
+	 * THE ACTUAL REASON IS A COST ONE. The hook target is `AActor::DispatchBeginPlay`, which runs for
+	 * EVERY actor in the game. The handler's first condition is `GetLocalRole() == ROLE_SimulatedProxy`,
+	 * and a dedicated server never holds a hologram as a simulated proxy — it is the authority for the
+	 * ones it replicates out. So on a server this hook could fire on every actor's BeginPlay and could
+	 * never once reach its body. Skipping it there removes a universal hook with no reachable benefit;
+	 * that is a measurable saving, not a preference.
 	 */
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::NeverOnDedicatedServer; }
 

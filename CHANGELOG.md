@@ -34,6 +34,45 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-08 18:30 — CODE — false comments removed, and one throttle policy instead of five literals
+
+No version bump: behaviour is unchanged, the divisors keep the same values, and no log string moved.
+This entry exists because the corrections are claims, and a claim is worth the same record as a fix.
+
+- **What:** four comment corrections and one refactor.
+  1. `FPMHologramNetGuard.cpp` — the role gate's comment claimed it "rejects essentially everything".
+     It does not. This fix is client-only, and on a CLIENT most replicated actors ARE
+     `ROLE_SimulatedProxy`, so the compare passes often and the `IsA` cast behind it does the real
+     narrowing. Ordering still correct, stated reason wrong.
+  2. `FPMHologramNetGuard.h` — `NeverOnDedicatedServer` was justified as "a build preview is renderer
+     work". The fix contract explicitly rejects that shape of argument, and holograms are gameplay
+     objects the server has authority over. The real reason is a cost one: the hook target is
+     `AActor::DispatchBeginPlay`, which runs for every actor, and a dedicated server never holds a
+     hologram as a simulated proxy — so there it could fire constantly and never once reach its body.
+  3. `FPMHologramNetGuard.cpp` — the counter comment said "nothing here a second world load should
+     reset". The totals are right, but the `N == 1` arm fires once per PROCESS, so load two prints no
+     first-sighting line. Counts true, readout quieter than claimed.
+  4. `CHANGELOG.md` — the two `(Corrected 2026-08-08: ...)` notes below, on the 475 figure and the
+     hook macro.
+- **The refactor:** five throttle sites used `50` / `100` / `200` as bare literals with no stated rule.
+  They now share `FPMLog::ThrottleRoutine` / `ThrottleNotable` in `Core/FPMFixContract.h`, with the
+  policy written once: the divisor encodes how EXPECTED an event is. An event believed unreachable is
+  logged UNTHROTTLED and deliberately has no constant — a `% 1` divisor would be dead code dressed as
+  policy.
+- **⚠ AND THE REFACTOR TAUGHT SOMETHING WORTH KEEPING: THIS MODULE IS A UNITY BUILD.** Putting the
+  constants in each `.cpp`'s anonymous namespace produced `error C2374: redefinition` — UE concatenates
+  the `.cpp` files into one translation unit, so two anonymous namespaces declaring the same name are
+  one namespace declaring it twice. **File-local constants are not file-local here.** Anything shared
+  belongs in a header; anything genuinely per-fix needs a name unique across the whole module. Recorded
+  in the header so the next person meets it as a rule rather than as a compile error.
+- **Files:** `Public/Core/FPMFixContract.h`, `Private/Fixes/Interop/FPMHologramNetGuard.cpp`,
+  `Public/Fixes/Interop/FPMHologramNetGuard.h`,
+  `Private/Fixes/Interop/FPMInventoryInitGuard.cpp`, `CHANGELOG.md`.
+- **Revert:** the comments are inert; the throttle constants can go back to literals without behaviour
+  change.
+- **Verified:** compiles clean, and the negative case too — `grep` finds no `GThrottle` symbol left in
+  either fix. **NOT boot-tested.**
+
 ## 2026-08-08 18:09 — CODE — inventory init: stop writing the save, and stop destroying items
 
 - **What:** every `Resize()` is now gated behind `HasAuthority()`, both `Scope.Override(0)` calls are
@@ -71,7 +110,7 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 - **Verified:** compiles clean. Positive — `ON THE AUTHORITY`, `authored with ZERO slots`,
   `authority-seen`, `Gave it its authored` present UTF-16 in the DLL. Negative — the two 0.2.0
   item-loss strings are gone, `grep` finds no `Override(` call in the file, and both `Resize()` calls
-  (`:116`, `:210`) sit behind a `HasAuthority()` early-return (`:86`, `:159`). **NOT boot-tested.**
+  sit behind a `HasAuthority()` early-return in both hooks. **NOT boot-tested.**
 
 ## 2026-08-08 18:09 — VERSION — 0.2.1 → 0.2.2
 
@@ -94,8 +133,8 @@ Entries since the last `VERSION` line are the draft release notes for the next f
   plus the buildable's own components, and uses the hologram only as `owner` to filter by usage.
   Settled independently from asset bytes: of **400** exported assets containing
   `FGAttachmentPointComponent`, **350** are `Deco_*` decoration templates and nearly all the rest are
-  decorators. So the old read would have returned empty on every fire and sent all ~475 into the
-  residual cancel — **shipping the exact regression the fix exists to remove**, while its header
+  decorators. So the old read would have returned empty on every fire and sent every fire (100-2,150 a
+  session, median ~1,050) into the residual cancel — **shipping the exact regression the fix exists to remove**, while its header
   claimed "Expected: zero".
 - **⚠ THE SAME MISTAKE AS THE RAIN FIX — right intent, right hook, WRONG OBJECT — made in a file whose
   own comment cited rain as the lesson.** Citing a lesson is not applying it.
@@ -148,7 +187,8 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 - **What:** `FPMHologramNetGuard` hooks `AActor::DispatchBeginPlay`. On a `ROLE_SimulatedProxy`
   `AFGBuildableHologram` with an empty `mCachedAttachmentPoints`, it rebuilds the cache from the actor's
   own `UFGAttachmentPointComponent`s and falls through, so BeginPlay runs normally. The old mod
-  cancelled `DispatchBeginPlay` outright for all such holograms — 475 a session, mostly vanilla.
+  cancelled `DispatchBeginPlay` outright for all such holograms — **100 to 2,150 a session, median ~1,050**, mostly vanilla.
+  *(Corrected 2026-08-08: this said "475 a session". That was one log's peak, third-lowest of eight measured — 100, 275, 475, 1000, 1100, 1150, 1525, 2150 — so it understated the typical case ~2.2x and the worst ~4.5x. The review that caught it said 475 was the smallest of the eight; it is not, 100 is. Both the original claim and its correction were wrong in the same direction: quoting one number for a distribution.)*
 - **Why:** the crash is `Assertion failed: mCachedAttachmentPoints.Num() > 0`,
   `ModularStations\FGCarouselHologram.cpp:55`, arriving through `UActorChannel::ProcessBunchInternal` —
   it kills a JOINING client, which is the mechanism that rebinds a player to a fresh character and loses
@@ -194,8 +234,10 @@ Entries since the last `VERSION` line are the draft release notes for the next f
   a listen host it took that branch on the machine that owns the save.** Ant: *"we cant delete items.
   illegal. we need to not make zero inventory crates at all. it needs to be fixed at the source, not a
   bandaid solution. we still need a guard IF the source fix ever fails, but still"*
-- **Hook targets:** `UFGInventoryComponent::BeginPlay` — virtual, `FGInventoryComponent.h:187`.
-  `UFGInventoryComponent::AddStack` — virtual, `:271`. Both `SUBSCRIBE_METHOD_VIRTUAL`. ⚠ An SML *after*
+- **Hook targets:** `UFGInventoryComponent::BeginPlay` — virtual, `FGInventoryComponent.h:187`,
+  hooked with **`SUBSCRIBE_METHOD_VIRTUAL_AFTER`**. `UFGInventoryComponent::AddStack` — virtual,
+  `:271`, hooked with `SUBSCRIBE_METHOD_VIRTUAL`.
+  *(Corrected 2026-08-08: originally "Both `SUBSCRIBE_METHOD_VIRTUAL`", which the very next sentence contradicted by explaining the after-handler rule.)* ⚠ An SML *after*
   handler takes **no `Scope`**: `AddHandlerAfter` wants `TFunction<void(C*)>` exactly
   (`NativeHookManager.h:525`), because vanilla has already run and there is nothing left to cancel.
   Writing `auto& Scope` is a compile error.
