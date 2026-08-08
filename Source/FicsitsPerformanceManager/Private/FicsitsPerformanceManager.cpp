@@ -5,6 +5,8 @@
 #include "Core/FPMFixContract.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
+#include "Fixes/Interop/FPMHologramNetGuard.h"
+#include "Fixes/Interop/FPMInventoryInitGuard.h"
 #include "Fixes/Interop/FPMNoOwnerRpcGate.h"
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
@@ -46,6 +48,13 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	FPMFixes::Arm(FFPMNoOwnerRpcGate::Get());
 	FPMFixes::Arm(FFPMCloneSensor::Get());
 	FPMFixes::Arm(FFPMRainOcclusionFix::Get());
+
+	// The two join-crash repairs, carried from the old mod on 2026-08-08 and REBUILT rather than copied:
+	// both used to prevent their crash by cancelling the work, and both cost something real for it — an
+	// unrendered build preview (Ant saw it) and a possibly-destroyed item stack. They now supply the data
+	// that was missing and let vanilla run.
+	FPMFixes::Arm(FFPMInventoryInitGuard::Get());
+	FPMFixes::Arm(FFPMHologramNetGuard::Get());
 
 	// Always printed, even when empty - an empty inventory is itself a finding.
 	FPMHookLedger::LogInventory();
