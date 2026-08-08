@@ -34,6 +34,53 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-08 18:09 — CODE — inventory init: stop writing the save, and stop destroying items
+
+- **What:** every `Resize()` is now gated behind `HasAuthority()`, both `Scope.Override(0)` calls are
+  deleted, an inventory the asset authored at zero is left alone in hook 2 as well as hook 1, and two
+  counters were added for the branches that deliberately do nothing.
+- **Why — ZERO RESIDUE, and vanilla's own header is the receipt.** `FGInventoryComponent.h:624-626`:
+  *"When we resize the inventory we save how much bigger or smaller the inventory was made"*,
+  `UPROPERTY(SaveGame) int32 mAdjustedSizeDiff`. `mInventoryStacks` is `SaveGame` too (`:652`), and
+  `Resize`'s body is a link stub (`FGInventoryComponent.cpp:54`), so how much it persists is not
+  readable. Repairing on the authority wrote residue into Ant's save. The law is prevention, not
+  cleanup — an uninstalled mod cannot unwrite a saved field.
+- **⚠ AND THE GATE COSTS NO COVERAGE, BECAUSE `Side::Any` WAS AN OVER-CORRECTION MADE THE SAME MORNING.**
+  The bug is client-only by this fix's own evidence — *"crash on JOIN, singleplayer fine"*, because on a
+  joining client components replicate before their owners finish initialising while on the host the
+  owner initialised long ago. Widening it to the authority was applied on the general rule "all the
+  fixes should run on the server too"; that rule is for fixes whose EFFECT reaches clients through
+  replicated state, not for a client-local race. It bought nothing and paid in save residue. The hook
+  still ARMS everywhere so the server can REPORT a zero-slot inventory — what is gated is the mutation,
+  not the observation.
+- **No item can be destroyed on any path.** `Override(0)` reads as safe and is not: the ordinary caller
+  shape is remove-from-source-then-add-to-destination, so returning 0 after the removal means the items
+  exist nowhere. Ant: *"we cant delete items. illegal."* Every branch that declines to repair now falls
+  through to vanilla unchanged — the outcome an unmodded game produces, loud and recoverable rather
+  than silent and permanent.
+- **Two contradictions removed.** Hook 2 used to invent a slot on an inventory authored at zero, four
+  lines from hook 1's stated principle that the asset already decided that. And its success log claimed
+  "no items lost" while running BEFORE vanilla's AddStack, so the claim was unknowable at that point.
+- **Header corrected.** It claimed AddStack "cannot reach the assert" after hook 1, then described two
+  ways it can. It now states the narrow truth and names all three remaining populations, and says
+  plainly that this is a repair at the earliest reachable choke point rather than a fix at the origin —
+  so Ant can judge whether that satisfies "fixed at the source".
+- **Files:** `Private/Fixes/Interop/FPMInventoryInitGuard.cpp`,
+  `Public/Fixes/Interop/FPMInventoryInitGuard.h`.
+- **Revert:** drop `FPMFixes::Arm(FFPMInventoryInitGuard::Get())` from `StartupModule`.
+- **Verified:** compiles clean. Positive — `ON THE AUTHORITY`, `authored with ZERO slots`,
+  `authority-seen`, `Gave it its authored` present UTF-16 in the DLL. Negative — the two 0.2.0
+  item-loss strings are gone, `grep` finds no `Override(` call in the file, and both `Resize()` calls
+  (`:116`, `:210`) sit behind a `HasAuthority()` early-return (`:86`, `:159`). **NOT boot-tested.**
+
+## 2026-08-08 18:09 — VERSION — 0.2.1 → 0.2.2
+
+- **What:** `VersionName` / `SemVersion` → `0.2.2`.
+- **Why:** a repair to an existing fix with no new capability is a PATCH under SemVer.
+- **Files:** `FicsitsPerformanceManager.uplugin`, `CHANGELOG.md`.
+- **Revert:** set both fields back. Never published.
+- **Verified:** build-only. **NOT boot-tested.**
+
 ## 2026-08-08 17:56 — CODE — hologram net repair read the WRONG OBJECT, twice over
 
 - **What:** the repair now calls vanilla's own
