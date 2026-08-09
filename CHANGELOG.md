@@ -62,6 +62,47 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 13:30 — CODE — clause 6's denylist re-derived from the assets; it was missing 56 cvars, including the one the design records as having leaked
+
+- **What:** `IsUserSettingBacked` now checks a GENERATED table of the 66 vanilla cvar-backed user
+  settings (`Private/Core/FPMUserSettingTable.g.h`) **in union with** the old hand-guessed list, which
+  is retained and renamed `GFPMWriterUSLegacyGuesses`.
+- **Why:** the old list guessed a cvar name from an ASSET name. Read from the assets instead — a
+  setting's cvar name is its `StrId` (`FGUserSetting.h:183-189`, "manage and if needed create a cvar
+  for this setting based on StrId"; confirmed on `US_MaxFPS`, whose StrId is `t.MaxFPS`) — the picture
+  changes completely:
+  - **56 real US_*-backed cvars were absent** from the shipped list. 13 are `sg.*` and already refused
+    by clause 5, so ~43 were genuinely unguarded — among them **`r.ContactShadows`, the very cvar
+    §2.3.6 records as having caused a LIVE residue leak on 2026-08-02**. Latent, not active: FPM drives
+    no renderer cvars yet.
+  - **`r.Gamma` was refused while `r.TonemapperGamma` — the one `US_Gamma` actually drives — was not.**
+    It guarded a name the game does not use and left open the one it does.
+  - The famous **"242 of 272 UNMAPPED"** was an artefact of how that file was built, not a knowledge
+    gap: of its 272 rows, 184 are settings that drive no cvar at all, 4 are names truncated at a hyphen
+    (`US_HierarchicalZ` for `US_HierarchicalZ-BufferOcclusion`), and 19 match no asset in the game
+    (`US_34z`, `US_Jx`, `US_dT`, …). Reading StrId yields 66 cvar-backed and **zero** unmapped.
+- **Union, not replacement.** Every legacy entry the derived table lacks is an asset with no cvar or a
+  cvar no asset claims, so all 23 look safe to drop — but "looks safe on this evidence" is the sentence
+  that preceded the 242 mistake, and the costs are asymmetric: a false refusal is a log line, a false
+  permission is a permanent change to the player's own settings.
+- **Neither table is the primary, and both are VANILLA-ONLY.** Confirmed this session: the LightSettings
+  mod (`"Let there be Light"`, folder `LightSettings`) exposes its levers as mod-side **SessionSettings**
+  assets — `LS_SS_AttenuationRadius` (StrId `LightSettings.AttenuationRadius`, default `5000`, the one
+  Ant dropped to 1000), plus SourceRadius / SoftSourceRadius / LightFalloff / Inner+OuterConeAngle. None
+  carries `UseCVar`, so **none is a cvar at all** and no export of the base game could ever contain
+  them. `GetAllUserSettingsMap()` at runtime stays the primary; these tables are the fallback.
+- **Files:** `Private/Core/FPMCVarWriter.cpp`, `Private/Core/FPMUserSettingTable.g.h` (new, generated),
+  `40-TOOLS/satisfactory/extract_user_settings.ps1` (new, brain repo),
+  `40-TOOLS/satisfactory/us_settings.tsv` (new, brain repo). No version bump — ships with P1.3.
+- **Revert:** restore `GFPMWriterUSLegacyGuesses` to the name `GFPMWriterUSDenylist`, drop the include
+  and the derived loop. Undo if the derived table is ever shown to refuse a cvar FPM must write — the
+  refusal log names the cvar and its asset, so that case arrives identified.
+- **Verified:** build-only — `Build.bat FactoryEditor Win64 Development -Module=FicsitsPerformanceManager`
+  → `Result: Succeeded`. NOT boot-tested: no behaviour change is observable while clause 6 refuses the
+  whole set anyway.
+
+---
+
 ## 2026-08-09 12:40 — VERSION — 0.5.4 → 0.5.5
 
 - **What:** `0.5.5`; pin generated. PATCH — `FPM.D0` is a console command; a player would not notice.

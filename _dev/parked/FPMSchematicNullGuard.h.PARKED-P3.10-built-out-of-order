@@ -1,0 +1,109 @@
+// Copyright 2026 DegradingAnt. Licensed under GPL-3.0.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Core/FPMFixContract.h"
+
+/**
+ * SCHEMATIC NULL GUARD — refuses a schematic query that vanilla is about to die on, and SAYS SO EVERY
+ * TIME. Design P3.10(a).
+ *
+ * Ant, 2026-08-08 (R59), with the crash numbers in front of her: *"Add a narrow null-guard, See if we
+ * can fix the issue at the source aswell"* — she selected BOTH options, superseding the earlier
+ * diagnostics-only ruling. This file is (a). The source repair is (b) and is NOT code: it is the
+ * upstream report plus the removal test, and it is what eventually makes this file deletable.
+ *
+ * ★ WHY THERE IS A GUARD HERE AT ALL WHEN THE PROBE'S HEADER ARGUES AGAINST ONE.
+ * That argument was made against a guard that shipped SILENTLY and was narrowed three times by authors
+ * who could not see it working. It is not an argument against guarding; it is an argument against
+ * guarding blind. Everything that made the old one unfalsifiable is inverted here: it logs the first
+ * sighting of every distinct class unthrottled, it counts refusals AND pass-throughs so a dead guard is
+ * visibly dead (design §3.3), and the probe stays armed BESIDE it still naming origins. If this guard
+ * is wrong, the log says which schematic it was wrong about, by name, on the first frame it happens.
+ *
+ * ★ THE EVIDENCE, 6/6 FROM BYTES (critic R2-P4, re-verified R3).
+ * All six schematic dumps in the 31-dump corpus crash at the identical site
+ * `UFGSchematic::CanGiveAccessToSchematic() FGSchematic.cpp:408`, all `EXCEPTION_ACCESS_VIOLATION`
+ * reading `0x00000000000002c0`. Three full stacks read (37681B11, A981D1D4, E6D4E9FE) and three top
+ * frames (4DB929D6, 5DC04A67, 9DF7FBEE). Callers converge through
+ * `AFGSchematicManager::Internal_CommitCurrentSchematicTransaction` (:801) — the GRANT path, not a
+ * query. A `SUBSCRIBE_METHOD` hook runs BEFORE the body (hooking.adoc:129-130), so an entry check on
+ * the argument intercepts every one of those paths: 6/6 coverage, not a sample.
+ *
+ * ★ AND THE MECHANISM IS NOW THE FUNCTION'S OWN DOCUMENTED CONTRACT, not our inference.
+ * `FGSchematic.h:158` — *"Checks for events and if mDependenciesBlocksSchematicAccess is true we check
+ * that all dependencies are met as well"*. `mDependenciesBlocksSchematicAccess` is an instance member,
+ * `FGSchematic.h:267`. The function is STATIC and takes a `TSubclassOf`, so the ONLY way it reads that
+ * member is off the class default object. A null CDO puts that read at the member's offset from a null
+ * base — which is the shape of `0x2c0` exactly. Corroborating, from the log census: four sibling
+ * statics in the same family (`GetUnlocks` 19, `GetIsPlayerSpecific` 16, `IsRepeatPurchasesAllowed` 16,
+ * `GetCost` 9 — 60/session) emit CSS's own `nullpeter` warning on this same input and survive. They
+ * have the null check. This one does not, and dies. That is a missing guard at the source, which is
+ * precisely what (b) reports upstream.
+ *
+ * ⚠ THIS DOES NOT CLAIM THE CRASH IS FIXED, AND THE ORIGIN STATUS SAYS SO IN THE BOOT LOG.
+ * Per Ant's standing Q1 rule, "fixed" belongs only beside `OriginNamed`. The origin here is NAMED — a
+ * broken ContentLib milestone, `Schematic_CustomizerTest_C`, mounted from `/SS_Mod/` — but not
+ * CONFIRMED as the whole story: one dump (A981D1D4) carries no mod frame in its callstack at all. The
+ * honest reading is that broken authored data reaches a vanilla function that forgot to check, and we
+ * are holding the door shut while (b) goes after the data.
+ *
+ * ★ WHAT IT DOES, EXACTLY
+ *  - null class            -> refuse, return false, count, name it (first fire unthrottled)
+ *  - class with null CDO   -> refuse, return false, count, name the class (first fire unthrottled)
+ *  - anything else         -> NOTHING. No Override, no Cancel. Vanilla answers, unmodified.
+ *
+ * `Override(false)` rather than `Cancel()`, because `Cancel` is only defined for the void specialisation
+ * (`NativeHookManager.h:165`); a `Result`-returning scope stops the chain by supplying the answer
+ * (`:211`). `false` is the conservative answer and the one consistent with the siblings: a schematic
+ * whose data cannot be read cannot have its access requirements evaluated, so the safe report is "no",
+ * exactly as `mDependenciesBlocksSchematicAccess` being unreadable would imply. Answering `true` would
+ * be the old mod's forced-TRUE override, which is dead and stays dead.
+ *
+ * ⚠ ARM ORDER IS LOAD-BEARING: THE PROBE MUST ARM FIRST.
+ * `TCallScope::Override` sets `bForwardCall = false`, and the chain driver only advances to the next
+ * handler `if (HandlerPtr == CachePtr && bForwardCall)` (`NativeHookManager.h:211-226`). So the first
+ * handler that overrides silences every FPM handler registered behind it. Arming this guard ahead of
+ * the probe would blind the probe on exactly the calls it exists to name — the opposite of R59, which
+ * says the probe stays and keeps naming origins. StartupModule arms probe-then-guard and says why.
+ *
+ * ⚠ AND IT MUST NOT COST FRAMES. Same hot path as the probe, same reason: the HUB and the build-menu
+ * search walk schematics, and version 0.58.54 of the old mod froze the game logging on every call. The
+ * pass-through path here is one atomic increment and one pointer compare. Nothing else — no string, no
+ * lock, no allocation — is reached unless the argument is actually broken.
+ */
+class FFPMSchematicNullGuard final : public IFPMFix
+{
+public:
+	static FFPMSchematicNullGuard& Get();
+
+	virtual const TCHAR* Name() const override { return TEXT("schematic-guard"); }
+
+	/*
+	 * Schematic grants are SERVER-AUTHORITATIVE — the observed crashes are on the grant path through
+	 * `AFGSchematicManager::Internal_CommitCurrentSchematicTransaction`, which is where the server decides
+	 * a milestone. A guard gated off the dedicated server would do nothing on the machine that runs the
+	 * code it guards. `Any`, and not by default: by that argument.
+	 */
+	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
+
+	/** Guard: the broken schematic data is another author's, and the missing null check is CSS's. Neither is
+	 *  ours to own — we prevent the harm and (b) chases both. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::Guard; }
+
+	/** Its OWN channel, not the probe's. Silencing the probe's per-call chatter must never silence a
+	 *  refusal — a guard that went quiet while still changing answers is the shape R59 explicitly refused
+	 *  ("it is a guard, not a suppression"). */
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::SchematicGuard; }
+
+	virtual void Arm() override;
+
+	/** True once the hook is installed. The self-test refuses to run without it — see the .cpp. */
+	static bool IsArmed();
+
+	/** Refusals so far, and calls passed through untouched. The §3.3 denominator pair: a guard whose
+	 *  refusal count is 0 against a large pass-through count is visibly doing nothing, which is the state
+	 *  we want (b) to produce and want to be able to SEE it produce. */
+	static void GetCounts(int32& OutRefusedNullClass, int32& OutRefusedNullCdo, int32& OutPassedThrough);
+};
