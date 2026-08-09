@@ -6,6 +6,7 @@
 
 // Clause 6's question now has ONE owner. Both compiled tables and the runtime enumeration live behind
 // FPMUserSettingMap; this file no longer keeps a copy of any of them.
+#include "Core/FPMSaveSettingsInterceptor.h"   // clause 6's gate: IsHealthy(), fails closed
 #include "Core/FPMUserSettingMap.h"
 
 namespace
@@ -72,14 +73,43 @@ IConsoleVariable* FPMCVarWriter::Vet(FName Owner, const TCHAR* CVarName) const
 		return nullptr;
 	}
 
-	// CLAUSE 6 — the US_*-backed set, refused ENTIRELY until P1.3's SaveSettings interceptor exists.
-	if (IsUserSettingBacked(CVarName))
+	/*
+	 * ★ CLAUSE 6 — the US_*-backed set. LIFTED 2026-08-09, onto the interceptor, by Ant's ruling.
+	 *
+	 * THE HAZARD IS UNCHANGED AND IT IS REAL: `FGGameUserSettings` serialises every `mUserSettings` entry
+	 * on every save with NO dirty gate. Measured on 0.5.7 by `FPM.D0`: 28 cvar-backed settings would be
+	 * written by a save right now, and 16 of those 28 sit at exactly their default value. So a value FPM
+	 * holds at save time becomes the player's PERMANENT setting and survives uninstall. That single
+	 * failure is why the whole zero-residue posture exists.
+	 *
+	 * WHAT CHANGED. This used to be a BLANKET refusal "until P1.3 ships the SaveSettings interceptor".
+	 * P1.3 shipped (c5718bd) and nobody updated the gate, so the refusal outlived its own condition and
+	 * became a deadlock: P1.5 Leg B has to hold `t.MaxFPS` to find out whether the settings menu's APPLY
+	 * path outranks 0x07, clause 6 refused that hold, and lifting clause 6 was gated on Leg B's answer.
+	 *
+	 * Ant, 2026-08-09, ruling on exactly that knot:
+	 *   *"we'll have to lift it to get the awnser then. the law is more for release than dev env."*
+	 *
+	 * THE GATE IS NOW THE INTERCEPTOR ITSELF, which is what it was built to be — its header has said
+	 * "THE WRITER WILL ASK THIS BEFORE EVERY MAPPED WRITE" since it was written, marked NOT WIRED YET.
+	 * This is that wiring. `IsHealthy()` FAILS CLOSED in every uncertain state: before `Arm()` has run, if
+	 * the arm-time self-test failed, if any restore has ever failed, and mid-suspension. So a write racing
+	 * startup is refused rather than waved through, and a guard that has ever failed never re-opens the
+	 * door — it latches, permanently, on purpose.
+	 *
+	 * ⚠ THIS IS NOT A RELAXATION OF THE ZERO-RESIDUE RULE. It moves the guarantee from "we never write
+	 * these" to "we only write these while something is provably standing between the write and the save
+	 * file". If that something is not healthy, the write is refused exactly as before.
+	 */
+	if (IsUserSettingBacked(CVarName) && !FFPMSaveSettingsInterceptor::IsHealthy())
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Warning,
-			TEXT("[FPM] writer REFUSED '%s' for owner '%s': it is backed by a US_* game user setting. "
-			     "FGGameUserSettings serialises every entry on every save with NO dirty gate, so a value "
-			     "we hold at save time would become the player's PERMANENT setting and survive uninstall. "
-			     "This is refused until P1.3 ships the SaveSettings interceptor - not tunable, not a bug."),
+			TEXT("[FPM] writer REFUSED '%s' for owner '%s': it is backed by a US_* game user setting and "
+			     "the SaveSettings interceptor is NOT HEALTHY. FGGameUserSettings serialises every entry "
+			     "on every save with NO dirty gate, so without the interceptor a value we hold at save "
+			     "time would become the player's PERMANENT setting and survive uninstall. "
+			     "Remedy: check the boot log for why the guard did not arm, or failed. It latches on "
+			     "purpose and never re-arms optimistically."),
 			CVarName, *Owner.ToString());
 		return nullptr;
 	}
@@ -424,16 +454,21 @@ static FAutoConsoleCommandWithOutputDevice GWriterOffCmd(
  * protocol -- worth recording, because the protocol had been reviewed several times and nobody noticed
  * that the mod offered no way to perform step one.
  *
- * CLAUSE 6 STILL APPLIES. This routes through Hold(), so a US_*-backed cvar is refused here exactly as
- * it is everywhere else. That means this command covers P1.5's LEG A only. Leg B deliberately targets
- * `t.MaxFPS` -- a US_*-backed cvar -- to contest 0x08 SetByGameOverride, and crossing that boundary is
- * Ant's call, not a decision to bury inside a console command's implementation. See the note surfaced
- * with the build.
+ * CLAUSE 6 NOW GATES ON THE INTERCEPTOR rather than refusing outright (lifted 2026-08-09, Ant's ruling:
+ * "we'll have to lift it to get the awnser then. the law is more for release than dev env"). This still
+ * routes through Hold(), so a US_*-backed cvar is permitted here only while the SaveSettings interceptor
+ * is armed and healthy, and refused with a named reason otherwise.
+ *
+ * THAT IS WHAT MAKES P1.5 LEG B RUNNABLE. Leg B deliberately targets `t.MaxFPS` -- a US_*-backed cvar --
+ * to contest 0x08 SetByGameOverride. Until the lift, the command that had to perform step one of the
+ * protocol was refused by the protocol's own safety clause, which is the deadlock Ant ruled on. The
+ * boundary is still guarded; it is now guarded by something that can PROVE it is standing there, instead
+ * of by a blanket no.
  */
 static FAutoConsoleCommandWithArgsAndOutputDevice GWriterHoldCmd(
 	TEXT("FPM.Hold"),
 	TEXT("Hold a console variable through FPM's writer, at FPM's priority, until released. "
-	     "Usage: FPM.Hold <cvar> <value>   (US_*-backed cvars are refused - clause 6)"),
+	     "Usage: FPM.Hold <cvar> <value>   (US_*-backed cvars need the SaveSettings interceptor healthy)"),
 	FConsoleCommandWithArgsAndOutputDeviceDelegate::CreateLambda(
 		[](const TArray<FString>& Args, FOutputDevice& Ar)
 		{

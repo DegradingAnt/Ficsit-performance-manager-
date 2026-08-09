@@ -60,11 +60,25 @@
  *    where nothing can be held yet, so this is cheap — and it is asserted rather than assumed, because
  *    "cannot happen" is how the 0x2c0 guard was justified three times.
  *
- * ⚠ WHAT THIS DOES **NOT** DO, STATED SO NOBODY READS MORE INTO IT.
- * It does not lift clause 6. Shipping the interceptor is the design's stated condition for lifting it,
- * but the lift is a separate, deliberate change that wants a boot behind it — and P1.5 Leg B (does the
- * menu's APPLY button write at 0x08 and outrank us?) is still unanswered. Startup applies at
- * `GameSetting` (0x02), measured on 0.5.6; the apply-button path is a different code path.
+ * ★ CLAUSE 6 NOW RESTS ON THIS FILE — lifted 2026-08-09 by Ant's ruling, and here is exactly what that
+ * means, because it is easy to read as a relaxation and it is not one.
+ *
+ * BEFORE: clause 6 refused every US_*-backed write outright, "until P1.3 ships the SaveSettings
+ * interceptor". P1.3 shipped and nobody updated the gate, so the refusal outlived its own condition and
+ * produced a deadlock — P1.5 Leg B must hold `t.MaxFPS` to discover whether the settings menu's APPLY
+ * path (0x08 `SetByGameOverride`) outranks 0x07, clause 6 refused that hold, and lifting clause 6 was
+ * gated on Leg B's answer. Ant: *"we'll have to lift it to get the awnser then. the law is more for
+ * release than dev env."*
+ *
+ * AFTER: the writer permits a mapped write only while `IsHealthy()` is true. The guarantee moves from
+ * "we never write these" to "we only write these while something is provably standing between the write
+ * and the save file". Because `IsHealthy()` fails CLOSED in every uncertain state — before `Arm()`, after
+ * any failure, mid-suspension — the unsafe cases are refused exactly as they were before.
+ *
+ * STILL UNANSWERED, and it is the point of Leg B: startup applies at `GameSetting` (0x02), measured on
+ * 0.5.6, but the APPLY BUTTON is a different code path and may write at 0x08. If it outranks us,
+ * §2.3.2's stated fallback engages. Both outcomes are a pass for the boot; only the HELD outcome licenses
+ * the law write-back.
  */
 class FFPMSaveSettingsInterceptor final : public IFPMFix
 {
@@ -91,11 +105,10 @@ public:
 	/**
 	 * ★ THE WRITER WILL ASK THIS BEFORE EVERY MAPPED WRITE — once clause 6 is lifted.
 	 *
-	 * ⚠ NOT WIRED YET, AND THE PRESENT TENSE WAS A LIE. This said "the writer asks this" while nothing
-	 * called it (review 2026-08-09). Clause 6 currently refuses the whole US_*-backed set outright, so
-	 * there is no mapped write for it to gate. It is here so the lift is one edit rather than a design
-	 * task — but a comment claiming a live integration that does not exist is the project's own named
-	 * defect, so it says what is true instead.
+	 * ✔ WIRED 2026-08-09. `FPMCVarWriter`'s clause 6 now calls this before permitting any US_*-backed
+	 * write, which is what this function was written for. It was marked NOT WIRED YET for a day, because
+	 * a comment claiming a live integration that does not exist is the project's own named defect — and
+	 * this note is kept rather than deleted so the next reader can see the claim was earned, not assumed.
 	 *
 	 * False when the hook did not install, when the self-test failed, or when a restore has ever failed.
 	 * Fail CLOSED: it is also false before `Arm()` has run, so a write racing startup is refused rather

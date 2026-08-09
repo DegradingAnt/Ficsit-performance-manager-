@@ -89,6 +89,35 @@ void FFPMSaveSettingsInterceptor::GetCounts(int32& OutSavesSeen, int32& OutHolds
 void FFPMSaveSettingsInterceptor::Arm()
 {
 	/*
+	 * ⚠ A COOK IS NOT A GAME. Do not arm, and do NOT latch a failure. Found 2026-08-09 the hard way:
+	 * this guard BROKE PACKAGING.
+	 *
+	 * WHAT HAPPENED. The cook commandlet loads this module, `Arm()` ran, the `UFGGameUserSettings`
+	 * SaveSettings hook could not install in a headless commandlet, and the permanent fail-safe did
+	 * exactly what it was designed to do: latch FAILED and log at Error level. The cook counts Errors and
+	 * fails on them, so `RunUAT` came back `Error_UnknownCookFailure` (ExitCode 25) and produced NO new
+	 * artefacts — while still printing enough success-shaped output that only a byte check on the packaged
+	 * `.uplugin` revealed the zips were the previous version.
+	 *
+	 * WHY SKIPPING IS CORRECT AND NOT A WORKAROUND. This guard exists to stop a TRANSIENT cvar write from
+	 * being serialised into a player's settings file. A cook has no player, no settings file and no save;
+	 * there is no write to intercept and nothing to protect. Arming would guard nothing, and its FAILURE
+	 * to arm therefore says nothing about the guard's health in a real session.
+	 *
+	 * WHY IT IS A PLAIN RETURN AND NOT `Fail()`. `Fail()` is permanent and never re-arms by design. Using
+	 * it here would mean a cook's irrelevant miss poisons the very next real boot in the same process. The
+	 * safety posture is unchanged: `IsHealthy()` still fails CLOSED before arming, so any mapped write in
+	 * this context is refused anyway. Not-armed and not-healthy is the safe pair.
+	 */
+	if (IsRunningCommandlet())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] save-settings guard: not arming in a commandlet (cook/build). There is no player "
+			     "settings file to protect here, and IsHealthy() stays false, so mapped writes stay refused."));
+		return;
+	}
+
+	/*
 	 * INVARIANT 3 — REFUSE TO ARM WHILE HELD (§2.3.6).
 	 *
 	 * Arming happens in StartupModule, where the writer's ledger cannot yet contain anything, so this is
