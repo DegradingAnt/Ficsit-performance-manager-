@@ -34,6 +34,9 @@
 
 #include "FicsitsPerformanceManager.h"
 
+#include "Core/FPMCVarWriter.h"
+
+#include "Containers/Ticker.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/OutputDevice.h"
 
@@ -210,6 +213,193 @@ static FAutoConsoleCommandWithArgsAndOutputDevice GFPMProbeSnapCmd(
 			FPMProbeEmit(Ar, FString::Printf(TEXT("snapshot %s captured: %d cvar(s) matching %s"),
 				bIsA ? TEXT("A") : TEXT("B"), Slot.Num(), *Label));
 		}));
+
+/*
+ * ★★★ `FPM.Prove` — P1.5's ENTIRE 0x07 PROOF PROTOCOL, AS ONE COMMAND.
+ *
+ * Ant, 2026-08-09, halfway through running it by hand: *"okey this is too many commands and its
+ * confusing. we need to make the mod do this."* and *"no more command spam. lets build the mod so it
+ * can do this itself. this is what the bench is for anyways."*
+ *
+ * She is right twice over. Hand-driving a protocol is how it goes wrong -- the same failure the
+ * afternoon's manual cvar bisect demonstrated -- and every step below is something code can perform
+ * more precisely than a human typing between two windows. What a human CANNOT do reliably is notice
+ * that they mistyped step 4 of 6 an hour ago.
+ *
+ * WHY IT MATTERS: Design R2 §9's P1.5 is the last Phase 1 increment and it BLOCKS A LAW CHANGE -- the
+ * recorded project law keeps prescribing SetByCode until this lands. It has been unrunnable until
+ * today, because nothing made the writer hold a cvar on demand.
+ *
+ * THE FIVE QUESTIONS, and the priority contest each one settles:
+ *   1  does a tagged FPM write actually take?
+ *   2  does it SURVIVE a scalability-priority write?      <- the ladder rests on yes
+ *   3  does the CONSOLE still beat us?                    <- MUST be yes, or FPM has locked
+ *                                                            the player out of their own console
+ *   4  does release restore the value AND the SetBy?      <- the zero-residue promise
+ *   5  does it survive the vanilla options menu?          <- the path a player actually uses
+ *
+ * Steps 1-4 run automatically and instantly. Step 5 needs a human to open Settings and click Apply,
+ * so rather than making that a second command, the probe ARMS A WATCHER and reports by itself when
+ * the apply happens -- or when it times out, which is also an answer.
+ *
+ * IT ALWAYS CLEANS UP. Every exit path releases the hold and unsets the probe's own console write.
+ * A proof that leaves residue behind has disproved the thing it set out to demonstrate.
+ */
+namespace
+{
+	/** Scalability-owned, NOT US_*-backed, and confirmed to differ across sg levels in Ant's game. */
+	const TCHAR* GFPMProveTarget = TEXT("r.Shadow.MaxResolution");
+	const TCHAR* GFPMProveHeld   = TEXT("777");   // absurd on purpose: unmistakable in any readout
+	const TCHAR* GFPMProveRival  = TEXT("888");   // what the simulated scalability apply tries
+	const TCHAR* GFPMProveOwner  = TEXT("prove");
+
+	FTSTicker::FDelegateHandle GFPMProveWatch;
+	FString  GFPMProveArmedValue;
+	double   GFPMProveDeadline = 0.0;
+	int32    GFPMProvePassed = 0;
+	int32    GFPMProveTotal  = 0;
+
+	void FPMProveLog(const FString& Line)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM] %s"), *Line);
+	}
+
+	void FPMProveStep(FOutputDevice& Ar, const TCHAR* Question, bool bPass, const FString& Detail)
+	{
+		++GFPMProveTotal;
+		if (bPass) { ++GFPMProvePassed; }
+		const FString Line = FString::Printf(TEXT("  [%s] %-46s %s"),
+			bPass ? TEXT("PASS") : TEXT("FAIL"), Question, *Detail);
+		Ar.Logf(TEXT("%s"), *Line);
+		FPMProveLog(Line);
+	}
+
+	void FPMProveCleanup()
+	{
+		if (IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(GFPMProveTarget))
+		{
+			// Our own console-priority write from step 3 is residue if it survives the probe. Unset by
+			// priority, not "set it back" -- a lower Set appends another history layer instead of
+			// removing ours, which is the same reason the writer's release uses Unset.
+			Var->Unset(ECVF_SetByConsole);
+		}
+		FPMCVarWriter::Get().ReleaseOwner(FName(GFPMProveOwner));
+		if (GFPMProveWatch.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(GFPMProveWatch);
+			GFPMProveWatch.Reset();
+		}
+	}
+}
+
+static FAutoConsoleCommandWithOutputDevice GFPMProveCmd(
+	TEXT("FPM.Prove"),
+	TEXT("Run the whole 0x07 priority proof (P1.5) and print a verdict. Cleans up after itself."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+	{
+		auto Say = [&Ar](const FString& L) { Ar.Logf(TEXT("%s"), *L); FPMProveLog(L); };
+
+		IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(GFPMProveTarget);
+		if (!Var)
+		{
+			Say(FString::Printf(TEXT("FPM.Prove ABORTED: no cvar '%s' on this build."), GFPMProveTarget));
+			return;
+		}
+
+		// Anything left over from a previous run would make step 1 unreadable.
+		FPMProveCleanup();
+		GFPMProvePassed = GFPMProveTotal = 0;
+
+		const FString OrigValue = Var->GetString();
+		const EConsoleVariableFlags OrigSetBy =
+			static_cast<EConsoleVariableFlags>(Var->GetFlags() & ECVF_SetByMask);
+
+		Say(FString::Printf(TEXT("---- FPM.Prove : %s ----"), GFPMProveTarget));
+		Say(FString::Printf(TEXT("  baseline: %s (%s)"), *OrigValue, GetConsoleVariableSetByName(OrigSetBy)));
+
+		// 1 — does a tagged FPM write take at all?
+		const bool bHeld = FPMCVarWriter::Get().Hold(FName(GFPMProveOwner), GFPMProveTarget,
+			GFPMProveHeld, TEXT("FPM.Prove: 0x07 priority proof (P1.5)"));
+		FPMProveStep(Ar, TEXT("1 FPM write takes"), bHeld && Var->GetString() == GFPMProveHeld,
+			FString::Printf(TEXT("live=%s (%s)"), *Var->GetString(),
+				GetConsoleVariableSetByName(static_cast<EConsoleVariableFlags>(Var->GetFlags() & ECVF_SetByMask))));
+
+		if (!bHeld)
+		{
+			Say(TEXT("  hold refused, so the remaining steps would be meaningless. Aborting and cleaning up."));
+			FPMProveCleanup();
+			return;
+		}
+
+		// 2 — the contest the whole ladder rests on. This is the same priority the settings menu's
+		//     apply path writes at, so a loss here means the ladder cannot hold a value at all.
+		Var->Set(GFPMProveRival, ECVF_SetByScalability);
+		FPMProveStep(Ar, TEXT("2 survives a Scalability write"), Var->GetString() == GFPMProveHeld,
+			FString::Printf(TEXT("scalability tried %s, live=%s"), GFPMProveRival, *Var->GetString()));
+
+		// 3 — MUST pass. If FPM outranked the console, we would have taken away the operator's ability
+		//     to override us, which is a worse outcome than any performance win.
+		Var->Set(TEXT("999"), ECVF_SetByConsole);
+		FPMProveStep(Ar, TEXT("3 the CONSOLE still beats FPM"), Var->GetString() == TEXT("999"),
+			FString::Printf(TEXT("console tried 999, live=%s"), *Var->GetString()));
+		Var->Unset(ECVF_SetByConsole);
+
+		// 4 — the zero-residue promise, checked on BOTH axes. A value that comes back while the SetBy
+		//     does not means our tag is still sitting on the variable, locking out lower writers --
+		//     invisible to anyone reading only the number.
+		FPMCVarWriter::Get().ReleaseOwner(FName(GFPMProveOwner));
+		const FString AfterValue = Var->GetString();
+		const EConsoleVariableFlags AfterSetBy =
+			static_cast<EConsoleVariableFlags>(Var->GetFlags() & ECVF_SetByMask);
+		FPMProveStep(Ar, TEXT("4 release restores value AND SetBy"),
+			AfterValue == OrigValue && AfterSetBy == OrigSetBy,
+			FString::Printf(TEXT("%s (%s) -> %s (%s)"), *OrigValue, GetConsoleVariableSetByName(OrigSetBy),
+				*AfterValue, GetConsoleVariableSetByName(AfterSetBy)));
+
+		Say(FString::Printf(TEXT("  automatic legs: %d/%d passed"), GFPMProvePassed, GFPMProveTotal));
+
+		// 5 — the leg only a human can trigger. Rather than making this a second command she has to
+		//     remember, arm a watcher and report by ourselves.
+		FPMCVarWriter::Get().Hold(FName(GFPMProveOwner), GFPMProveTarget, GFPMProveHeld,
+			TEXT("FPM.Prove: watching for a vanilla options-menu apply"));
+		GFPMProveArmedValue = GFPMProveHeld;
+		GFPMProveDeadline = FPlatformTime::Seconds() + 180.0;
+
+		Say(TEXT(""));
+		Say(TEXT("  STEP 5 - NOW OPEN SETTINGS, CHANGE ANY GRAPHICS OPTION, AND CLICK APPLY."));
+		Say(TEXT("  Nothing else to type. I am holding the cvar and watching it; I will print the"));
+		Say(TEXT("  verdict myself the moment the menu applies, or say so if 3 minutes pass."));
+
+		GFPMProveWatch = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateLambda([](float) -> bool
+			{
+				IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(GFPMProveTarget);
+				if (!V) { FPMProveCleanup(); return false; }
+
+				const FString Now = V->GetString();
+				if (Now != GFPMProveArmedValue)
+				{
+					// Something beat our hold. That IS the answer, and the SetBy names who did it.
+					FPMProveLog(FString::Printf(
+						TEXT("  [FAIL] 5 survives the options-menu apply       our %s -> %s (%s) "
+						     "** the menu's apply path OUTRANKS 0x07 - §2.3.2's fallback engages **"),
+						*GFPMProveArmedValue, *Now,
+						GetConsoleVariableSetByName(static_cast<EConsoleVariableFlags>(V->GetFlags() & ECVF_SetByMask))));
+					FPMProveCleanup();
+					return false;
+				}
+				if (FPlatformTime::Seconds() > GFPMProveDeadline)
+				{
+					// NOT a pass. "Nobody applied anything" and "the hold survived an apply" are
+					// different facts and must never print the same line.
+					FPMProveLog(TEXT("  [ -- ] 5 options-menu apply NOT OBSERVED in 180 s - "
+						"inconclusive, not a pass. Re-run FPM.Prove and use the menu."));
+					FPMProveCleanup();
+					return false;
+				}
+				return true;
+			}), 0.5f);
+	}));
 
 static FAutoConsoleCommandWithOutputDevice GFPMProbeDiffCmd(
 	TEXT("FPM.CVarDiff"),

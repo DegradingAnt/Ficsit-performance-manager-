@@ -285,13 +285,38 @@ void FPMCVarWriter::LogLedger(FOutputDevice* Ar) const
 
 	Emit(FString::Printf(TEXT("---- cvar ledger: %d hold(s) ----"), Ledger.Num()));
 
+	/*
+	 * ★ EVERY ROW IS CHECKED AGAINST THE LIVE VARIABLE. Found 2026-08-09, mid-P1.5, by Ant.
+	 *
+	 * Until now this printed `H.Value` — what we ASKED to hold — and nothing else. So a hold that had
+	 * been BEATEN by a higher-priority writer printed exactly the same line as one that was still in
+	 * force. During the 0x07 proof protocol that is the entire question ("did our hold survive the
+	 * options-menu apply?"), and the command answering it could not distinguish the two outcomes.
+	 * A ledger cannot verify itself: it is a record of intent, and intent is not state.
+	 *
+	 * Now the live value is read back and compared. A divergence is the LOUDEST thing in the output,
+	 * because it means either something outranked us — a real finding worth having — or our release
+	 * path failed and the ledger is tracking a hold that no longer exists, which is residue.
+	 */
 	for (const FHold& H : Ledger)
 	{
+		IConsoleVariable* Live = IConsoleManager::Get().FindConsoleVariable(*H.CVar);
+		const FString LiveValue = Live ? Live->GetString() : FString(TEXT("<GONE>"));
+		const FString LiveSetBy = Live
+			? FString(GetConsoleVariableSetByName(
+				static_cast<EConsoleVariableFlags>(Live->GetFlags() & ECVF_SetByMask)))
+			: FString(TEXT("-"));
+		const bool bHolding = Live && LiveValue.Equals(H.Value);
+
 		Emit(FString::Printf(
 			TEXT("  %-44s = %-12s (was %-12s %s)  owner='%s' %s : %s"),
 			*H.CVar, *H.Value, *H.PriorValue, GetConsoleVariableSetByName(H.PriorSetBy),
 			*H.Owner.ToString(), H.Lease == EFPMLease::Module ? TEXT("module") : TEXT("world"),
 			*H.Reason));
+		Emit(FString::Printf(TEXT("      live: %-12s %-16s  %s"), *LiveValue, *LiveSetBy,
+			bHolding
+				? TEXT("HOLD IN FORCE")
+				: TEXT("** OVERRIDDEN - our value is NOT what the game is using **")));
 	}
 
 	// An empty ledger is a RESULT, not an absence of output — it is what "FPM is holding nothing" looks
