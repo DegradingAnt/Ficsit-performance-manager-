@@ -14,6 +14,8 @@
 #include "Interfaces/IPluginManager.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/EngineVersion.h"
+#include "RHI.h"
+#include "RHIStats.h"   // RHIGetTextureMemoryStats - stands in for the stripped `stat rhi`
 #include "Misc/FileHelper.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -296,6 +298,55 @@ static FAutoConsoleCommandWithOutputDevice GFPMSupportCmd(
 		// ---- cvar ledger: the writer already knows how to print itself to a device ----
 		Ar.Log(TEXT("---- cvar ledger ----"));
 		FPMCVarWriter::Get().LogLedger(&Ar);
+
+		/*
+		 * ---- RHI MEMORY. This block exists because `stat rhi` DOES NOT EXIST in this build.
+		 *
+		 * Design §2's D0-client lists a `stat rhi` screenshot as U4 — "the single cheapest thing that
+		 * turns the GPU strand into measurement". Ant tried it in-game 2026-08-09 and the console
+		 * answered "Command not recognized: stat rhi"; `Stat D3D11RHI` likewise. The stat system is
+		 * compiled out of Shipping, so U4 as written is undoable and no retry will fix it.
+		 *
+		 * RHIGetTextureMemoryStats returns the same numbers from code, and the texture-pool guard
+		 * already links RHI for exactly this call — so FPM can just answer U4 itself. A protocol step
+		 * that cannot be performed is worth replacing rather than leaving in the card for the next
+		 * person to fail at.
+		 */
+		{
+			FTextureMemoryStats Mem;
+			RHIGetTextureMemoryStats(Mem);
+
+			const auto MB = [](int64 Bytes) { return static_cast<int64>(Bytes / (1024 * 1024)); };
+
+			Ar.Log(TEXT("---- RHI memory (stands in for 'stat rhi', which Shipping strips) ----"));
+			Ar.Logf(TEXT("  dedicated video : %lld MB"), MB(Mem.DedicatedVideoMemory));
+			Ar.Logf(TEXT("  dedicated system: %lld MB"), MB(Mem.DedicatedSystemMemory));
+			Ar.Logf(TEXT("  shared system   : %lld MB"), MB(Mem.SharedSystemMemory));
+			Ar.Logf(TEXT("  texture pool    : %lld MB   (this is what r.Streaming.PoolSize sets)"),
+				MB(Mem.TexturePoolSize));
+			// Field names read from RHIStats.h rather than guessed - my first attempt invented
+			// AllocatedMemorySize, which does not exist on this struct.
+			const int64 InPool = static_cast<int64>(Mem.StreamingMemorySize)
+			                   + static_cast<int64>(Mem.NonStreamingMemorySize);
+			Ar.Logf(TEXT("  in pool         : %lld MB   (streaming %lld MB, non-streaming %lld MB)"),
+				MB(InPool), MB(static_cast<int64>(Mem.StreamingMemorySize)),
+				MB(static_cast<int64>(Mem.NonStreamingMemorySize)));
+			Ar.Logf(TEXT("  graphics mem    : %lld MB used of %lld MB total"),
+				MB(Mem.UsedGraphicsMemory), MB(Mem.TotalGraphicsMemory));
+
+			/*
+			 * The number worth reading is the RATIO. Allocated approaching the pool size is the
+			 * signature of a starved pool: measured on Ant's machine 2026-08-09, a 1000 MB pool on a
+			 * 16303 MB card cost 57 FPS against 92, with the GPU idling at 83% waiting for textures.
+			 */
+			if (Mem.TexturePoolSize > 0)
+			{
+				const double Occupancy = static_cast<double>(InPool)
+				                       / static_cast<double>(Mem.TexturePoolSize);
+				Ar.Logf(TEXT("  pool occupancy  : %.0f%%%s"), Occupancy * 100.0,
+					Occupancy > 0.90 ? TEXT("   *** OVER 90% - the pool is under pressure ***") : TEXT(""));
+			}
+		}
 
 		// ---- diagnostics state ----
 		Ar.Logf(TEXT("---- diagnostics ---- (silenced=%s)"),
