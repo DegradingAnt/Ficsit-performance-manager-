@@ -34,6 +34,106 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 09:10 — CODE — P1.4: the residue sentinel, whose first draft could not fail
+
+- **What:** `Core/FPMResidueSentinel.{h,cpp}`. `FPM.Residue` audits what would remain on the machine if
+  the game saved settings now and FPM were deleted. `FPM.ResidueDrill` holds, audits, releases through
+  the OFF switch, audits again, and checks the value **and** the SetBy came back.
+- **Why the SetBy too:** a drill that only checked the value would pass while our 0x07 tag still sat on
+  the variable, locking out every lower-priority writer. That residue is invisible to anyone reading the
+  number.
+- **⚠ WORTH RECORDING RATHER THAN QUIETLY FIXING.** The first version of `Audit()` set `WouldRemain = 0`
+  and never iterated anything, because the ledger was private to the writer. It would have printed a
+  confident "NOTHING would remain" for the rest of the mod's life regardless of what FPM held. **An
+  auditor whose result is structurally constant is a decoration, not a weak auditor** — and it is the
+  fifth instance of this defect class in two days, in the one file whose whole job is catching it. The
+  writer now exposes `GetHeldCVars()` and `IsUserSettingBacked()` so the sentinel classifies real holds
+  and shares ONE declaration of the rule rather than keeping a copy that can drift.
+- **Stated in the code, not only here:** a leak from a PAST session is invisible by construction (no
+  retroactive scanner is built, deliberately — one that guessed which of a player's settings were ours
+  would be worse than the leak), and a P1 pass is near-trivial because almost nothing is registered yet.
+  The drill becomes a real gate at P5.
+- **The named-exception table is EMPTY, and that is a real state.** FPM2 writes no ini, no save, no
+  registry. It is enumerated anyway so that the day something must persist, it arrives with a ruling, a
+  boot-log mention and a row — not as a quiet `GConfig->SetString` inside a fix.
+- **Files:** `Public/Core/FPMResidueSentinel.h`, `Private/Core/FPMResidueSentinel.cpp`,
+  `Core/FPMCVarWriter.{h,cpp}` (two read-only accessors).
+- **Verified:** build-only, `Result: Succeeded`. **NOT boot-tested.**
+
+## 2026-08-09 09:00 — CODE — P1.2: FPMCVarWriter, the single write path
+
+- **What:** `Core/FPMCVarWriter.{h,cpp}` — design §2.3, clauses 1–5, 7, 8. `Hold` / `Release` /
+  `ReleaseOwner` / `ReleaseAll`, an in-memory ledger, `FPM.Changes` (what we hold and what it was
+  before), `FPM.Off` (the OFF switch), and a boot self-test on FPM's own probe cvar.
+- **Clause 6 REFUSES the US_*-backed set entirely** until P1.3. That is correct behaviour, not a stub: a
+  value FPM holds on a US_*-backed cvar at save time becomes the player's permanent setting, because
+  `FGGameUserSettings` serialises every entry with **no dirty gate**. ⚠ The denylist is
+  **known-incomplete and says so** — of 272 US_* assets, **242 are UNMAPPED** and name no cvar at all.
+  Absence from the map is an absence claim, not safety; that is why the clause refuses the subset rather
+  than filtering by the table, and why P1.3 reads the map at runtime.
+- **Priority:** `ECVF_SetByPluginHighPriority` (0x07), verified at `IConsoleManager.h:143-171` — above
+  scalability, game settings and device profiles; below commandline, SetByCode and console, so Ant's own
+  console write still beats us.
+- **★ RELEASE USES THE ENGINE'S MECHANISM, NOT A LOWER WRITE.** 0x07 is an ARRAY-typed priority; the
+  engine's own comment calls it *"used with the History concept to restore cvars on plugin unload"*. So
+  release is `Unset(priority, Tag)` (`:570`), which REMOVES our history entry. A lower-priority `Set`
+  would APPEND to the array and leave our value in the stack forever — a leak that looks exactly like a
+  working revert. `ReleaseAll` is the engine-native `UnsetAllConsoleVariablesWithTag` (`:1243`), one
+  call, so the OFF switch cannot half-work.
+- **The self-test runs every boot**, on FPM's own cvar, never a game cvar — because what it checks is an
+  ENGINE behaviour a game update can change under us, and a release path that silently stopped working
+  would look perfect right up until an uninstall left residue behind.
+- **⚠ OPEN AND STATED:** `ECVF_SetByGameOverride` (0x08) sits ABOVE us and is documented as the slot for
+  GameUserSettings fields. If the game's apply path uses it, our hold on that subset loses **silently**.
+  P1.5's boot answers it; **no document may claim "0x07 wins" about the US_* subset until then.**
+- **Files:** `Public/Core/FPMCVarWriter.h`, `Private/Core/FPMCVarWriter.cpp`,
+  `Private/FicsitsPerformanceManager.cpp` (self-test at startup, `ReleaseAll` at shutdown).
+- **Verified:** build-only, `Result: Succeeded`. **NOT boot-tested.**
+
+## 2026-08-09 08:50 — CODE — P1.1: a fix cannot compile without declaring its claim and its channel
+
+- **What:** `IFPMFix` gains two PURE VIRTUALS — `OriginStatus()` (Ant's Q1 ruling) and `Channel()`
+  (§3.1). Pure, not defaulted: a default lets a new fix silently inherit someone else's answer, and the
+  entire value is that the author cannot avoid answering. Plus `FPM.Diag.Dump`, three new channels
+  (`StaticBase`, `RpcGate`, `Rain`) for fixes that had diagnostics and no channel, and a runtime
+  order-check in `FPM.Diag.List` against each cvar's registered name (`IConsoleManager.h:1104`).
+- **The changelog rule this establishes:** `EFPMOriginStatus` has four values and **"fixed" may only
+  appear beside `OriginNamed`.** Everything else is named as what it is. The log strings say the
+  uncomfortable part out loud — "choke-point repair, CAUSE NOT NAMED" rather than a word that reads like
+  a technique.
+- **The honest retroactive classification of all nine fixes:** origin named — static-base,
+  rain-occlusion, asset-residency. Guard — no-owner-rpc-gate (the cause is in another mod's sign
+  dispatch; the upstream report IS the origin work). Choke-point repair — inventory-init,
+  hologram-net. **Unknown cause — schematic-probe, clone-sensor, hitch-meter**, all three of which ARE
+  their families' origin-naming instruments. **Six of nine do not rest on a named cause, and
+  `FPM.Diag.Dump` prints that count** so it can be watched going down.
+- **The "DELIBERATELY FOUR MEMBERS" freeze comment was rewritten in the same commit** as the additions,
+  as the design requires — a comment contradicting the code it sits on is this project's own named
+  defect.
+- **GATE EXERCISED (LAW 16), not assumed:** removing `Channel()` from one fix produced
+  `error C2259: cannot instantiate abstract class`, `Result: Failed`. Restored, rebuilt, `Succeeded`.
+- **Files:** `Core/FPMFixContract.{h,cpp}`, `Core/FPMDiag.{h,cpp}`, all nine fix headers.
+- **Verified:** build-only + the gate exercise above. **NOT boot-tested.**
+
+## 2026-08-09 08:40 — CODE — overlay keybind, and the cache no longer invalidates on our own version
+
+- **What:** `FPM.Diag.OverlayKey` (default **F8**, empty disables) toggles the debug overlay, via a Slate
+  input pre-processor (`SlateApplication.h:1522`). It returns false for every key but ours
+  (`IInputProcessor.h:26`), so no vanilla or mod binding is shadowed. Registration retries per frame
+  until Slate exists; `Shutdown()` unregisters it, because a pre-processor left in Slate's list after the
+  module unloads is a crash rather than a leak.
+- **⚠ The old note said this was waiting on "the Game Instance Module's keybind registry".** SML's
+  `UGameInstanceModule` **has no keybind registry** — `GameInstanceModule.h:30-83` lists everything it
+  does have. The thing being waited for did not exist, so the wait was permanent. Comment corrected.
+- **And the box cache stopped invalidating itself.** `ComputeEnvironmentKey` included every enabled
+  plugin's `name@VersionName` **including FPM's own**, so every bump re-derived a cache whose contents
+  do not depend on our version: the 0.4.1 boot logged `cache MISS->rebuilt | 3678 classes examined |
+  0 from cache`. Derivation-logic changes already have their own deriver version. Our entry is skipped.
+- **Plus `FPM.Hitch.Packages`** — the sync-loaded packages ranked by count, because the per-hitch `last=`
+  field names whichever package finished last in its span and one measured span held 283 of them.
+  Choosing a pin set from those names would rank by coincidence.
+- **Verified:** build-only, `Result: Succeeded`. **NOT boot-tested.**
+
 ## 2026-08-09 08:30 — VERSION — 0.4.0 → 0.4.1
 
 - **What:** `VersionName` / `SemVersion` → `0.4.1`, `RemoteVersionRange` → `=0.4.1`.
