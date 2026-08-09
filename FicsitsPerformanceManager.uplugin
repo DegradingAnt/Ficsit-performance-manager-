@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 0,
-	"VersionName": "0.3.0",
+	"VersionName": "0.3.1",
 	"FriendlyName": "FICSIT's performance manager",
 	"Description": "Fixes: static-base movement (stops rubber-banding on foundations) | no-owner RPC gate | clone sensor (log-only join diagnostics) | rain occlusion repair (35 errors/session to 0) | inventory init repair (sizes an uninitialised inventory instead of refusing items into it) | hologram net repair (rebuilds a replicated build preview's attachment points instead of skipping its BeginPlay).",
 	"Category": "Modding",
@@ -14,6 +14,7 @@
 	"IsBetaVersion": true,
 	"IsExperimentalVersion": false,
 	"Installed": false,
+	"BuiltInInitialFeatureState": "Active",
 	"Modules": [
 		{
 			"Name": "FicsitsPerformanceManager",
@@ -32,7 +33,7 @@
 			"Enabled": true
 		}
 	],
-	"SemVersion": "0.3.0",
+	"SemVersion": "0.3.1",
 	"RequiredOnRemote": true,
 	"GameVersion": ">=491125"
 }
