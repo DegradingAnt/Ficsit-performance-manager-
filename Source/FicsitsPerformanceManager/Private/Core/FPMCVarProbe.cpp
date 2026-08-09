@@ -1,5 +1,24 @@
 // Copyright 2026 DegradingAnt. Licensed under GPL-3.0.
 //
+// ★★★ THE ECVF_SetByConsole EXCEPTION — RULED BY ANT 2026-08-09, RECORDED HERE.
+//
+// The standing law is "NEVER use ECVF_SetByConsole from mod code — it means 'the user typed this'".
+// A whole-mod review flagged this file for violating it. Ant's ruling: RECORD THE EXCEPTION, KEEP BOTH.
+//
+// WHY THE EXCEPTION IS HONEST RATHER THAN CONVENIENT:
+//   * The law's own reason is that console priority means A HUMAN TYPED IT. In `FPM.Prove` and
+//     `FPM.Bisect` a human DID type it — these are console commands, they do nothing until Ant runs
+//     them, and they are the only writers here.
+//   * For `FPM.Prove` the console write IS THE EXPERIMENT. P1.5 Leg A's protocol says, verbatim,
+//     "console-override the cvar -> confirm the console WINS". A test of whether console priority beats
+//     our 0x07 cannot be written without using console priority. Removing it would not make the mod
+//     safer; it would make the priority stack unverifiable.
+//   * Every write here is PAIRED WITH ITS OWN Unset at console priority, so the layer is removed again
+//     rather than left on the stack.
+//
+// ⚠ THE EXCEPTION IS THIS FILE'S DIAGNOSTIC COMMANDS ONLY. It does NOT extend to any fix, any governor
+// lever, or anything that runs without Ant typing it. Those go through FPMCVarWriter at 0x07, always.
+//
 // FPM CVAR PROBE — read the game's ACTUAL cvar state, including the per-priority layer stack.
 //
 // ★ WHY THIS EXISTS, and it is a measured failure rather than a nice-to-have.
@@ -29,8 +48,16 @@
 // with UE_LOG and therefore printed to FactoryGame.log while Ant watched an empty console and
 // reasonably concluded the command did nothing. Every command here takes an FOutputDevice.
 //
-// READ-ONLY. This probe sets nothing, ever. It is the instrument, not a lever -- and an instrument
-// that can change what it measures is not an instrument.
+// MOSTLY READ-ONLY, AND THE EXCEPTION IS NAMED AT THE TOP OF THIS FILE.
+//
+// ⚠ THIS LINE USED TO READ "This probe sets nothing, ever." That was FALSE — `FPM.Bisect` and
+// `FPM.Prove` both write, deliberately, at console priority. Corrected 2026-08-09 when a whole-mod
+// review caught the writes; the comment had been asserting the opposite of the code sitting under it,
+// which is this project's own named worst case.
+//
+// The reading commands — FPM.CVars, FPM.CVarHistory, FPM.CVarSnap, FPM.CVarDiff, FPM.D0 — set nothing
+// and are the instrument. The two EXPERIMENTS set and then unset, because holding a variable still is
+// what they are for.
 
 #include "FicsitsPerformanceManager.h"
 
@@ -706,6 +733,14 @@ namespace
 			if (IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(*GFPMBisect.Names[GFPMBisect.Index]))
 			{
 				// Console priority on purpose: it is the only layer that beats the group's own value.
+				/*
+				 * ⚠ THIS CONTAMINATES THE SESSION, ON PURPOSE, AND THAT IS WHY IT SAYS SO OUT LOUD.
+				 * A console write STICKS for the rest of the session: once this runs, `sg.*` can no longer
+				 * move these cvars. That is exactly the trap that silently invalidated hours of A/B testing
+				 * on 2026-08-09 — "re-apply the group to reset" resets nothing already typed. The bisect NEEDS
+				 * console priority to hold a variable still against the game's own scalability re-applies, so
+				 * the contamination is the price of the instrument, not a bug in it.
+				 */
 				V->Set(*GFPMBisect.GoodValues[GFPMBisect.Index], ECVF_SetByConsole);
 			}
 			BeginPhase(EFPMBisectStep::WarmCand, GFPMBisectWarm);
