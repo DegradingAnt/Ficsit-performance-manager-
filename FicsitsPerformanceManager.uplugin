@@ -34,7 +34,7 @@
 		}
 	],
 	"SemVersion": "0.5.7",
-	"RemoteVersionRange": "=0.5.6",
+	"RemoteVersionRange": "=0.5.7",
 	"RequiredOnRemote": true,
 	"GameVersion": ">=491125"
 }
