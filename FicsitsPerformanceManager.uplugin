@@ -3,7 +3,7 @@
 	"Version": 0,
 	"VersionName": "0.3.1",
 	"FriendlyName": "FICSIT's performance manager",
-	"Description": "Fixes: static-base movement (stops rubber-banding on foundations) | no-owner RPC gate | clone sensor (log-only join diagnostics) | rain occlusion repair (35 errors/session to 0) | inventory init repair (sizes an uninitialised inventory instead of refusing items into it) | hologram net repair (rebuilds a replicated build preview's attachment points instead of skipping its BeginPlay).",
+	"Description": "Seven targeted repairs and diagnostics for standing multiplayer and rendering bugs. No performance governing yet. REPAIRS: static-base movement (stops rubber-banding on foundations) | rain occlusion (LogRainSystem errors measured 35-37 per session typical and 4,000+ in the worst session seen, to 0) | inventory init (sizes an uninitialised inventory instead of refusing items into it) | hologram net (rebuilds a replicated build preview's attachment points instead of skipping its BeginPlay). GUARD: no-owner RPC gate. DIAGNOSTICS, log-only, overriding nothing: clone sensor (join-time player-state candidate matching) | schematic probe. FPM never destroys player items, and drives no renderer settings.",
 	"Category": "Modding",
 	"CreatedBy": "DegradingAnt",
 	"CreatedByURL": "",
