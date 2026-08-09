@@ -5,6 +5,7 @@
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMBoxCache.h"
 #include "Core/FPMCVarWriter.h"
+#include "UI/FPMChatRelay.h"   // the drill's verdict goes to chat as well as the log (Ant, 2026-08-09)
 
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -285,6 +286,34 @@ bool FPMResidueSentinel::Drill()
 			GetConsoleVariableSetByName(SetByBefore), GetConsoleVariableSetByName(SetByAfter),
 			DuringHeld, AfterRelease);
 	}
+
+	/*
+	 * ★ AND TO CHAT. Ant's standing rule, stated twice on 2026-08-09: "we really should print stuff to
+	 * the chat instead (that is important of course) along with the log. a player wont check logs for
+	 * stuff, only devs do" — and again of this exact command, "log and chat then".
+	 *
+	 * THE VERDICT ONLY, NOT THE AUDIT. The full run writes roughly a dozen lines: the two audits, every
+	 * held cvar, the file rows. That belongs in the log. Ant, of an earlier chat surface: "print what is
+	 * relevant, not the entire log" — and the relay's own flood cap is 12 lines per 5 seconds, so dumping
+	 * the whole drill would trip it and mute the very line worth reading.
+	 *
+	 * WHY THIS COMMAND EARNED IT. It ran twice on the 0.6.0 boot and PASSED both times, and Ant saw
+	 * nothing at all: the console does not echo Display-level logs, so the only evidence was in
+	 * FactoryGame.log. A guard whose result is invisible to the person running it reads as broken, and I
+	 * reported it as broken twice before checking the file. One line here removes that whole failure mode.
+	 */
+	if (bPass)
+	{
+		FPMChatf(TEXT("[FPM] residue drill PASSED. Nothing would be left behind. (Weak evidence at this "
+		              "stage - little is registered yet.)"));
+	}
+	else
+	{
+		// A failure is exactly what a player must not have to go log-diving to discover.
+		FPMChatf(TEXT("[FPM] residue drill FAILED - FPM could leave settings behind on this build. "
+		              "Details in FactoryGame.log."));
+	}
+
 	return bPass;
 }
 
