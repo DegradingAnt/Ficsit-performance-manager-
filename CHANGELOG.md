@@ -34,6 +34,49 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 07:20 — CODE — asset residency: vanilla blocking-loads a platform icon nobody holds a reference to
+
+- **What:** `FFPMAssetResidency` (`Streaming/FPMAssetResidency.{h,cpp}`) + a `FPM.Diag.Residency` channel. It
+  asynchronously loads four vanilla platform-service icons (`TXUI_Steam_128`, `TXUI_Epic_128`,
+  `TXUI_XBOX_128`, `TXUI_PlayStation_128`) and holds the streamable handle, so vanilla's own
+  `LoadAsset_Blocking` finds them already resident. **No hook, no cvar, no ini, no content override,
+  nothing written anywhere.** ~350 KB of RAM. Client only.
+- **Why:** `Widget_PlayerList_Item::OnListItemObjectSet` → `BPW_UserIcon::SetServiceIcon`
+  (`BPW_UserIcon.cpp:308`) calls `UKismetSystemLibrary::LoadAsset_Blocking` on a **soft** reference
+  (`BPW_UserIcon.json:2827` `SoftObjectProperty`; the four paths at `:18-47`), and nothing in the game holds
+  a hard one — so every player-list bind loads the package **synchronously on the game thread**. Measured
+  2026-08-02: **17 of 26 `FlushAsyncLoading` lines share a frame number** with the `[BPW_UserIcon]` print
+  emitted two statements earlier, and every governor window containing one reported a 383-405 ms worst
+  frame. `LoadSynchronous` is `Get(); if (null && !IsNull()) TryLoad();` (`SoftObjectPtr.h:82-93`) and
+  `Get()` ends in a `FindObject` **lookup, never a load** (`SoftObjectPath.cpp:886-891`) — so a resident
+  texture skips the blocking branch outright.
+- **⚠ THIS WAS ROOT-CAUSED ON 2026-08-02 AND SAT UNBUILT FOR A WEEK.** Recovered by the scratchpad audit
+  (`SCRATCHPAD-AUDIT-2026-08-09.md`, top row of LIVE AND UNSHIPPED) from
+  `patches-2026-08-02/fpm-patch-asyncload.md`. Every claim in it was re-verified at bytes before this was
+  written: the four asset paths, the `SoftObjectProperty` type, and `FStreamableManager : public FGCObject`
+  (`StreamableManager.h:702`, `AddReferencedObjects` `:873`).
+- **Two departures from the source note, both deliberate:** (1) it is an `IFPMFix`, not a
+  `UGameInstanceSubsystem` — FPM2 has a fix contract and the note predates it; the pin is attempted at
+  `Arm()` and again at `OnWorldLoad()` because the asset manager's readiness at module-startup is not
+  assertable from here. (2) its `UPROPERTY` hard-reference array is **not** carried: the live streamable
+  handle already keeps the assets GC-referenced (receipt above), and duplicating that buys a second thing
+  that can rot.
+- **⚠ One correction to the note, not carried silently:** it calls these "pause/ESC menu" hitches, but the
+  context lines it cites — `UpdateFocusHighlights [mCreateNewGame]`, `Widget_ServerManager NO CDO` — read as
+  **main-menu** widgets. Same widget, same soft reference, same fix either way; the label is just not
+  settled and should not be repeated as if it were.
+- **Files:** `Public/Streaming/FPMAssetResidency.h` (new) · `Private/Streaming/FPMAssetResidency.cpp` (new) ·
+  `Public/Core/FPMDiag.h` + `Private/Core/FPMDiag.cpp` (channel) · `Private/FicsitsPerformanceManager.cpp`
+  (arm). No `Build.cs` change — `Engine` is already a public dependency and UBT globs `Public`/`Private`
+  recursively, so the new `Streaming/` folder needs no registration.
+- **Revert:** delete the two files, drop the `Residency` enumerator + cvar + `ChannelName` case, remove the
+  one `Arm` line. Nothing is written at runtime.
+- **Verified:** **build-only** — `Build.bat FactoryEditor Win64 Development -Module=FicsitsPerformanceManager`
+  → `Result: Succeeded`. **NOT boot-tested.** Boot check, falsifiable in BOTH directions:
+  `[FPM] residency: 4/4 vanilla platform icons pinned` at startup, then open the menu several times — the
+  `[BPW_UserIcon]` prints must **REMAIN** (the widget still runs) while the same-frame `FlushAsyncLoading`
+  lines must be **GONE**. If the prints vanish too, something was suppressed that should not have been.
+
 ## 2026-08-09 07:10 — CODE — hitch meter: the engine's frame-time detector is compiled out of this game, so FPM brings its own
 
 - **What:** `FFPMHitchMeter` (`Core/FPMHitchMeter.{h,cpp}`), plus a new `FPM.Diag.Hitch` channel and three

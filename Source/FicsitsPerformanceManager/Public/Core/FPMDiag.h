@@ -58,6 +58,7 @@ public:
 		InventoryInit,    // FPM.Diag.Inventory
 		CloneSensor,      // FPM.Diag.Clone
 		Hitch,            // FPM.Diag.Hitch    — frame-time meter
+		Residency,        // FPM.Diag.Residency — the vanilla-asset pin
 		Overlay,          // FPM.Diag.Overlay  — the on-screen feed
 		Count
 	};

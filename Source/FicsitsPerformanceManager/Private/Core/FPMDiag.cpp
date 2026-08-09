@@ -50,6 +50,12 @@ static TAutoConsoleVariable<int32> CVarDiagHitch(
 	     "deliberate boot, not for playing."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagResidency(
+	TEXT("FPM.Diag.Residency"), 1,
+	TEXT("Vanilla platform-icon pin. 0 = silent, 1 = the one 'N/4 pinned' line. It has nothing to say per "
+	     "frame, so there is no level 2."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarDiagOverlay(
 	TEXT("FPM.Diag.Overlay"), 1,
 	TEXT("The on-screen dev feed. 0 = hide it, 1 = show it. Ant asked for a keybind; until the Game "
@@ -64,6 +70,7 @@ namespace
 		&CVarDiagInventory,
 		&CVarDiagClone,
 		&CVarDiagHitch,
+		&CVarDiagResidency,
 		&CVarDiagOverlay,
 	};
 
@@ -80,6 +87,7 @@ namespace
 		case FPMDiag::EChannel::InventoryInit:  return TEXT("FPM.Diag.Inventory");
 		case FPMDiag::EChannel::CloneSensor:    return TEXT("FPM.Diag.Clone");
 		case FPMDiag::EChannel::Hitch:          return TEXT("FPM.Diag.Hitch");
+		case FPMDiag::EChannel::Residency:      return TEXT("FPM.Diag.Residency");
 		case FPMDiag::EChannel::Overlay:        return TEXT("FPM.Diag.Overlay");
 		default:                                return TEXT("<unknown>");
 		}

@@ -13,6 +13,7 @@
 #include "Fixes/Interop/FPMSchematicProbe.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
+#include "Streaming/FPMAssetResidency.h"
 
 #include "Interfaces/IPluginManager.h"
 
@@ -70,6 +71,12 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// proves from the build's preprocessor definitions rather than from reputation. It arms on the dedicated
 	// server too - the 560 ms save stall is a server-side hitch and a client-only readout could never see it.
 	FPMFixes::Arm(FFPMHitchMeter::Get());
+
+	// And the thing the meter is pointed AT. Root-caused 2026-08-02, recovered unbuilt by the 2026-08-09
+	// scratchpad audit: vanilla's own player-list widget blocking-loads a platform icon nobody holds a hard
+	// reference to, every time it binds. It installs no hook either - it pins four vanilla textures so
+	// vanilla's LoadSynchronous finds them already resident and skips its blocking branch.
+	FPMFixes::Arm(FFPMAssetResidency::Get());
 
 	// Always printed, even when empty - an empty inventory is itself a finding.
 	FPMHookLedger::LogInventory();
