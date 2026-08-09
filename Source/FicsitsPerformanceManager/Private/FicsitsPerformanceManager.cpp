@@ -2,6 +2,7 @@
 
 #include "FicsitsPerformanceManager.h"
 
+#include "Core/FPMCVarWriter.h"
 #include "Core/FPMFixContract.h"
 #include "Core/FPMHitchMeter.h"
 #include "Core/FPMHookLedger.h"
@@ -38,6 +39,15 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] runtime module loaded - version %s, %s build"), *VersionName, BuildKind);
+
+	/*
+	 * THE WRITER'S SELF-TEST RUNS BEFORE ANY FIX ARMS, and it runs EVERY boot rather than once in a test
+	 * branch. What it checks is an ENGINE behaviour — that a tagged 0x07 write can be taken back with
+	 * Unset — and a game update can change that under us. A release path that silently stopped working
+	 * would look perfect right up until an uninstall left residue behind, which is the one failure this
+	 * mod's whole posture exists to prevent.
+	 */
+	FPMCVarWriter::Get().SelfTest();
 
 	// ARMING. There is no `if (!WITH_EDITOR)` here on purpose: the editor gate lives inside
 	// FPMHookLedger::Install, so a fix's Arm() still COMPILES and RUNS in the editor while installing
@@ -97,6 +107,10 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 
 void FFicsitsPerformanceManagerModule::ShutdownModule()
 {
+	// Release before anything else tears down: the OFF switch must run while the console manager is
+	// still alive. Nothing was captured, so this cannot restore a wrong value -- it only stops holding.
+	FPMCVarWriter::Get().ReleaseAll(TEXT("module shutdown"));
+
 	FPMOverlay::Get().Shutdown();
 	FPMFixes::DisarmAll();
 	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM] runtime module unloading"));
