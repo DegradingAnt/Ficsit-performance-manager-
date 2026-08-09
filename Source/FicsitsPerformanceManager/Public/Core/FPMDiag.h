@@ -68,6 +68,7 @@ public:
 		Overlay,          // FPM.Diag.Overlay  — the on-screen feed
 		SaveGuard,        // FPM.Diag.SaveGuard — the SaveSettings interceptor
 		RailGuard,        // FPM.Diag.RailGuard  — unwired rail-connection guard
+		NavMesh,          // FPM.Diag.NavMesh   — the tile-ceiling write-back
 		Count
 	};
 

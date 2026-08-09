@@ -95,6 +95,13 @@ static TAutoConsoleVariable<int32> CVarDiagRailGuard(
 	     "COUNTER carries the true rate, not the log."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagNavMesh(
+	TEXT("FPM.Diag.NavMesh"), 1,
+	TEXT("Navmesh tile-ceiling write-back. 0 = silent, 1 = the per-actor before/after and the summary. "
+	     "The FAILURE lines (write did not stick, or no actors found) are NOT gated by this - a fix whose "
+	     "predecessor logged a raise it never performed does not get a quiet failure mode."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -110,6 +117,7 @@ namespace
 		&CVarDiagOverlay,
 		&CVarDiagSaveGuard,
 		&CVarDiagRailGuard,
+		&CVarDiagNavMesh,
 	};
 
 	/*
@@ -139,6 +147,7 @@ namespace
 		case FPMDiag::EChannel::Overlay:        return TEXT("FPM.Diag.Overlay");
 		case FPMDiag::EChannel::SaveGuard:      return TEXT("FPM.Diag.SaveGuard");
 		case FPMDiag::EChannel::RailGuard:      return TEXT("FPM.Diag.RailGuard");
+		case FPMDiag::EChannel::NavMesh:        return TEXT("FPM.Diag.NavMesh");
 		default:                                return TEXT("<unknown>");
 		}
 	}

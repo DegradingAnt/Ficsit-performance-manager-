@@ -13,6 +13,7 @@
 #include "Fixes/Interop/FPMHologramNetGuard.h"
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
 #include "Fixes/Interop/FPMNoOwnerRpcGate.h"
+#include "Fixes/Interop/FPMNavMeshCeiling.h"
 #include "Fixes/Interop/FPMRailConnectionGuard.h"
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
 #include "Fixes/Interop/FPMSchematicProbe.h"
@@ -81,6 +82,10 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// Measured on the old mod across 11 server sessions: 1,900-2,550 averted asserts per start, 23,450
 	// total. A properly-wired connection is forwarded untouched.
 	FPMFixes::Arm(FFPMRailConnectionGuard::Get());
+
+	// P3.4. Installs no hook; it acts at world load and READS BACK, because its predecessor logged a
+	// raise the engine ignored for twenty-two seconds.
+	FPMFixes::Arm(FFPMNavMeshCeiling::Get());
 
 	// LOG-ONLY. Ant, on the old mod's forced-TRUE milestone override: "maybe carry it with just
 	// diagnostics and we'll see what happens?" and "diagnostics are good either way so we KNOW what
