@@ -102,6 +102,13 @@ static TAutoConsoleVariable<int32> CVarDiagNavMesh(
 	     "predecessor logged a raise it never performed does not get a quiet failure mode."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagHudGuard(
+	TEXT("FPM.Diag.HudGuard"), 1,
+	TEXT("Blueprint-hook descriptor strip. 0 = silent, 1 = the ALLOWING lines for HUD-hooking assets we "
+	     "leave alone. The STRIP and CANCEL lines are NOT gated - this guard removes another mod's code, "
+	     "and taking that silently is how two earlier versions cost Ant her mod UI without anyone knowing."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -118,6 +125,7 @@ namespace
 		&CVarDiagSaveGuard,
 		&CVarDiagRailGuard,
 		&CVarDiagNavMesh,
+		&CVarDiagHudGuard,
 	};
 
 	/*
@@ -148,6 +156,7 @@ namespace
 		case FPMDiag::EChannel::SaveGuard:      return TEXT("FPM.Diag.SaveGuard");
 		case FPMDiag::EChannel::RailGuard:      return TEXT("FPM.Diag.RailGuard");
 		case FPMDiag::EChannel::NavMesh:        return TEXT("FPM.Diag.NavMesh");
+		case FPMDiag::EChannel::HudGuard:       return TEXT("FPM.Diag.HudGuard");
 		default:                                return TEXT("<unknown>");
 		}
 	}

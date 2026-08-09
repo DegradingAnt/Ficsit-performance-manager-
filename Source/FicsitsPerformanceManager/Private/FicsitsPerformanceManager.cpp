@@ -11,6 +11,7 @@
 #include "Core/FPMSaveSettingsInterceptor.h"
 #include "Core/FPMUserSettingMap.h"
 #include "Fixes/Interop/FPMHologramNetGuard.h"
+#include "Fixes/Interop/FPMHudHookGuard.h"
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
 #include "Fixes/Interop/FPMNoOwnerRpcGate.h"
 #include "Fixes/Interop/FPMNavMeshCeiling.h"
@@ -86,6 +87,10 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// P3.4. Installs no hook; it acts at world load and READS BACK, because its predecessor logged a
 	// raise the engine ignored for twenty-two seconds.
 	FPMFixes::Arm(FFPMNavMeshCeiling::Get());
+
+	// P3.5. CLIENT ONLY by contract, not by a hand-rolled early return - a server has no player HUD and
+	// the old mod's server failed to boot carrying an earlier version of this.
+	FPMFixes::Arm(FFPMHudHookGuard::Get());
 
 	// LOG-ONLY. Ant, on the old mod's forced-TRUE milestone override: "maybe carry it with just
 	// diagnostics and we'll see what happens?" and "diagnostics are good either way so we KNOW what

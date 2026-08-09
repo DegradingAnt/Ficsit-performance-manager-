@@ -69,6 +69,7 @@ public:
 		SaveGuard,        // FPM.Diag.SaveGuard — the SaveSettings interceptor
 		RailGuard,        // FPM.Diag.RailGuard  — unwired rail-connection guard
 		NavMesh,          // FPM.Diag.NavMesh   — the tile-ceiling write-back
+		HudGuard,         // FPM.Diag.HudGuard  — the blueprint-hook descriptor strip
 		Count
 	};
 
