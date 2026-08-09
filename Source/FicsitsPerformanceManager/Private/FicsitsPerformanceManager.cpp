@@ -13,6 +13,7 @@
 #include "Fixes/Interop/FPMHologramNetGuard.h"
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
 #include "Fixes/Interop/FPMNoOwnerRpcGate.h"
+#include "Fixes/Interop/FPMRailConnectionGuard.h"
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
 #include "Fixes/Interop/FPMSchematicProbe.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
@@ -75,6 +76,11 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// that was missing and let vanilla run.
 	FPMFixes::Arm(FFPMInventoryInitGuard::Get());
 	FPMFixes::Arm(FFPMHologramNetGuard::Get());
+
+	// P3.2. This one DOES override: an unwired rail connection gets nullptr instead of vanilla's assert.
+	// Measured on the old mod across 11 server sessions: 1,900-2,550 averted asserts per start, 23,450
+	// total. A properly-wired connection is forwarded untouched.
+	FPMFixes::Arm(FFPMRailConnectionGuard::Get());
 
 	// LOG-ONLY. Ant, on the old mod's forced-TRUE milestone override: "maybe carry it with just
 	// diagnostics and we'll see what happens?" and "diagnostics are good either way so we KNOW what

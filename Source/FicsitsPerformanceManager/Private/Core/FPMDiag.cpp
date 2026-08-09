@@ -88,6 +88,13 @@ static TAutoConsoleVariable<int32> CVarDiagSaveGuard(
 	     "its firings are not routine events to be sampled."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagRailGuard(
+	TEXT("FPM.Diag.RailGuard"), 1,
+	TEXT("Unwired rail-connection guard. 0 = silent, 1 = first fire + a throttled sample of the rest. "
+	     "It fires ~2,000 times in a burst at server start, so level 1 is deliberately throttled - the "
+	     "COUNTER carries the true rate, not the log."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -102,6 +109,7 @@ namespace
 		&CVarDiagResidency,
 		&CVarDiagOverlay,
 		&CVarDiagSaveGuard,
+		&CVarDiagRailGuard,
 	};
 
 	/*
@@ -130,6 +138,7 @@ namespace
 		case FPMDiag::EChannel::Residency:      return TEXT("FPM.Diag.Residency");
 		case FPMDiag::EChannel::Overlay:        return TEXT("FPM.Diag.Overlay");
 		case FPMDiag::EChannel::SaveGuard:      return TEXT("FPM.Diag.SaveGuard");
+		case FPMDiag::EChannel::RailGuard:      return TEXT("FPM.Diag.RailGuard");
 		default:                                return TEXT("<unknown>");
 		}
 	}
