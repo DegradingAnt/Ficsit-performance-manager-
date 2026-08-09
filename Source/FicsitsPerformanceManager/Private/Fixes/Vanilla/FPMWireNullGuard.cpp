@@ -4,8 +4,10 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMDiag.h"
+#include "Core/FPMHookLedger.h"
 
 #include "FGCircuitConnectionComponent.h"
+#include "FGSaveSession.h"
 
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
@@ -35,14 +37,47 @@ FFPMWireNullGuard& FFPMWireNullGuard::Get()
 
 void FFPMWireNullGuard::Arm()
 {
-	// No hook. There is nothing to intercept: the sweep is driven by OnWorldLoad and by the console
-	// command below. Stated plainly because an empty Arm() otherwise reads as an unfinished fix.
-	//
+	/*
+	 * ⚠ THE WORLD-LOAD SWEEP ALONE DOES NOT PROTECT THE MEASURED SCENARIO. Corrected 2026-08-09, hours
+	 * after the first version shipped, when its own commit message was checked against its code.
+	 *
+	 * That version swept ONLY at OnWorldLoad and at the console command, while calling itself "sweep
+	 * null mWires entries before the autosave walks them". It does not: the nulls arrive when a
+	 * blueprint carrying unresolvable references is PASTED, which is mid-session, long after the load
+	 * sweep has run. The next autosave then walks them and the game thread dies exactly as before. The
+	 * guard would have cleaned only damage that was already in the save at login — real, but not the
+	 * case that took the server down, and the commit claimed the case it did not cover.
+	 *
+	 * So the sweep now runs at the save itself. `SaveWorldEndOfFrame` is the frame from the crash
+	 * callstack (FGSaveSession.cpp:2165) and is the last point before SaveLevelState builds the object
+	 * set, which is where the null is dereferenced. Hooking it means the sweep happens on exactly the
+	 * frame that matters and never speculatively.
+	 *
+	 * Non-virtual private member (FGSaveSession.h:593, under the `private:` at :584), so: plain
+	 * SUBSCRIBE_METHOD rather than the _VIRTUAL form, and a Config/AccessTransformers.ini friend to
+	 * reach it. It is a save-orchestration function, not a tiny accessor, so funchook has a prologue to
+	 * work with — but the install goes through the ledger, which RECORDS a refusal rather than letting
+	 * one pass silently.
+	 *
+	 * Cost is bounded and rare: autosaves are minutes apart, and the sweep is a pointer test per wire
+	 * entry. It does not touch the per-frame path.
+	 */
+	FPM_SUBSCRIBE("wire-null-guard", UFGSaveSession::SaveWorldEndOfFrame,
+		[](auto& Scope, UFGSaveSession* Self, UWorld* World, ELevelTick TickType, float DeltaSeconds)
+		{
+			// Sweep, then FALL THROUGH. The save must still happen -- cancelling it to avoid a crash
+			// would trade a crash for silent data loss, which is the worse of the two.
+			if (World)
+			{
+				FFPMWireNullGuard::Get().SweepWorld(World);
+			}
+		});
+
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
 	// that separates "swept and found nothing" from "never swept".
 	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] wire null guard armed - sweeps on world load, repair %s. Guards the autosave path "
-		     "that SIGSEGV'd the dedicated server on 2026-08-09 (null UClass in "
+		TEXT("[FPM] wire null guard armed - sweeps at every world save AND on world load, repair %s. "
+		     "Guards the autosave path that SIGSEGV'd the dedicated server on 2026-08-09 (null UClass in "
 		     "FFastSaveReferenceCollector::HandleObjectReference)."),
 		CVarWireGuardRepair.GetValueOnAnyThread() != 0 ? TEXT("ON") : TEXT("OFF (report only)"));
 }
