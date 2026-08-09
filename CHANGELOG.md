@@ -62,6 +62,95 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 15:52 — CODE — P3.9 zipline volume: ported, and a real bug fixed on the way
+
+- **What:** hooks `AFGEquipmentZipline::Equip` and sets the per-actor Wwise output-bus volume from
+  FPM's own cvar `FPM.Zipline.Volume` (default `1.0` = vanilla, writes nothing).
+- **⚠ THE OLD VERSION COULD NOT RETURN TO VANILLA.** Its guard was
+  `if (!Self || GFPMZiplineVolume >= 0.999f) { return; }` (`FPMZiplineAudio.cpp:66`) and that `return`
+  precedes the **only** call to `SetOutputBusVolume`. So `1.0` can never reach the write: lower the
+  volume, then set it back, and the write is skipped. If the bus value persists on the actor —
+  unverified, but the reason to fix it either way — vanilla is unreachable until a restart. This version
+  remembers it has written and then always writes, including `1.0`, so undoing works.
+- **Why a cvar and not `US_ZiplineVolume`:** that asset is FGGameUserSettings-backed, so a write is
+  re-applied every boot with or without the mod. Permanent residue. Ours is declared by the module and
+  gone when it unloads. Phase 4's settings surface will drive it with no change here.
+- **Why per-actor and not a Wwise bus:** there is no per-system bus (`Master_Audio_Bus → gameMix →
+  _reverbSends`) and no zipline RTPC. Lowering `gameMix` quiets the whole game, which is what the
+  vanilla slider already does.
+- `NeverOnDedicatedServer` by contract, not a hand-rolled early return, so the skip is logged.
+- **Files:** `Public/Fixes/Interop/FPMZiplineVolume.h`, `Private/Fixes/Interop/FPMZiplineVolume.cpp`,
+  `FicsitsPerformanceManager.Build.cs` (`AkAudio` re-enabled — Ant: *"the wwise is fine to depend on
+  since its part of vanilla"*), `FPMDiag.*`, `FicsitsPerformanceManager.cpp`.
+- **Verified:** build-only — `Result: Succeeded`.
+
+---
+
+## 2026-08-09 15:35 — CODE — P3.5 HUD hook guard: strips one descriptor, not a mod's whole asset
+
+- **What:** hooks `UBlueprintHookManager::RegisterBlueprintHook` and removes only descriptors targeting
+  `Widget_PlayerHUD::Construct`, from assets on a known-crashing list. Everything else that hooks the
+  HUD is allowed through and **named** in the log.
+- **Why:** injected code in that Construct asserts on every death and vehicle exit —
+  `Widget_PlayerHUD_C:ExecuteUbergraph_Widget_PlayerHUD:10000000C → execAddMulticastDelegate → Fatal`.
+- **This guard was too broad twice before and Ant paid for both.** v1 cancelled every hook targeting the
+  widget; v2 cancelled KPrivateCodeLib's whole asset — and that library sits under KAPI/KBFL/KUI, so one
+  `Cancel()` removed a family's HUD contribution: *"some modded UI doesnt close on escape and parts of
+  their UI dosnt exist."*
+- **Refinements:** exact function-name match instead of `Contains("Construct")`, which would also match
+  `ReconstructWidget`/`PostConstruct` · contract side gate instead of a hand-rolled server return · §3.3
+  counters incl. a **cancelled** count that should read zero · strip/cancel lines deliberately NOT
+  diag-gated · the old mod's second hook (a `UOverlay::AddChildToOverlay` census) NOT carried, because
+  the design says rebuild narrow.
+- **Note:** v3 shipped on the old mod in 0.58.72, so if mod UI is still missing, this is likely not the
+  cause and needs its own origin hunt.
+- **Verified:** build-only — `Result: Succeeded`.
+
+---
+
+## 2026-08-09 15:20 — CODE — P3.4 navmesh tile ceiling: writes the PLACED actors and reads back
+
+- **What:** at world load, walks `TActorIterator<ARecastNavMesh>`, raises `TileNumberHardLimit` to
+  524288, and **reads the value back**, reporting a did-not-stick count.
+- **Premise, receipted three ways:** register R5 (`TileNumberHardLimit=65536` against 306,440 tiles
+  needed) · the old mod's analysis (the generator clamps, so ~21% of the map has navmesh) · **the engine
+  itself**, in the live server log: `serialized maxTiles (65536, 16 bits) vs calculated maxtiles
+  (306440, 19 bits)`.
+- **⚠ A STRAIGHT PORT WOULD SHIP A LIE.** The old version wrote six CDOs at startup and logged
+  `65536 -> 524288`; twenty-two seconds later the engine still reported 65536. Its own caveat predicted
+  it — a placed actor's serialized value beats the CDO — and nobody checked.
+- **So:** per-instance write **with read-back**; enumeration by base class rather than six hardcoded FG
+  subclasses; **zero actors found is logged loudly**, because the open question is whether CONSTRUCTION
+  runs before the generator reads the ceiling and this refuses to assume it; the CDO write is dropped
+  entirely; failure lines are not diag-gated.
+- `ChokePointRepair`, not `OriginNamed` — we raise a vanilla cap, we do not fix why it exists.
+- **VERIFY:** the maxTiles warning should be **absent** from the next server nav log. That is a *server*
+  signal and needs the DatHost restart.
+- **Files:** the two new fix files, `Config/AccessTransformers.ini` (friends `ARecastNavMesh` to the FIX
+  class, per this repo's convention), `FPMDiag.*`, `FicsitsPerformanceManager.cpp`.
+- **Verified:** build-only — `Result: Succeeded`.
+
+---
+
+## 2026-08-09 15:12 — CODE — P3.2 rail GetOpposite guard: ported and refined
+
+- **What:** reproduces vanilla's own precondition — a track exists AND this component is one of its two
+  connections — and returns `nullptr` instead of letting `Assertion failed: GetTrack()->GetConnection(1)
+  == this` abort the server. A properly wired connection is forwarded untouched.
+- **Measured on the old mod across the 12-log DatHost corpus:** 1,900–2,550 averted asserts **per server
+  start**, in every one of 11 sessions, **23,450 total**, arriving in a burst — counters #50 to #950
+  inside 26 ms.
+- **Refinements:** splits **hologram** owners (expected, sampled) from **placed** ones (should be
+  impossible → unthrottled Error) — the old guard threw both into one 1-in-50 throttle, which could hide
+  the only real instance behind two thousand expected ones · §3.3 denominator pair so a guard that goes
+  quiet after the upstream fix can be retired on evidence · `FPM_SUBSCRIBE` so the hook is in the ledger
+  (the old raw `SUBSCRIBE_METHOD` was invisible to the inventory) · the log no longer states
+  DynamicTrainRoutes as fact.
+- **Origin is not ours.** The upstream report is the real fix and now has a number behind it.
+- **Verified:** build-only — `Result: Succeeded`.
+
+---
+
 ## 2026-08-09 15:05 — CODE — P1.3 part 2: the SaveSettings interceptor. Phase 1's last piece
 
 - **What:** `FFPMSaveSettingsInterceptor` — two hooks on `UFGGameUserSettings::SaveSettings`
