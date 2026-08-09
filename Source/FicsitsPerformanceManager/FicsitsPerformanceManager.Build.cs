@@ -41,6 +41,11 @@ public class FicsitsPerformanceManager : ModuleRules
 			//"TemplateSequence",
 			"NetCore",
 			"GameplayTags",
+			// LexToString(EOnlineServices) and ToLogString(FAccountId), used by the clone sensor to print
+			// WHICH online identities a joiner carries rather than just how many. Both are COREONLINE_API
+			// (CoreOnline.h:292, :341) -- declared here rather than assumed transitive, after the link
+			// failed with exactly those two unresolved externals on 2026-08-09.
+			"CoreOnline",
 			"Json", "JsonUtilities"
 		});
 

@@ -34,6 +34,63 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 08:30 — VERSION — 0.4.0 → 0.4.1
+
+- **What:** `VersionName` / `SemVersion` → `0.4.1`, `RemoteVersionRange` → `=0.4.1`.
+- **Why PATCH and not MINOR:** no new console variable, no new diagnostic channel, no new fix. Every item
+  below either REPAIRS an instrument 0.4.0 shipped hours earlier or completes one that was measurably
+  half-blind. The repo's table reserves MINOR for new functionality; this is 0.4.0 finishing the job.
+- **Verified:** build-only, `Result: Succeeded`. **NOT boot-tested.**
+
+## 2026-08-09 08:30 — CODE — close the instrument's own blind spot, name the sync load, and print the identity pair
+
+Everything here was found BY the 0.4.0 boot, which is the argument for having shipped it.
+
+- **⚠ THE HITCH METER WAS BLIND TO THE EXACT THING IT WAS BUILT FOR.**
+  `FCoreDelegates::OnAsyncLoadingFlush` is broadcast only when `ThreadContext.SyncLoadUsingAsyncLoaderCount
+  == 0` (`AsyncLoading2.cpp:11171-11176`) — the engine's comment says *"if the sync count is 0, then this
+  flush is not triggered from a sync load"*. A `LoadAsset_Blocking` stall **is** a sync load, so it never
+  fired that delegate. `m6249889` is entirely about blocking loads, so 0.4.0's `0 of them had an async-load
+  flush` was a PARTIAL answer that read like a complete one. **This is the fourth instrument gap of the run
+  and the first one I built myself** — I read that guard line while writing the file and did not act on it.
+  Now also subscribes to `FCoreDelegates::OnSyncLoadPackage` (`CoreDelegates.h:117`, broadcast
+  `UObjectGlobals.cpp:1742`/`:1815`), counted and reported SEPARATELY — folding the two together would hide
+  which fired. Unlike the flush delegate it is handed the **package name**, so a hitch line now says
+  `SYNC LOAD(S), last='<package>'` at level 1. That is `m6249889`'s literal next step, no longer needing a
+  verbose boot.
+- **GC telemetry**, via `GetPreGarbageCollectDelegate()` (`UObjectGlobals.h:3343`). The 0.4.0 boot measured
+  92 client hitches of which only 33 had a swapchain resize before them; GC is the standing candidate for
+  the rest (`m6253024`: GC is skipped while async loading, `UnrealEngine.cpp:2017`, so a due pass fires the
+  instant streaming quiets — i.e. while moving). Counts only. **The pacing lever is deliberately NOT built:
+  it needs a cvar-writing surface FPM2 does not have, and it must not be chosen before this measurement
+  exists.**
+- **The residency fix pinned too late to ever work.** Measured: the pin landed at `05:53:36.879` (frame 748,
+  game-world load) while both real user-icon prints fired at **frame 0**, `05:53:17`, beside
+  `Widget_ServerManager` and `mCreateNewGame` — **main-menu** widgets. It arrived 19 s after the only
+  occurrence it had to beat. A world-load hook cannot fix that (the menu scene never reaches FPM2's
+  dispatch), so it now retries every frame from `Arm()` until the asset manager exists, then unregisters.
+  The not-ready line is logged **once**, not once per frame — the first version would have flooded the log
+  it writes to.
+- **⚠ I contaminated my own measurement.** The residency log line contained the literal token
+  `[BPW_UserIcon]`, so it matched every grep for the widget's prints and inflated the count by one per
+  session — and I then read the contaminated count. The token is gone; the line describes the widget
+  without spelling its tag. **An instrument must not appear in its own results.**
+- **The clone sensor now prints WHICH identities, not just how many.** `onlineAccountIds=2` carried the
+  investigation for a day and could never say which two. Added `FPMCloneFormatAccountIds` using
+  `LexToString(EOnlineServices)` / `ToLogString(FAccountId)` (`CoreOnline.h:292`, `:341`). **And a matching
+  candidate now prints at level 1** instead of verbose-or-nothing — on Ant's save that is 1-2 lines against
+  61-62, so the duplicate PAIR, which is the entire finding, no longer requires a deliberate boot nobody
+  had reason to run until after the damage.
+  Motivation, from the game's own header (`ClientIdentification.h:17-19`): *"if one online id matches, the
+  identities are considered to match."* A joiner carrying Steam AND Epic matches any state saved under
+  either. Measured 2026-08-09: two joins ten minutes apart in ONE server process bound two DIFFERENT states
+  (`BP_PlayerState_C_2147450115` then `..._2147448825`) and Ant's outfit changed colour with them.
+- **Files:** `Core/FPMHitchMeter.{h,cpp}` · `Streaming/FPMAssetResidency.{h,cpp}` ·
+  `Fixes/Vanilla/FPMCloneSensor.cpp` · `FicsitsPerformanceManager.Build.cs` (adds `CoreOnline` — declared
+  after the link failed on exactly those two unresolved externals, not assumed transitive).
+- **Revert:** each item is independent; the Build.cs line is only needed by the clone-sensor change.
+- **Verified:** build-only — `Result: Succeeded`. **NOT boot-tested.**
+
 ## 2026-08-09 07:35 — CODE — review pass on 0.4.0: three findings, all fixed before it was ever packaged
 
 Verdict was **NEEDS REVISION** — 0 blockers, 1 High, 2 Medium. Ant's standing rule is that the version bump

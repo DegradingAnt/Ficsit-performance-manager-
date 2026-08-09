@@ -42,9 +42,33 @@ FFPMAssetResidency& FFPMAssetResidency::Get()
 
 void FFPMAssetResidency::Arm()
 {
-	// No hook to install. The work is the pin, and the pin is attempted here AND at world load because the
-	// asset manager's readiness at module-startup time is not something this file gets to assert.
+	// No hook to install. The work is the pin. Try now, and if the asset manager is not up yet, retry every
+	// frame until it is -- see RetryTick's comment for the measurement that made this necessary.
 	EnsurePinned(TEXT("startup"));
+
+	if (!PinHandle.IsValid() && !RetryHandle.IsValid())
+	{
+		RetryHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateRaw(this, &FFPMAssetResidency::RetryTick), 0.f);
+	}
+}
+
+bool FFPMAssetResidency::RetryTick(float)
+{
+	if (PinHandle.IsValid())
+	{
+		RetryHandle.Reset();
+		return false;          // unregister: the work is done
+	}
+
+	EnsurePinned(TEXT("early retry"));
+
+	if (PinHandle.IsValid())
+	{
+		RetryHandle.Reset();
+		return false;
+	}
+	return true;               // keep trying
 }
 
 void FFPMAssetResidency::OnWorldLoad(UWorld* World)
@@ -61,13 +85,15 @@ void FFPMAssetResidency::EnsurePinned(const TCHAR* Moment)
 
 	if (!UAssetManager::IsInitialized())
 	{
-		// NEVER FAIL SILENTLY. A null lookup that logs nothing is how a dead feature hides for a whole boot
-		// cycle, and this project has paid for that shape more than once. Not an Error: at startup this is
-		// an expected outcome that the world-load call will retry, and an Error line for a normal path
-		// teaches the reader to ignore Errors.
-		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] residency: asset manager not ready at %s - will retry at the next world load."),
+		// NEVER FAIL SILENTLY -- but ONCE, not once per frame. This is now called from a per-frame retry
+		// ticker, and the first version's unconditional Display line would have written one entry per frame
+		// for the whole of engine init. A diagnostic that floods the log it writes to destroys the log's
+		// usefulness, which is a heavier cost than the one it was guarding against.
+		static bool bSaidSo = false;
+		UE_CLOG(!bSaidSo, LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] residency: asset manager not ready at %s - retrying every frame until it is."),
 			Moment);
+		bSaidSo = true;
 		return;
 	}
 
@@ -135,20 +161,34 @@ void FFPMAssetResidency::OnIconsLoaded(TSharedPtr<FStreamableHandle> CompletedHa
 
 	if (FPMDiag::IsOn(FPMDiag::EChannel::Residency))
 	{
-		// ★ THE BOOT CHECK, AND IT IS FALSIFIABLE IN BOTH DIRECTIONS. The `[BPW_UserIcon]` prints must
-		// REMAIN after this ships — the widget still runs — while the same-frame `FlushAsyncLoading` lines
-		// must be GONE. If the prints vanish too, something was suppressed that should not have been, and
-		// this fix is wrong rather than working.
+		/*
+		 * ★ THE BOOT CHECK, FALSIFIABLE IN BOTH DIRECTIONS: the widget's own prints must REMAIN (it still
+		 * runs) while the same-frame FlushAsyncLoading lines must be GONE. If the prints vanish too,
+		 * something was suppressed that should not have been and this fix is wrong rather than working.
+		 *
+		 * ⚠ THE WIDGET'S BRACKETED TOKEN IS DELIBERATELY NOT WRITTEN HERE — 2026-08-09. The first version
+		 * spelled it out, so this line MATCHED EVERY GREP FOR THE WIDGET'S PRINTS and inflated the count by
+		 * one per session. I contaminated the measurement with the line describing the measurement, and
+		 * then read the contaminated count. An instrument must not appear in its own results.
+		 */
 		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] residency: %d/%d vanilla platform icons pinned - BPW_UserIcon's LoadAsset_Blocking "
-			     "now finds them resident. The [BPW_UserIcon] prints should REMAIN; the same-frame "
-			     "FlushAsyncLoading lines should be GONE."),
+			TEXT("[FPM] residency: %d/%d vanilla platform icons pinned - the user-icon widget's "
+			     "LoadAsset_Blocking now finds them resident. Its own avatar prints should REMAIN; the "
+			     "same-frame FlushAsyncLoading lines should be GONE."),
 			Resolved, GFPMResidencyNumIcons);
 	}
 }
 
 void FFPMAssetResidency::Disarm()
 {
+	// The retry ticker outlives nothing. If we are torn down before the asset manager ever came up, this
+	// is the only thing holding a raw `this` into the core ticker.
+	if (RetryHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RetryHandle);
+		RetryHandle.Reset();
+	}
+
 	if (PinHandle.IsValid())
 	{
 		// CancelHandle, not ReleaseHandle. ReleaseHandle defers until after completion when a load is still

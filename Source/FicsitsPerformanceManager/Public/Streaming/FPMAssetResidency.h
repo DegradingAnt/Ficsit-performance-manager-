@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 
 #include "Core/FPMFixContract.h"
 
@@ -95,6 +96,27 @@ private:
 	 * deadline that matters.
 	 */
 	void EnsurePinned(const TCHAR* Moment);
+
+	/**
+	 * ★ RETRY EVERY FRAME UNTIL THE ASSET MANAGER EXISTS, THEN STOP — added 2026-08-09, and it is a
+	 * CORRECTNESS fix rather than a tidy-up.
+	 *
+	 * The first version tried at `Arm()` and again at `OnWorldLoad()`. Measured on the 0.4.0 boot: the
+	 * asset manager was not ready at `Arm()`, so the pin actually landed at the GAME world load —
+	 * `05:53:36.879`, frame 748. But both real `[BPW_UserIcon]` prints fired at **frame 0**,
+	 * `05:53:17.362` and `:17.465`, beside `Widget_ServerManager` and `mCreateNewGame`. Those are
+	 * MAIN-MENU widgets. So the fix arrived nineteen seconds after the only occurrence it had to beat,
+	 * and could never have helped the browser the player passes through on every single launch.
+	 *
+	 * A world-load hook cannot fix that, because FPM2's `OnWorldLoad` is dispatched by the game-world
+	 * module and the menu scene does not reach it. Retrying per frame from `Arm()` takes the earliest
+	 * moment that actually exists, without this file having to assert an engine init ordering it cannot
+	 * see. The ticker unregisters itself the moment the request goes out, so the cost is a handful of
+	 * int compares during startup and nothing at all afterwards.
+	 */
+	bool RetryTick(float);
+
+	FTSTicker::FDelegateHandle RetryHandle;
 
 	/** Re-resolves by PATH and reports per-asset — see the .cpp for why not out of the handle's array. */
 	void OnIconsLoaded(TSharedPtr<FStreamableHandle> CompletedHandle);

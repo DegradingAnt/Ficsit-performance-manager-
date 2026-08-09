@@ -61,8 +61,10 @@ void FFPMHitchMeter::Arm()
 	TickHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateRaw(this, &FFPMHitchMeter::Tick), 0.f);
 
-	FlushHandle   = FCoreDelegates::OnAsyncLoadingFlush.AddRaw(this, &FFPMHitchMeter::OnAsyncLoadingFlush);
-	PackageHandle = FCoreDelegates::GetOnAsyncLoadPackage().AddRaw(this, &FFPMHitchMeter::OnAsyncLoadPackage);
+	FlushHandle    = FCoreDelegates::OnAsyncLoadingFlush.AddRaw(this, &FFPMHitchMeter::OnAsyncLoadingFlush);
+	PackageHandle  = FCoreDelegates::GetOnAsyncLoadPackage().AddRaw(this, &FFPMHitchMeter::OnAsyncLoadPackage);
+	SyncLoadHandle = FCoreDelegates::OnSyncLoadPackage.AddRaw(this, &FFPMHitchMeter::OnSyncLoadPackage);
+	PreGcHandle    = FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddRaw(this, &FFPMHitchMeter::OnPreGarbageCollect);
 
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
 	// that distinguishes "measured nothing" from "never measured".
@@ -94,6 +96,16 @@ void FFPMHitchMeter::Disarm()
 		FCoreDelegates::GetOnAsyncLoadPackage().Remove(PackageHandle);
 		PackageHandle.Reset();
 	}
+	if (SyncLoadHandle.IsValid())
+	{
+		FCoreDelegates::OnSyncLoadPackage.Remove(SyncLoadHandle);
+		SyncLoadHandle.Reset();
+	}
+	if (PreGcHandle.IsValid())
+	{
+		FCoreUObjectDelegates::GetPreGarbageCollectDelegate().Remove(PreGcHandle);
+		PreGcHandle.Reset();
+	}
 }
 
 void FFPMHitchMeter::OnWorldLoad(UWorld* World)
@@ -114,7 +126,8 @@ void FFPMHitchMeter::OnWorldLoad(UWorld* World)
 	if (bPrimed)
 	{
 		const double Now = FPlatformTime::Seconds();
-		ClassifySpan((Now - LastTickSeconds) * 1000.0, FlushesInFrame.Set(0), /*bClosedByLoad*/ true);
+		ClassifySpan((Now - LastTickSeconds) * 1000.0, FlushesInFrame.Set(0), /*bClosedByLoad*/ true,
+			SyncLoadsInFrame.Set(0), GcInFrame.Set(0));
 	}
 
 	// Close the books on the previous world before the clock jumps, so its numbers are attributable to it.
@@ -129,6 +142,24 @@ void FFPMHitchMeter::OnAsyncLoadingFlush()
 {
 	FlushesInFrame.Increment();
 	FlushesTotal.Increment();
+}
+
+void FFPMHitchMeter::OnPreGarbageCollect()
+{
+	GcInFrame.Increment();
+	GcTotal.Increment();
+}
+
+void FFPMHitchMeter::OnSyncLoadPackage(const FString& PackageName)
+{
+	SyncLoadsInFrame.Increment();
+	SyncLoadsTotal.Increment();
+
+	// Kept unconditionally, not behind the verbose gate: this is ONE FString assignment per synchronous
+	// package load, and a sync load is by definition already the expensive thing in that frame. Paying a
+	// copy to be able to NAME it is the trade this instrument exists to make.
+	FScopeLock Lock(&SyncNameLock);
+	LastSyncPackage = PackageName;
 }
 
 void FFPMHitchMeter::OnAsyncLoadPackage(FStringView PackageName)
@@ -147,7 +178,8 @@ void FFPMHitchMeter::OnAsyncLoadPackage(FStringView PackageName)
 	RecentPackages.Emplace(PackageName);
 }
 
-void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClosedByLoad)
+void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClosedByLoad,
+                                  int32 SyncLoadsInSpan, int32 GcInSpan)
 {
 	// A world-load-closed span is counted as one sample like any other. It is genuine elapsed game-thread
 	// time; the only difference is which event closed it, and there is at most one per world load.
@@ -172,7 +204,9 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 		 * be the mechanism. The statistic would have silently stopped covering exactly the cases the
 		 * hypothesis lives or dies on.
 		 */
-		if (FlushesInSpan > 0) { ++LoadStallsWithFlush; }
+		if (FlushesInSpan > 0)   { ++LoadStallsWithFlush; }
+		if (SyncLoadsInSpan > 0) { ++StallsWithSyncLoad; }
+		if (GcInSpan > 0)        { ++StallsWithGc; }
 		return;
 	}
 
@@ -183,7 +217,9 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	HitchMsTotal += SpanMs;
 	WorstHitchMs   = FMath::Max(WorstHitchMs, SpanMs);
 	SessionWorstMs = FMath::Max(SessionWorstMs, SpanMs);
-	if (FlushesInSpan > 0) { ++HitchesWithFlush; }
+	if (FlushesInSpan > 0)   { ++HitchesWithFlush; }
+	if (SyncLoadsInSpan > 0) { ++HitchesWithSyncLoad; }
+	if (GcInSpan > 0)        { ++HitchesWithGc; }
 
 	if (!FPMDiag::IsOn(FPMDiag::EChannel::Hitch)) { return; }
 
@@ -205,10 +241,20 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 
 	// Warning, not Display: a hitch is the thing being hunted, and Warning is what survives a default log
 	// filter when Ant sends the file over.
+	// The sync-load half is named, because it is the half that can be. When it fires, that package name IS
+	// the answer to "what blocked this frame" -- no correlation step, no adjacency argument.
+	FString SyncPart;
+	if (SyncLoadsInSpan > 0)
+	{
+		FScopeLock Lock(&SyncNameLock);
+		SyncPart = FString::Printf(TEXT(" | %d SYNC LOAD(S), last='%s'"), SyncLoadsInSpan, *LastSyncPackage);
+	}
+
 	UE_LOG(LogFicsitsPerformanceManager, Warning,
-		TEXT("[FPM] HITCH %.1f ms%s - %d async-load flush(es) in this span, %d package(s) still loading%s"),
+		TEXT("[FPM] HITCH %.1f ms%s - %d async-load flush(es), %d GC pass(es) in this span, %d package(s) "
+		     "still loading%s%s"),
 		SpanMs, bClosedByLoad ? TEXT(" (closed by a world load)") : TEXT(""),
-		FlushesInSpan, GetNumAsyncPackages(), *Packages);
+		FlushesInSpan, GcInSpan, GetNumAsyncPackages(), *SyncPart, *Packages);
 }
 
 bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
@@ -231,7 +277,8 @@ bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 
 	// Set() returns the old value (`ThreadSafeCounter.h:99-102`), so the read and the reset are one atomic
 	// operation and a flush landing between them cannot be lost.
-	ClassifySpan(FrameMs, FlushesInFrame.Set(0), /*bClosedByLoad*/ false);
+	ClassifySpan(FrameMs, FlushesInFrame.Set(0), /*bClosedByLoad*/ false, SyncLoadsInFrame.Set(0),
+		GcInFrame.Set(0));
 
 	if (WindowSeconds >= CVarHitchSummarySeconds.GetValueOnAnyThread())
 	{
@@ -258,17 +305,23 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 
 	if (Hitches > 0)
 	{
-		Line += FString::Printf(TEXT(" | worst %.1f ms, mean %.1f ms | %d of them had an async-load flush"),
-			WorstHitchMs, MeanMs, HitchesWithFlush);
+		// BOTH halves, always, and never folded together. The async-flush count alone was structurally
+		// blind to sync loads, so reporting it on its own is what made a partial zero look like a whole one.
+		Line += FString::Printf(
+			TEXT(" | worst %.1f ms, mean %.1f ms | %d had an async-load flush, %d had a SYNC load, %d had a GC"),
+			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc);
 	}
 	if (LoadStalls > 0)
 	{
 		// The stalls carry their own flush count. Folding them into the hitch figure would overstate the
 		// hitch rate; dropping the count entirely is what review finding B caught.
-		Line += FString::Printf(TEXT(" | %d load stall(s) over %.0f ms (%d with a flush), not counted as hitches"),
-			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread(), LoadStallsWithFlush);
+		Line += FString::Printf(
+			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc), not counted as hitches"),
+			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread(), LoadStallsWithFlush, StallsWithSyncLoad,
+			StallsWithGc);
 	}
-	Line += FString::Printf(TEXT(" | %d flush(es) total this session"), FlushesTotal.GetValue());
+	Line += FString::Printf(TEXT(" | session totals: %d flush(es), %d sync load(s), %d GC pass(es)"),
+		FlushesTotal.GetValue(), SyncLoadsTotal.GetValue(), GcTotal.GetValue());
 	if (LinesSuppressed > 0)
 	{
 		// Stated, never silent. A capped log that does not say it capped reads as a quiet session.
@@ -289,6 +342,10 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	HitchesWithFlush = 0;
 	LoadStalls = 0;
 	LoadStallsWithFlush = 0;
+	HitchesWithSyncLoad = 0;
+	StallsWithSyncLoad = 0;
+	HitchesWithGc = 0;
+	StallsWithGc = 0;
 	LinesThisWindow = 0;
 	LinesSuppressed = 0;
 	WorstHitchMs = 0.0;

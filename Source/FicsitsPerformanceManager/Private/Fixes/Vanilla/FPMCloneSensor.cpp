@@ -9,7 +9,40 @@
 #include "FGGameMode.h"
 #include "FGPlayerState.h"
 #include "Online/ClientIdentification.h"
+#include "Online/CoreOnline.h"
 #include "GameFramework/PlayerController.h"
+
+/*
+ * ★ PRINT THE IDS THEMSELVES, NOT JUST HOW MANY THERE ARE — added 2026-08-09.
+ *
+ * The sensor's first live catch reported `onlineAccountIds=2` and that count carried the whole
+ * investigation for a day. It was enough to say "this joiner has two identities" and never enough to say
+ * WHICH two, so the duplicate pair could be counted but not characterised.
+ *
+ * ⚠ AND THE GAME'S OWN HEADER SAYS WHY THAT MATTERS. `ClientIdentification.h:17-19`, on
+ * `CalcClientIdentityMatchQuality`: *"When no online ids are available, the offline id is used.
+ * Otherwise, IF ONE ONLINE ID MATCHES, the identities are considered to match."* So a joiner carrying a
+ * Steam id AND an Epic id matches ANY saved state that shares EITHER — and if one state was saved under
+ * Steam and another under Epic, both match, and vanilla picks arbitrarily. Measured 2026-08-09: two joins
+ * ten minutes apart in ONE server process bound two DIFFERENT states, and Ant's outfit changed colour
+ * with them. Nothing here is a matcher bug; it is the documented rule meeting a two-identity account.
+ *
+ * ⚠ NAME IS UNIQUE ACROSS THE MODULE because this is a UNITY BUILD — see FPMFixContract.h:166-171.
+ */
+static FString FPMCloneFormatAccountIds(const FClientIdentityInfo& Identity)
+{
+	if (Identity.AccountIds.Num() == 0) { return TEXT("none"); }
+
+	FString Out;
+	for (const TPair<UE::Online::EOnlineServices, UE::Online::FAccountId>& Pair : Identity.AccountIds)
+	{
+		if (!Out.IsEmpty()) { Out += TEXT(", "); }
+		// Service name AND handle: the service alone cannot distinguish two accounts on one platform,
+		// and the handle alone does not say which platform minted it.
+		Out += FString::Printf(TEXT("%s=%s"), LexToString(Pair.Key), *ToLogString(Pair.Value));
+	}
+	return Out;
+}
 
 FFPMCloneSensor& FFPMCloneSensor::Get()
 {
@@ -56,6 +89,7 @@ void FFPMCloneSensor::Arm()
 		const FClientIdentityInfo& JoinerId = JoinerState->GetClientIdentity();
 
 		FString Fallbacks;
+		// (see FPMCloneFormatAccountIds below the lambda's enclosing scope for why the ids are printed)
 		for (const FString& FallbackName : JoinerId.FallbackAccountNames)
 		{
 			Fallbacks += (Fallbacks.IsEmpty() ? TEXT("") : TEXT(", ")) + FallbackName;
@@ -64,9 +98,10 @@ void FFPMCloneSensor::Arm()
 		UE_LOG(LogFicsitsPerformanceManager, Display,
 			TEXT("[FPM] ---- clone sensor: JOIN by '%s' ----"), *JoinerState->GetPlayerName());
 		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM]   joiner: state=%s  offlineId='%s'  onlineAccountIds=%d  fallbackNames=[%s]"),
+			TEXT("[FPM]   joiner: state=%s  offlineId='%s'  onlineAccountIds=%d [%s]  fallbackNames=[%s]"),
 			*GetNameSafe(JoinerState),
 			*JoinerId.OfflineId, JoinerId.AccountIds.Num(),
+			*FPMCloneFormatAccountIds(JoinerId),
 			Fallbacks.IsEmpty() ? TEXT("none") : *Fallbacks);
 
 		/*
@@ -141,17 +176,26 @@ void FFPMCloneSensor::Arm()
 			 * statement it guards cannot rot that way. An unbraced `if` before a UE_LOG macro has the
 			 * same shape of problem and is avoided for the same reason.
 			 */
-			if (FPMDiag::IsOn(FPMDiag::EChannel::CloneSensor, 2))
+			/*
+			 * ★ A MATCHING CANDIDATE PRINTS AT LEVEL 1; THE OTHER SIXTY PRINT AT VERBOSE — 2026-08-09.
+			 *
+			 * It used to be verbose-or-nothing, which meant the DUPLICATE PAIR — the entire finding — was
+			 * only visible on a deliberate boot nobody had reason to run until after the damage. On Ant's
+			 * save that is 1-2 lines against 61-62, so the interesting rows cost almost nothing and the
+			 * noise still costs what it always did. The signal should not be the expensive tier.
+			 */
+			const bool bVerbose = FPMDiag::IsOn(FPMDiag::EChannel::CloneSensor, 2);
+			if (bWouldMatch || bVerbose)
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Display,
 					TEXT("[FPM]   candidate: state=%s(uid %u)  name='%s'%s  ownsPawn=%s  offlineId='%s'(%s)  "
-					     "onlineIds=%d shared=%d  -> reconstructed: %s"),
+					     "onlineIds=%d [%s] shared=%d  -> reconstructed: %s"),
 					*GetNameSafe(FGCandidate), FGCandidate->GetUniqueID(),
 					CandidateName.IsEmpty() ? TEXT("(EMPTY)") : *CandidateName,
 					CandidateName.IsEmpty() ? TEXT("  <-- DEGENERATE") : TEXT(""),
 					FGCandidate->GetOwnedPawn() ? TEXT("yes") : TEXT("NO"),
 					*CandidateId.OfflineId, bOfflineMatch ? TEXT("SAME") : TEXT("differs"),
-					CandidateId.AccountIds.Num(), SharedOnlineIds,
+					CandidateId.AccountIds.Num(), *FPMCloneFormatAccountIds(CandidateId), SharedOnlineIds,
 					bWouldMatch ? TEXT("WOULD match") : TEXT("would NOT match"));
 			}
 		}

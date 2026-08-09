@@ -99,14 +99,53 @@ private:
 	 * `bClosedByLoad` only affects what the log line SAYS. A span is a span; what closed it does not change
 	 * how long the game thread was gone.
 	 */
-	void ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClosedByLoad);
+	void ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClosedByLoad, int32 SyncLoadsInSpan,
+	                  int32 GcInSpan);
 
 	void OnAsyncLoadingFlush();
 	void OnAsyncLoadPackage(FStringView PackageName);
 
+	/**
+	 * ★ THE HALF THE FLUSH DELEGATE CANNOT SEE — added 2026-08-09 after the 0.4.0 boot, and it is the
+	 * fourth instrument gap of the run, this one in my own instrument.
+	 *
+	 * `FCoreDelegates::OnAsyncLoadingFlush` is broadcast ONLY when
+	 * `ThreadContext.SyncLoadUsingAsyncLoaderCount == 0` (`AsyncLoading2.cpp:11171-11176`); the engine's
+	 * own comment there says *"if the sync count is 0, then this flush is not triggered from a sync
+	 * load"*. A `LoadAsset_Blocking` stall IS a sync load, so it never fires that delegate — meaning the
+	 * flush counter was structurally blind to the exact category `m6249889` was opened about, and its
+	 * `0 of them had an async-load flush` was a PARTIAL answer wearing a complete one's clothes.
+	 *
+	 * `OnSyncLoadPackage` (`CoreDelegates.h:117`, broadcast `UObjectGlobals.cpp:1742` / `:1815`) covers
+	 * that half — and unlike the flush delegate it is handed the PACKAGE NAME, which is `m6249889`'s
+	 * literal next step ("Name the flushed package") available at level 1 rather than only at verbose.
+	 */
+	void OnSyncLoadPackage(const FString& PackageName);
+
+	/**
+	 * ★ GC IS THE STANDING CANDIDATE FOR THE HITCHES NOTHING ELSE EXPLAINS — wired 2026-08-09.
+	 *
+	 * The 0.4.0 boot measured 92 client hitches (median 67.3 ms, p90 366.3 ms, max 972.8 ms) of which only
+	 * 33 had a swapchain resize before them. Something accounts for the rest, and `m6253024`'s design
+	 * names the mechanism from engine bytes: GC is SKIPPED while async loading
+	 * (`if (GPerformGCWhileAsyncLoading || !IsAsyncLoading())`, `UnrealEngine.cpp:2017`, with
+	 * `GPerformGCWhileAsyncLoading = 0` at `:1664`), so with World Partition streaming churning while the
+	 * player MOVES, a due pass is deferred and fires the instant streaming quiets. Every pass is
+	 * stop-the-world; measured worst on 0.55.0 was 148.6 ms.
+	 *
+	 * ⚠ THAT IS A HYPOTHESIS AND THIS IS THE INSTRUMENT THAT DECIDES IT, so it counts and does not steer.
+	 * `GetPreGarbageCollectDelegate()` / `GetPostGarbageCollect()` (`UObjectGlobals.h:3343`, `:3359`) are
+	 * plain `FSimpleMulticastDelegate&` — nothing here forces, defers, paces or configures a collection.
+	 * The old design's L4 pacing lever is deliberately NOT built: it needs a cvar-writing surface FPM2
+	 * does not have, and it must not be chosen before this measurement exists.
+	 */
+	void OnPreGarbageCollect();
+
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle FlushHandle;
 	FDelegateHandle PackageHandle;
+	FDelegateHandle SyncLoadHandle;
+	FDelegateHandle PreGcHandle;
 
 	double LastTickSeconds = 0.0;
 	double WindowSeconds = 0.0;
@@ -145,6 +184,22 @@ private:
 	 */
 	FThreadSafeCounter FlushesInFrame;
 	FThreadSafeCounter FlushesTotal;
+
+	/** The sync-load half. Counted separately because conflating them would hide which one fired. */
+	FThreadSafeCounter SyncLoadsInFrame;
+	FThreadSafeCounter SyncLoadsTotal;
+	int32 HitchesWithSyncLoad = 0;
+	int32 StallsWithSyncLoad = 0;
+
+	/** GC passes are game-thread by construction here, but the counter costs nothing and asks no questions. */
+	FThreadSafeCounter GcInFrame;
+	FThreadSafeCounter GcTotal;
+	int32 HitchesWithGc = 0;
+	int32 StallsWithGc = 0;
+
+	/** The most recent sync-loaded package name, so a hitch line can NAME what blocked it. */
+	mutable FCriticalSection SyncNameLock;
+	FString LastSyncPackage;
 
 	/** Guarded because `GetOnAsyncLoadPackage()` fires on whichever thread issued the load, by contract. */
 	mutable FCriticalSection PackagesLock;
