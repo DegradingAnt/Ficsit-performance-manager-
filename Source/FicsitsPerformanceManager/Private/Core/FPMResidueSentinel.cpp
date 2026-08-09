@@ -124,6 +124,22 @@ int32 FPMResidueSentinel::Audit()
 	{
 		PluginDir = FPaths::ConvertRelativePathToFull(Self->GetBaseDir());
 	}
+	/*
+	 * ⚠ THE TRAILING SEPARATOR IS LOAD-BEARING — third-pass finding, 2026-08-09.
+	 *
+	 * Without it, `StartsWith` is a plain string prefix test, so a SIBLING directory named
+	 * `FicsitsPerformanceManagerAnything` would match and its file would be reported as "inside the
+	 * plugin, not residue". No such directory exists today, so this is latent rather than live — but a
+	 * false NOT-RESIDUE verdict is the one error a residue checker must never make, and it would be
+	 * completely silent.
+	 *
+	 * Case-insensitive is correct here and deliberate: `StartsWith` defaults to `ESearchCase::IgnoreCase`
+	 * and this is a Windows path comparison.
+	 */
+	if (!PluginDir.IsEmpty() && !PluginDir.EndsWith(TEXT("/")))
+	{
+		PluginDir += TEXT("/");
+	}
 	const bool bInsidePlugin = !PluginDir.IsEmpty()
 		&& FPaths::ConvertRelativePathToFull(CachePath).StartsWith(PluginDir);
 
