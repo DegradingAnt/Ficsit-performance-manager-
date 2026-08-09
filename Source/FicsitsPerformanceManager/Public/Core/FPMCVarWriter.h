@@ -125,6 +125,18 @@ public:
 	/** True while a hold exists for this cvar, whoever owns it. */
 	bool IsHeld(const TCHAR* CVarName) const;
 
+	/** Every cvar currently held, for the residue sentinel to classify. Read-only by design. */
+	void GetHeldCVars(TArray<FString>& Out) const;
+
+	/**
+ 	 * True if this cvar is one the game's own settings save would CAPTURE.
+ 	 *
+ 	 * ⚠ Exposed so the SENTINEL can reach the same judgement the writer's refusal uses, instead of the
+ 	 * sentinel keeping a second copy of the list that could drift from this one. One declaration site
+ 	 * per rule -- a second copy is a bug by construction.
+ 	 */
+	static bool IsUserSettingBacked(const TCHAR* CVarName);
+
 private:
 	struct FHold
 	{

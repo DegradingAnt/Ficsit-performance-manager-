@@ -104,10 +104,8 @@ IConsoleVariable* FPMCVarWriter::Vet(FName Owner, const TCHAR* CVarName) const
 	}
 
 	// CLAUSE 6 — the US_*-backed set, refused ENTIRELY until P1.3's SaveSettings interceptor exists.
-	for (const TCHAR* const Denied : GFPMWriterUSDenylist)
+	if (IsUserSettingBacked(CVarName))
 	{
-		if (FCString::Stricmp(CVarName, Denied) != 0) { continue; }
-
 		UE_LOG(LogFicsitsPerformanceManager, Warning,
 			TEXT("[FPM] writer REFUSED '%s' for owner '%s': it is backed by a US_* game user setting. "
 			     "FGGameUserSettings serialises every entry on every save with NO dirty gate, so a value "
@@ -118,6 +116,22 @@ IConsoleVariable* FPMCVarWriter::Vet(FName Owner, const TCHAR* CVarName) const
 	}
 
 	return Var;
+}
+
+bool FPMCVarWriter::IsUserSettingBacked(const TCHAR* CVarName)
+{
+	for (const TCHAR* const Denied : GFPMWriterUSDenylist)
+	{
+		if (FCString::Stricmp(CVarName, Denied) == 0) { return true; }
+	}
+	return false;
+}
+
+void FPMCVarWriter::GetHeldCVars(TArray<FString>& Out) const
+{
+	Out.Reset();
+	Out.Reserve(Ledger.Num());
+	for (const FHold& H : Ledger) { Out.Add(H.CVar); }
 }
 
 bool FPMCVarWriter::Hold(FName Owner, const TCHAR* CVarName, const TCHAR* Value, const TCHAR* Reason,
