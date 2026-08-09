@@ -42,6 +42,22 @@ FString FPMBoxCache::ComputeEnvironmentKey()
 	TArray<FString> Parts;
 	for (const TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetEnabledPlugins())
 	{
+		/*
+		 * ★ OUR OWN VERSION IS EXCLUDED — 2026-08-09, and it is a measured fix rather than a tidy-up.
+		 *
+		 * The boxes are derived from OTHER mods' and vanilla's geometry. FPM's version number has no
+		 * bearing on what they come out as. The one thing that DOES — the derivation logic itself — is
+		 * already covered by the deriver version below, which exists for exactly that and was added on
+		 * 2026-08-08 when this same gap was caught once already.
+		 *
+		 * Leaving our own name@version in the key meant EVERY bump invalidated the whole cache. Observed
+		 * across three bumps in one morning; the 0.4.1 boot logged
+		 * `cache MISS->rebuilt | 3678 classes examined | 0 from cache` and re-derived 573 classes whose
+		 * geometry had not changed. During iteration that is a cache that never hits — the precise failure
+		 * the Sort() below is commented as preventing, arriving through a different door.
+		 */
+		if (Plugin->GetName() == TEXT("FicsitsPerformanceManager")) { continue; }
+
 		Parts.Add(FString::Printf(TEXT("%s@%s"), *Plugin->GetName(), *Plugin->GetDescriptor().VersionName));
 	}
 	Parts.Sort();

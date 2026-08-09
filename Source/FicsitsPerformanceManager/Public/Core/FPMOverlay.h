@@ -51,6 +51,30 @@ public:
 	void Toggle() { SetVisible(!bVisible); }
 	bool IsVisible() const { return bVisible; }
 
+	/**
+	 * ★ THE KEYBIND. Ant asked three times — 2026-08-09: *"also need an off button for the debug hud
+	 * element"*, then *"we need it fixed, eventually"*, then *"i still want a keybind for the on/off debug
+	 * menu"*. `FPM.Diag.Overlay 0` was only ever the stopgap.
+	 *
+	 * ⚠ THE PREVIOUS NOTE IN FPMDiag.h WAS WRONG AND IS CORRECTED HERE. It said the keybind was waiting
+	 * on "the Game Instance Module's keybind registry". **SML's `UGameInstanceModule` has no keybind
+	 * registry** — its members are ModConfigurations, BlueprintHooks, WidgetBlueprintHooks, GameMaps,
+	 * SessionSettings, RemoteCallObjects and the deprecated SCS hooks, and nothing else
+	 * (`GameInstanceModule.h:30-83`). So the thing being waited for did not exist, and waiting for it
+	 * would have waited forever.
+	 *
+	 * WHY A SLATE INPUT PRE-PROCESSOR rather than a vanilla key mapping: the same reason this overlay is
+	 * raw Slate in the first place. A `UFGInputSettings` mapping needs a cooked asset and a live player
+	 * controller; the overlay exists precisely to be readable when neither is true, and a toggle that
+	 * cannot reach it during a loading screen is not a toggle for THIS widget.
+	 * `FSlateApplication::RegisterInputPreProcessor` (`SlateApplication.h:1522`) sits above the game's
+	 * input entirely, so it works on the menu, in a loading screen, and in game.
+	 *
+	 * IT CONSUMES NOTHING IT DOES NOT OWN. `HandleKeyDownEvent` returns false for every key but ours
+	 * (`IInputProcessor.h:26`), so no vanilla or mod binding is shadowed.
+	 */
+	void InstallHotkey();
+
 	/** Drops the widget and stops ticking, so nothing outlives the viewport. */
 	void Shutdown();
 
@@ -65,6 +89,15 @@ private:
 	TSharedPtr<class SWidget> Root;
 	TSharedPtr<class STextBlock> TextBlock;
 	FTSTicker::FDelegateHandle TickHandle;
+
+	/**
+	 * Slate may not be up when the module starts, so registration retries per frame and then stops —
+	 * the same shape the residency pin needed for the same reason. Kept so shutdown can unregister:
+	 * a pre-processor holding a dangling pointer would outlive the mod.
+	 */
+	bool HotkeyRetry(float);
+	TSharedPtr<class IInputProcessor> Hotkey;
+	FTSTicker::FDelegateHandle HotkeyRetryHandle;
 
 	bool bVisible = false;
 	bool bDirty = false;

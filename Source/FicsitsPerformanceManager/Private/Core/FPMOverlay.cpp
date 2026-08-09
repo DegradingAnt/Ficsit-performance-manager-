@@ -24,16 +24,106 @@
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/IConsoleManager.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
+/*
+ * THE KEY IS A CVAR, not a literal, because the right key is Ant's call and not mine — and because a
+ * hard-coded one that collides with a mod she installs next week is unfixable without a build.
+ *
+ * F8 by default: vanilla Satisfactory binds F1-F6 (photo mode, map, codex and friends) and F7 is the
+ * common screenshot key, so F8 is the first one likely to be free. If it collides, change this rather
+ * than reporting the overlay as broken.
+ */
+static TAutoConsoleVariable<FString> CVarOverlayKey(
+	TEXT("FPM.Diag.OverlayKey"), TEXT("F8"),
+	TEXT("Key that toggles the FPM debug overlay. Any UE key name (F8, F9, Tilde, ScrollLock...). "
+	     "Empty string disables the hotkey entirely and leaves only FPM.Diag.Overlay."),
+	ECVF_Default);
+
+namespace
+{
+	/**
+	 * ⚠ IT MUST RETURN FALSE FOR EVERYTHING IT DOES NOT OWN. A pre-processor sits ABOVE the game's whole
+	 * input stack, so returning true swallows the key before any vanilla or mod binding sees it. Consuming
+	 * only our own key is what makes this safe to ship enabled by default.
+	 */
+	class FFPMOverlayHotkey : public IInputProcessor
+	{
+	public:
+		virtual void Tick(const float, FSlateApplication&, TSharedRef<ICursor>) override {}
+
+		virtual bool HandleKeyDownEvent(FSlateApplication&, const FKeyEvent& Event) override
+		{
+			const FString Wanted = CVarOverlayKey.GetValueOnAnyThread();
+			if (Wanted.IsEmpty()) { return false; }
+
+			// Compared by NAME so the cvar can hold any key without a lookup table to fall out of date.
+			if (Event.GetKey().GetFName() != FName(*Wanted)) { return false; }
+
+			// Modifiers are deliberately NOT required, and deliberately not REJECTED either: a debug
+			// toggle that stops working because Shift happened to be down is a bug report waiting to be
+			// filed against the wrong thing.
+			FPMOverlay::Get().Toggle();
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] overlay %s by %s"),
+				FPMOverlay::Get().IsVisible() ? TEXT("SHOWN") : TEXT("HIDDEN"), *Wanted);
+			return true;   // ours, and only ours
+		}
+
+		virtual const TCHAR* GetDebugName() const override { return TEXT("FPMOverlayHotkey"); }
+	};
+}
+
 FPMOverlay& FPMOverlay::Get()
 {
 	static FPMOverlay Instance;
 	return Instance;
+}
+
+void FPMOverlay::InstallHotkey()
+{
+	if (Hotkey.IsValid() || HotkeyRetryHandle.IsValid()) { return; }
+
+	// Slate is usually up by the time a game feature starts, but "usually" is how the residency pin ended
+	// up nineteen seconds late today. Try now, retry per frame, stop the moment it takes.
+	if (!HotkeyRetry(0.f))
+	{
+		return;   // registered on the first attempt
+	}
+	HotkeyRetryHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateRaw(this, &FPMOverlay::HotkeyRetry), 0.f);
+}
+
+bool FPMOverlay::HotkeyRetry(float)
+{
+	if (Hotkey.IsValid()) { HotkeyRetryHandle.Reset(); return false; }
+	if (!FSlateApplication::IsInitialized()) { return true; }   // keep waiting
+
+	Hotkey = MakeShared<FFPMOverlayHotkey>();
+	if (!FSlateApplication::Get().RegisterInputPreProcessor(Hotkey))
+	{
+		// Never fail silently. Without this line a dead hotkey is indistinguishable from a wrong key name,
+		// and Ant would reasonably conclude the fourth request was ignored like the first three.
+		Hotkey.Reset();
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] overlay hotkey: Slate REFUSED the input pre-processor - no keybind this session. "
+			     "FPM.Diag.Overlay still works."));
+		HotkeyRetryHandle.Reset();
+		return false;
+	}
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] overlay hotkey armed on '%s' (change with FPM.Diag.OverlayKey, empty to disable)."),
+		*CVarOverlayKey.GetValueOnAnyThread());
+	HotkeyRetryHandle.Reset();
+	return false;
 }
 
 void FPMOverlay::Post(const TCHAR* Category, const FString& Line)
@@ -199,5 +289,21 @@ void FPMOverlay::Shutdown()
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
 		TickHandle.Reset();
+	}
+
+	// The pre-processor sits in Slate's own list. Left behind, it would keep receiving every keystroke in
+	// the process after this module's code is gone -- which is a crash, not a leak.
+	if (HotkeyRetryHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(HotkeyRetryHandle);
+		HotkeyRetryHandle.Reset();
+	}
+	if (Hotkey.IsValid())
+	{
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().UnregisterInputPreProcessor(Hotkey);
+		}
+		Hotkey.Reset();
 	}
 }

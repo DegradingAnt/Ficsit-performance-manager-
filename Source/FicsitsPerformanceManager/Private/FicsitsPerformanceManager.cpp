@@ -86,6 +86,9 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// exists, which is why it can report during a loading screen at all.
 	if (!IsRunningDedicatedServer())
 	{
+		// Ant asked for this three times. It is installed BEFORE the overlay is shown, so the very first
+		// thing she can do with it is turn it off.
+		FPMOverlay::Get().InstallHotkey();
 		FPMOverlay::Get().SetVisible(true);
 		FPMOverlay::Post(TEXT("startup"), FString::Printf(TEXT("FPM %s loaded, %d hook(s) armed"),
 			*VersionName, FPMHookLedger::Records().Num()));
