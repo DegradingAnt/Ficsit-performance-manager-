@@ -53,6 +53,13 @@ void FPMFixes::Arm(IFPMFix& Fix)
 		Fix.Name(), LexToString(Fix.OriginStatus()), FPMDiag::NameOf(Fix.Channel()));
 }
 
+const TArray<IFPMFix*>& FPMFixes::Armed()
+{
+	// One list, two readers: Dump() writes it to the log, the §7.1 support bundle writes it to an
+	// FOutputDevice. Neither keeps a copy, so neither can drift from the other.
+	return GArmedFixes;
+}
+
 void FPMFixes::Dump()
 {
 	/*

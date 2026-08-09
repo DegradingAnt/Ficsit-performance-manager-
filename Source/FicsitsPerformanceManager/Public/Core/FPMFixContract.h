@@ -250,4 +250,17 @@ namespace FPMFixes
 
 	/** `FPM.Diag.Dump` -- every armed fix with its side, origin status and channel, then every channel. */
 	FICSITSPERFORMANCEMANAGER_API void Dump();
+
+	/**
+	 * The armed fixes, in arm order.
+	 *
+	 * Exists because `Dump()` writes to the LOG, and §7.1's support bundle has to write the same inventory
+	 * to an arbitrary `FOutputDevice` so it lands in the console where a player can copy it. Rather than
+	 * let the support bundle keep its own second list — which is how two inventories drift apart and one
+	 * of them starts lying — both read this.
+	 *
+	 * The pointers are to function-local statics owned for the life of the process; nothing here manages a
+	 * lifetime, and the reference is only valid on the thread that armed them (the game thread).
+	 */
+	FICSITSPERFORMANCEMANAGER_API const TArray<IFPMFix*>& Armed();
 }
