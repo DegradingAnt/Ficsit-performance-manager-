@@ -8,6 +8,7 @@
 #include "Settings/FGUserSetting.h"
 #include "Settings/FGUserSettingApplyType.h"
 
+#include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/OutputDevice.h"
@@ -84,19 +85,31 @@ namespace
 void FPMUserSettingMap::Init()
 {
 	/*
-	 * POST-ENGINE-INIT, not StartupModule. The module loads during engine init, so `GEngine` is not yet
-	 * usable there and `GetGameUserSettings()` returns nothing — a read at arm time would fail on every
-	 * boot and quietly leave us on the tables forever, which is indistinguishable in the log from
-	 * "there were no settings".
+	 * ⚠ THE DELAY IS THE WHOLE POINT, AND IT WAS MEASURED, NOT GUESSED.
 	 *
-	 * This makes a MAIN-MENU boot sufficient to answer P1.3's gate: no save load, no typing, no console.
-	 * The world-load refresh in the game-world module still runs and still matters — it is the one that
-	 * picks up MOD-registered settings once their game features have activated.
+	 * The first version of this bound to `FCoreDelegates::OnPostEngineInit` and read immediately. On the
+	 * 0.5.6 boot of 2026-08-09 that produced, in the log, before anything else:
+	 *     "user-setting map: COMPILED TABLES ONLY - no runtime read has succeeded"
+	 * while the same read taken 8 seconds later returned 67 cvar-backed settings out of 236. Post-engine
+	 * -init is simply too early: the settings object is not populated yet, and mod game features have not
+	 * finished registering theirs.
+	 *
+	 * A too-early read does not merely fail — it fails INTO A PLAUSIBLE ANSWER. It leaves the map on the
+	 * vanilla-only tables and writes a line that a later reader takes for the state of the world. That is
+	 * worse than not reading at all.
+	 *
+	 * So: engine-loop-init-complete, then a short ticker. `Refresh()` is cheap and idempotent, and the
+	 * world-load refresh still runs on top of this — that one is what picks up settings from mods whose
+	 * game features activate later still.
 	 */
-	FCoreDelegates::OnPostEngineInit.AddLambda([]()
+	FCoreDelegates::OnFEngineLoopInitComplete.AddStatic([]()
 	{
-		Refresh();
-		LogState();
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateStatic([](float) -> bool
+		{
+			Refresh();
+			LogState();
+			return false;   // one-shot
+		}), 5.0f);
 	});
 }
 
