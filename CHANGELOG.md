@@ -34,6 +34,21 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 07:30 — VERSION — 0.3.1 → 0.4.0
+
+- **What:** `VersionName` / `SemVersion` → `0.4.0`, `RemoteVersionRange` → `=0.4.0`, and the `Description`
+  reworded from seven items to nine (asset residency under REPAIRS, hitch meter under DIAGNOSTICS).
+- **Why:** MINOR, not patch. Two new capabilities — a frame-time instrument that did not exist in this game
+  at all, and a new repair — plus two new diagnostic channels and four new console variables. The repo's own
+  SemVer table bumps MINOR for new functionality in the `0.y.z` band; PATCH is for repairing an existing fix.
+- **This also clears the tag drift Ant was blocked on.** `stamp_version.py --check` was correctly refusing
+  because HEAD had moved past tag `0.3.1` (`git describe` → `0.3.1-3-g8edd155`). Tagging `0.4.0` at this
+  commit restores SemVersion == git tag == generated pin.
+- **Files:** `FicsitsPerformanceManager.uplugin`, `CHANGELOG.md`.
+- **Revert:** set all three fields back and delete the tag. Never published.
+- **Verified:** build-only. **NOT boot-tested.** Per Ant's standing rule the bump triggers a review pass
+  before packaging.
+
 ## 2026-08-09 07:20 — CODE — asset residency: vanilla blocking-loads a platform icon nobody holds a reference to
 
 - **What:** `FFPMAssetResidency` (`Streaming/FPMAssetResidency.{h,cpp}`) + a `FPM.Diag.Residency` channel. It
