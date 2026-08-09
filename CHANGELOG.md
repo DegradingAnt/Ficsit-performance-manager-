@@ -62,6 +62,30 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 12:40 — VERSION — 0.5.4 → 0.5.5
+
+- **What:** `0.5.5`; pin generated. PATCH — `FPM.D0` is a console command; a player would not notice.
+
+---
+
+## 2026-08-09 12:38 — CODE — `FPM.D0`: Phase 2's console half in one command
+
+Ant's standing rule: *"automate as much as possible by default. i dont like running around throwing
+commands around."*
+
+- **`FPM.D0`** runs the whole D0-client console read: the **`GetAllUserSettingsMap` enumeration**
+  (`UFGGameUserSettings`, `FGGameUserSettings.h:330`) — **which is what P1.3 is gated on** — plus the
+  GI / contact-shadow / distance-field / MegaLights cvar reads with their full priority-layer stacks.
+- **It cross-checks every enumerated setting against clause 6** and flags any the game persists that
+  `IsUserSettingBacked` does not protect. That check replaces a hand-maintained list — which is wrong
+  the moment Coffee Stain adds a setting, and wrong SILENTLY — with the game's own answer.
+- **It states what it could NOT cover**: the ten-dismantle baseline, pop-in / connector watches, the
+  hypertube ride. An automated report that quietly omits the manual half reads as a complete
+  discovery pass, and the next session plans against it.
+- Unreachable settings object prints *"we did not look"*, never *"no settings"*.
+- **Files:** `Private/Core/FPMCVarProbe.cpp`. **Verified:** build-only, `Result: Succeeded`.
+
+---
 ## 2026-08-09 11:45 — VERSION — 0.5.3 → 0.5.4
 
 - **What:** `0.5.4`; pin generated. PATCH — `FPM.Bisect` is a console command; a player would not notice.
@@ -1023,3 +1047,4 @@ This entry exists because the corrections are claims, and a claim is worth the s
 - **Revert:** n/a — first build.
 - **Verified:** booted on Ant's client 2026-08-08; 7 hooks armed, both root modules discovered,
   lifecycle in documented order. Shipped with an empty `.uplugin` `Description` — corrected in `0.2.0`.
+

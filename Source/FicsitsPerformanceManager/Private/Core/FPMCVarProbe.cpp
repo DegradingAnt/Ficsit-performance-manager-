@@ -36,6 +36,8 @@
 
 #include "Core/FPMCVarWriter.h"
 
+#include "FGGameUserSettings.h"
+
 #include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "HAL/IConsoleManager.h"
@@ -215,6 +217,104 @@ static FAutoConsoleCommandWithArgsAndOutputDevice GFPMProbeSnapCmd(
 			FPMProbeEmit(Ar, FString::Printf(TEXT("snapshot %s captured: %d cvar(s) matching %s"),
 				bIsA ? TEXT("A") : TEXT("B"), Slot.Num(), *Label));
 		}));
+
+/*
+ * ★★★ `FPM.D0` — THE WHOLE PHASE-2 DISCOVERY READ, ONE COMMAND, ZERO TYPING.
+ *
+ * Ant's standing rule, 2026-08-09: *"automate as much as possible by default. i dont like running
+ * around throwing commands around."* Design R2 §9's D0-client lists a page of console reads; this is
+ * all of them, plus the thing they gate.
+ *
+ * ★ THE PRIZE IS THE US_* ENUMERATION, because P1.3 IS GATED ON IT. The writer's clause 6 refuses to
+ * touch any cvar the game's own settings save would capture, and until now `IsUserSettingBacked` has
+ * had to judge that from a HAND-MAINTAINED list — a list that is wrong the moment Coffee Stain adds a
+ * setting, and wrong SILENTLY. `UFGGameUserSettings::GetAllUserSettingsMap` (FGGameUserSettings.h:330)
+ * is the game's own answer, and its keys are cvar names: her GameUserSettings.ini carries entries like
+ * `sg.ShadowQuality`, `r.VolumetricCloud`, `FG.PlayerRules.KeepInventory`. So this replaces a guess
+ * with an enumeration, from the running process.
+ *
+ * IT SAYS WHAT IT COULD NOT COVER. D0 also wants a ten-dismantle field watch, pop-in and connector
+ * observation, and a hypertube ride — none of which code can do. Listing them is not padding: an
+ * automated report that quietly omits the manual half reads as a complete discovery pass, and the
+ * next session plans against it. The gap has to be visible IN the output.
+ *
+ * READ-ONLY. Every line here reads; nothing is set. The one thing it deliberately does NOT do is flip
+ * `r.MegaLights.EnableForProject`, because that changes rendering state and belongs to a decision,
+ * not a survey.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMD0Cmd(
+	TEXT("FPM.D0"),
+	TEXT("Run the whole Phase-2 discovery read in one go: US_* setting enumeration, the GI/shadow "
+	     "cvar stacks, and the MegaLights prerequisites. Read-only."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+	{
+		auto Say = [&Ar](const FString& L)
+			{ Ar.Logf(TEXT("%s"), *L); UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM] %s"), *L); };
+
+		Say(TEXT("==== FPM.D0 : Phase 2 discovery read ===="));
+
+		// ---- 1. THE US_* ENUMERATION. P1.3's gate. -------------------------------------------
+		Say(TEXT(""));
+		Say(TEXT("-- user settings the game's own save would capture (P1.3's gate) --"));
+		if (UFGGameUserSettings* Settings = Cast<UFGGameUserSettings>(GEngine ? GEngine->GetGameUserSettings() : nullptr))
+		{
+			TMap<FString, TObjectPtr<UFGUserSettingApplyType>> All;
+			Settings->GetAllUserSettingsMap(All);
+
+			TArray<FString> Keys;
+			All.GetKeys(Keys);
+			Keys.Sort();
+			Say(FString::Printf(TEXT("  %d setting(s) enumerated from UFGGameUserSettings"), Keys.Num()));
+
+			// Cross-check against the writer's own judgement. A DISAGREEMENT IS THE FINDING: it means
+			// clause 6's hand-maintained list has drifted from what the game actually persists, and
+			// FPM would be free to write something that ends up in her settings file.
+			int32 Divergent = 0;
+			for (const FString& Key : Keys)
+			{
+				const bool bWriterThinks = FPMCVarWriter::IsUserSettingBacked(*Key);
+				Say(FString::Printf(TEXT("    %-52s writer says %s"), *Key,
+					bWriterThinks ? TEXT("BACKED") : TEXT("** not backed - CLAUSE 6 BLIND SPOT **")));
+				if (!bWriterThinks) { ++Divergent; }
+			}
+			Say(Divergent == 0
+				? FString(TEXT("  clause 6 agrees with the game on every setting."))
+				: FString::Printf(TEXT("  ** %d setting(s) the GAME persists that clause 6 does NOT protect. "
+				                       "Widen IsUserSettingBacked before the ladder writes anything. **"), Divergent));
+		}
+		else
+		{
+			// Named, not silent: "no settings object" and "zero settings" must never look the same.
+			Say(TEXT("  ** COULD NOT REACH UFGGameUserSettings - enumeration NOT performed. **"));
+			Say(TEXT("     This is not 'no settings'; it is 'we did not look'. P1.3 stays gated."));
+		}
+
+		// ---- 2. The cvar reads D0 asks for, with their full layer stacks. ---------------------
+		Say(TEXT(""));
+		Say(TEXT("-- D0 cvar reads (value, owning layer, full history) --"));
+		const TCHAR* Wanted[] = {
+			TEXT("r.DynamicGlobalIlluminationMethod"), TEXT("r.ContactShadows"),
+			TEXT("r.DistanceFieldShadowing"), TEXT("r.DFShadowQuality"),
+			TEXT("r.AOGlobalDFResolution"), TEXT("r.Shadow.Virtual.Enable"),
+			TEXT("r.RayTracing"), TEXT("r.MegaLights.EnableForProject"), TEXT("r.MegaLights.Allowed"),
+		};
+		for (const TCHAR* Name : Wanted)
+		{
+			IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(Name);
+			if (!V) { Say(FString::Printf(TEXT("  %-42s (no such cvar on this build)"), Name)); continue; }
+			Say(FString::Printf(TEXT("  %-42s = %s"), Name, *FPMProbeDescribe(V)));
+			V->LogHistory(Ar);
+		}
+
+		// ---- 3. THE HALF CODE CANNOT DO. Stated, or its absence reads as coverage. ------------
+		Say(TEXT(""));
+		Say(TEXT("-- NOT COVERED BY THIS COMMAND, and D0 is not complete without them --"));
+		Say(TEXT("   * ten-dismantle baseline, watching the field for wrong-mesh removals (gates P3.1)"));
+		Say(TEXT("   * pop-in / placed-faces / connector observation"));
+		Say(TEXT("   * one hypertube ride with HypertubeDirectionProtocol disabled (I12 discriminator)"));
+		Say(TEXT("   * 'stat rhi' - and STATS is compiled out of this shipping build, so it may be dead"));
+		Say(TEXT("==== end FPM.D0 ===="));
+	}));
 
 /*
  * ★★★ `FPM.Bisect` — FIND WHICH CVAR IN A SCALABILITY GROUP COSTS THE FRAME. ONE COMMAND.

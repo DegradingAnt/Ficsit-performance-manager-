@@ -1,0 +1,375 @@
+// Copyright 2026 DegradingAnt. Licensed under GPL-3.0.
+//
+// FPM BENCH — a REPRODUCIBLE frame-time measurement. Same place, same hour, every run.
+//
+// ★ WHY, and it is a measured failure rather than a feature idea.
+//
+// On 2026-08-09 an entire afternoon of manual A/B produced six wrong conclusions before naming a
+// 20 ms cvar. The measurements were not wrong because the instrument was bad — the hitch meter was
+// fine. They were wrong because FOUR VARIABLES MOVED between samples and nobody held them:
+//
+//   * CAMERA POSITION. "Face the platform" is not a position. Two readings framed differently are
+//     two different scenes, and I compared them as if they were one.
+//   * TIME OF DAY. A live day/night cycle changed the directional light's contribution mid-session.
+//     The plan did not list it as a variable at all; it invalidated an hour.
+//   * DURATION. Instantaneous FPS off a screenshot, n=1, read by eye.
+//   * ORDER. Console writes stick and outrank scalability, so tests contaminated their successors.
+//
+// Ant, on being handed yet another list of steps: *"automate as much as possible by default. i dont
+// like running around throwing commands around."* She is right, and the deeper reason is that a
+// human cannot hold those four still. Code can.
+//
+// YOU MARK THE PLACES THAT HURT ONCE. After that the bench flies the route itself.
+//
+// ⚠⚠ THIS ONE CAN WRITE TO HER SAVE, WHICH NOTHING ELSE IN FPM DOES.
+// `AFGTimeOfDaySubsystem` implements `IFGSaveInterface` (FGTimeSubsystem.h:19) — the time of day is
+// SAVED WITH THE WORLD. So is the player's position. Every other FPM surface touches cvars, which
+// are session state and evaporate; this touches persistent state. The whole design below is shaped
+// by that: original position, rotation and clock are captured BEFORE anything moves, and restored on
+// EVERY exit path — completion, abort, world teardown, module shutdown. If it cannot guarantee
+// restoration it does not start.
+
+#include "FicsitsPerformanceManager.h"
+
+#include "FGTimeSubsystem.h"
+
+#include "Containers/Ticker.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
+#include "Misc/OutputDevice.h"
+
+namespace
+{
+	/* ⚠ Unity build: every name prefixed. A file-local name is not file-local here. */
+
+	struct FFPMBenchMark
+	{
+		FString  Name;
+		FVector  Location = FVector::ZeroVector;
+		FRotator Rotation = FRotator::ZeroRotator;
+	};
+
+	struct FFPMBenchSample
+	{
+		FString Name;
+		double  MeanMs = 0.0;
+		double  WorstMs = 0.0;
+		int32   Frames = 0;
+	};
+
+	TArray<FFPMBenchMark> GFPMBenchMarks;
+
+	// ---- run state -------------------------------------------------------------------------
+	bool    GFPMBenchRunning = false;
+	int32   GFPMBenchIndex = 0;
+	bool    GFPMBenchSampling = false;
+	double  GFPMBenchPhaseEnd = 0.0;
+	double  GFPMBenchLastTick = 0.0;
+	int32   GFPMBenchFrames = 0;
+	double  GFPMBenchAccum = 0.0;
+	double  GFPMBenchWorst = 0.0;
+	TArray<FFPMBenchSample> GFPMBenchResults;
+	FTSTicker::FDelegateHandle GFPMBenchTick;
+
+	// ---- what MUST be put back ---------------------------------------------------------------
+	TWeakObjectPtr<UWorld> GFPMBenchWorld;
+	FVector  GFPMBenchHomeLoc = FVector::ZeroVector;
+	FRotator GFPMBenchHomeRot = FRotator::ZeroRotator;
+	float    GFPMBenchHomeDaySeconds = -1.0f;
+	bool     GFPMBenchHomeValid = false;
+
+	constexpr double GFPMBenchWarm   = 1.5;   // let streaming and the renderer settle after a jump
+	constexpr double GFPMBenchSample = 3.0;   // long enough that a single hitch does not dominate
+
+	void FPMBenchSay(const FString& L)
+		{ UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM] %s"), *L); }
+
+	APawn* FPMBenchPawn(UWorld* World)
+	{
+		if (!World) { return nullptr; }
+		APlayerController* PC = GEngine ? GEngine->GetFirstLocalPlayerController(World) : nullptr;
+		return PC ? PC->GetPawn() : nullptr;
+	}
+
+	/** Move the player AND the camera. Rotation lives on the controller, not the pawn — a bench that
+	 *  restored only the position would put her back facing somewhere else, which is both rude and
+	 *  a silently different scene for the next run. */
+	bool FPMBenchGoTo(UWorld* World, const FVector& Loc, const FRotator& Rot)
+	{
+		APlayerController* PC = GEngine ? GEngine->GetFirstLocalPlayerController(World) : nullptr;
+		APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+		if (!Pawn) { return false; }
+		const bool bMoved = Pawn->TeleportTo(Loc, Rot, /*bIsATest*/ false, /*bNoCheck*/ true);
+		PC->SetControlRotation(Rot);
+		return bMoved;
+	}
+
+	/**
+	 * ★ THE RESTORE. Called from every exit path, and safe to call twice.
+	 *
+	 * Order matters: put the clock back BEFORE the player, so that if the teleport fails for any
+	 * reason the persistent world state is already correct and only the position is wrong — the
+	 * cheaper of the two failures, and one she can fix by walking.
+	 */
+	void FPMBenchRestore()
+	{
+		UWorld* World = GFPMBenchWorld.Get();
+		if (GFPMBenchHomeValid && World)
+		{
+			if (GFPMBenchHomeDaySeconds >= 0.0f)
+			{
+				if (AFGTimeOfDaySubsystem* Time = AFGTimeOfDaySubsystem::Get(World))
+				{
+					Time->SetDaySeconds(GFPMBenchHomeDaySeconds);
+				}
+			}
+			FPMBenchGoTo(World, GFPMBenchHomeLoc, GFPMBenchHomeRot);
+			FPMBenchSay(FString::Printf(
+				TEXT("bench: restored you to your original position and the clock to %.0f s"),
+				GFPMBenchHomeDaySeconds));
+		}
+		GFPMBenchHomeValid = false;
+		GFPMBenchHomeDaySeconds = -1.0f;
+
+		if (GFPMBenchTick.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(GFPMBenchTick);
+			GFPMBenchTick.Reset();
+		}
+		GFPMBenchRunning = false;
+	}
+
+	void FPMBenchReport()
+	{
+		FPMBenchSay(TEXT(""));
+		FPMBenchSay(TEXT("==== FPM.Bench results — same clock, same spots, same duration ===="));
+		for (const FFPMBenchSample& S : GFPMBenchResults)
+		{
+			FPMBenchSay(FString::Printf(TEXT("  %-24s %7.2f ms  (%3.0f fps)   worst frame %7.2f ms   %d frames"),
+				*S.Name, S.MeanMs, S.MeanMs > 0 ? 1000.0 / S.MeanMs : 0.0, S.WorstMs, S.Frames));
+		}
+		if (GFPMBenchResults.Num() == 0)
+		{
+			// An empty run is a FAILURE, not a clean sheet. Same rule the rain sweep and the
+			// deploy tools learned the hard way.
+			FPMBenchSay(TEXT("  ** no samples taken - nothing was measured. This is not a pass. **"));
+		}
+		FPMBenchSay(TEXT("==== end ===="));
+	}
+
+	bool FPMBenchTickFn(float)
+	{
+		const double Now = FPlatformTime::Seconds();
+		const double Delta = Now - GFPMBenchLastTick;
+		GFPMBenchLastTick = Now;
+
+		// Wall clock, never FApp::GetDeltaTime() — that is smoothed and clamped by
+		// UEngine::bSmoothFrameRate and would flatten the differences being measured.
+		// >1 s is a stall (a level stream, a hitch), not a frame; counting it would poison the mean.
+		if (GFPMBenchSampling && Delta > 0.0 && Delta < 1.0)
+		{
+			++GFPMBenchFrames;
+			GFPMBenchAccum += Delta;
+			GFPMBenchWorst = FMath::Max(GFPMBenchWorst, Delta * 1000.0);
+		}
+
+		if (Now < GFPMBenchPhaseEnd) { return true; }
+
+		UWorld* World = GFPMBenchWorld.Get();
+		if (!World)
+		{
+			// The world went away mid-run (a load, a quit). Stop rather than teleport into nothing.
+			FPMBenchSay(TEXT("bench: world went away mid-run - aborting. Your save was not modified "
+			                 "beyond what has already been restored."));
+			FPMBenchRestore();
+			return false;
+		}
+
+		if (GFPMBenchSampling)
+		{
+			FFPMBenchSample S;
+			S.Name    = GFPMBenchMarks.IsValidIndex(GFPMBenchIndex) ? GFPMBenchMarks[GFPMBenchIndex].Name : TEXT("?");
+			S.Frames  = GFPMBenchFrames;
+			S.MeanMs  = GFPMBenchFrames > 0 ? (GFPMBenchAccum / GFPMBenchFrames) * 1000.0 : 0.0;
+			S.WorstMs = GFPMBenchWorst;
+			GFPMBenchResults.Add(S);
+			FPMBenchSay(FString::Printf(TEXT("  [%d/%d] %-24s %7.2f ms over %d frames"),
+				GFPMBenchIndex + 1, GFPMBenchMarks.Num(), *S.Name, S.MeanMs, S.Frames));
+
+			GFPMBenchSampling = false;
+			++GFPMBenchIndex;
+		}
+
+		if (!GFPMBenchMarks.IsValidIndex(GFPMBenchIndex))
+		{
+			FPMBenchReport();
+			FPMBenchRestore();
+			return false;
+		}
+
+		const FFPMBenchMark& M = GFPMBenchMarks[GFPMBenchIndex];
+		if (!FPMBenchGoTo(World, M.Location, M.Rotation))
+		{
+			// Named, never silent: a mark we could not reach must not silently become a missing row.
+			FPMBenchSay(FString::Printf(TEXT("  [%d/%d] %-24s ** TELEPORT REFUSED - skipped, no sample **"),
+				GFPMBenchIndex + 1, GFPMBenchMarks.Num(), *M.Name));
+			++GFPMBenchIndex;
+			GFPMBenchPhaseEnd = Now;   // advance immediately
+			return true;
+		}
+
+		/*
+		 * ⚠ WARM AND SAMPLE ARE SEPARATE PHASES. Caught before this ever produced a number.
+		 *
+		 * The first draft set `bSampling = true` and the phase end to warm+sample in one go, so the
+		 * settling frames after a teleport — streaming, shader warm-up, the renderer catching up —
+		 * were counted INTO the mean. Every reading would have been pessimistic by an unknown amount
+		 * that varied with how far the jump was, which is precisely the class of quiet bias that made
+		 * today's manual measurements argue with each other.
+		 *
+		 * Now: teleport, warm with sampling OFF, and only then open the sample window. The tick below
+		 * flips `bSampling` when the warm phase expires.
+		 */
+		GFPMBenchSampling = false;
+		GFPMBenchFrames = 0;
+		GFPMBenchAccum = 0.0;
+		GFPMBenchWorst = 0.0;
+		GFPMBenchPhaseEnd = Now + GFPMBenchWarm;
+		GFPMBenchWarming = true;
+		return true;
+	}
+}
+
+static FAutoConsoleCommandWithWorldArgsAndOutputDevice GFPMBenchMarkCmd(
+	TEXT("FPM.Bench.Mark"),
+	TEXT("Record where you are standing as a bench waypoint. Usage: FPM.Bench.Mark [name]"),
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World, FOutputDevice& Ar)
+		{
+			APlayerController* PC = GEngine ? GEngine->GetFirstLocalPlayerController(World) : nullptr;
+			APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+			if (!Pawn) { Ar.Logf(TEXT("FPM.Bench.Mark: no local pawn - are you in a world?")); return; }
+
+			FFPMBenchMark M;
+			M.Name     = Args.Num() > 0 ? Args[0] : FString::Printf(TEXT("mark%d"), GFPMBenchMarks.Num() + 1);
+			M.Location = Pawn->GetActorLocation();
+			M.Rotation = PC->GetControlRotation();
+			GFPMBenchMarks.Add(M);
+
+			Ar.Logf(TEXT("marked '%s' at %s looking %s  (%d mark(s) total)"),
+				*M.Name, *M.Location.ToCompactString(), *M.Rotation.ToCompactString(), GFPMBenchMarks.Num());
+		}));
+
+static FAutoConsoleCommandWithOutputDevice GFPMBenchListCmd(
+	TEXT("FPM.Bench.List"),
+	TEXT("List the recorded bench waypoints."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+	{
+		Ar.Logf(TEXT("---- bench marks: %d ----"), GFPMBenchMarks.Num());
+		for (int32 i = 0; i < GFPMBenchMarks.Num(); ++i)
+		{
+			Ar.Logf(TEXT("  %2d  %-24s %s"), i + 1, *GFPMBenchMarks[i].Name,
+				*GFPMBenchMarks[i].Location.ToCompactString());
+		}
+		// Stated: an empty list and a broken command must not look the same.
+		if (GFPMBenchMarks.Num() == 0) { Ar.Logf(TEXT("  (none yet - stand somewhere and use FPM.Bench.Mark)")); }
+	}));
+
+static FAutoConsoleCommandWithOutputDevice GFPMBenchClearCmd(
+	TEXT("FPM.Bench.Clear"),
+	TEXT("Forget all bench waypoints."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+		{ const int32 N = GFPMBenchMarks.Num(); GFPMBenchMarks.Reset(); Ar.Logf(TEXT("cleared %d mark(s)"), N); }));
+
+/*
+ * `FPM.Bench.Run [hourOfDay]` — fly the route, sample each stop, put everything back.
+ *
+ * Default hour 12 (noon) because the directional light is at its most expensive then, which is the
+ * condition worth measuring. Pass 0 for midnight to isolate the local lights instead — the two
+ * scenes that told us there were two cvar families at all.
+ */
+static FAutoConsoleCommandWithWorldArgsAndOutputDevice GFPMBenchRunCmd(
+	TEXT("FPM.Bench.Run"),
+	TEXT("Teleport through every bench waypoint at a fixed time of day, sample frame time at each, "
+	     "then restore your position and the clock. Usage: FPM.Bench.Run [hourOfDay 0-23]"),
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World, FOutputDevice& Ar)
+		{
+			if (GFPMBenchRunning) { Ar.Logf(TEXT("bench already running - FPM.Bench.Stop to abort.")); return; }
+			if (GFPMBenchMarks.Num() == 0)
+			{
+				Ar.Logf(TEXT("no waypoints. Stand somewhere that hurts, FPM.Bench.Mark, repeat, then run."));
+				return;
+			}
+			/*
+			 * ⚠ REFUSE ON A SERVER OR AS A CLIENT. Teleporting replicates, and the time of day is
+			 * authoritative server state -- moving either would reach other players' sessions. This
+			 * is a single-player measurement tool and says so rather than misbehaving quietly.
+			 */
+			if (!World || World->GetNetMode() != NM_Standalone)
+			{
+				Ar.Logf(TEXT("REFUSING: the bench only runs in single-player. It teleports you and moves "
+				             "the clock, and both replicate - on a server that reaches SunFry too."));
+				return;
+			}
+			APawn* Pawn = FPMBenchPawn(World);
+			APlayerController* PC = GEngine ? GEngine->GetFirstLocalPlayerController(World) : nullptr;
+			if (!Pawn || !PC) { Ar.Logf(TEXT("REFUSING: no local pawn to move.")); return; }
+
+			AFGTimeOfDaySubsystem* Time = AFGTimeOfDaySubsystem::Get(World);
+			if (!Time)
+			{
+				// Refuse rather than run without the clock pinned. A bench whose biggest uncontrolled
+				// variable is still moving is the thing this exists to replace.
+				Ar.Logf(TEXT("REFUSING: no time subsystem, so the time of day cannot be held still - "
+				             "which is the variable that invalidated a whole session on 2026-08-09."));
+				return;
+			}
+
+			// Capture EVERYTHING that must be put back, before anything moves.
+			GFPMBenchWorld = World;
+			GFPMBenchHomeLoc = Pawn->GetActorLocation();
+			GFPMBenchHomeRot = PC->GetControlRotation();
+			GFPMBenchHomeDaySeconds = Time->GetDaySeconds();
+			GFPMBenchHomeValid = true;
+
+			const int32 Hour = Args.Num() > 0 ? FMath::Clamp(FCString::Atoi(*Args[0]), 0, 23) : 12;
+			Time->SetDaySeconds(static_cast<float>(Hour) * 3600.0f);
+
+			GFPMBenchResults.Reset();
+			GFPMBenchIndex = 0;
+			GFPMBenchSampling = false;
+			GFPMBenchRunning = true;
+			GFPMBenchLastTick = FPlatformTime::Seconds();
+			GFPMBenchPhaseEnd = GFPMBenchLastTick;   // advance into the first mark immediately
+
+			Ar.Logf(TEXT("---- FPM.Bench.Run : %d waypoint(s), clock pinned to %02d:00, ~%.0f s ----"),
+				GFPMBenchMarks.Num(), Hour, GFPMBenchMarks.Num() * (GFPMBenchWarm + GFPMBenchSample));
+			Ar.Logf(TEXT("  Hands off - it moves you. Your position and the clock are restored at the end."));
+			FPMBenchSay(FString::Printf(TEXT("bench: home saved (clock was %.0f s); pinned to %02d:00"),
+				GFPMBenchHomeDaySeconds, Hour));
+
+			GFPMBenchTick = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateStatic(&FPMBenchTickFn), 0.f);
+		}));
+
+static FAutoConsoleCommandWithOutputDevice GFPMBenchStopCmd(
+	TEXT("FPM.Bench.Stop"),
+	TEXT("Abort a running bench and restore your position and the clock immediately."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+	{
+		if (!GFPMBenchRunning) { Ar.Logf(TEXT("bench is not running.")); return; }
+		FPMBenchReport();
+		FPMBenchRestore();
+		Ar.Logf(TEXT("bench aborted; position and clock restored."));
+	}));
+
+/** Module shutdown must not leave her clock moved. Called from ShutdownModule. */
+void FPMBenchShutdown()
+{
+	if (GFPMBenchRunning || GFPMBenchHomeValid) { FPMBenchRestore(); }
+}
