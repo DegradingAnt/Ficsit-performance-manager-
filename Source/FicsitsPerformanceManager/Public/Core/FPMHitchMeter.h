@@ -70,6 +70,12 @@ public:
 
 	virtual const TCHAR* Name() const override { return TEXT("hitch-meter"); }
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
+
+	/** UnknownCause: a pure instrument. It handles no symptom and claims no cause -- it exists to NAME one, and as of
+	 * 2026-08-09 the majority of measured hitches remain unattributed by it. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::UnknownCause; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::Hitch; }
 	virtual void Arm() override;
 	virtual void Disarm() override;
 

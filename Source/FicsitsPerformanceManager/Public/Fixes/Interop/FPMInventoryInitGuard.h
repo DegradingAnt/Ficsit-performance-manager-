@@ -84,5 +84,11 @@ public:
 
 	virtual const TCHAR* Name() const override { return TEXT("inventory-init"); }
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
+
+	/** ChokePointRepair: the CREATOR of zero-slot inventories is still unnamed. Ant's ruling attaches the origin-naming
+	 * diagnostic to this fix: log the owner class of every inventory it resizes. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::ChokePointRepair; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::InventoryInit; }
 	virtual void Arm() override;
 };

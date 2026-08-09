@@ -45,5 +45,11 @@ public:
 
 	virtual const TCHAR* Name() const override { return TEXT("static-base"); }
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
+
+	/** OriginNamed: clients cannot net-resolve an immobile instancing-proxy base, so the correction targets a base the
+	 * client can never bind -- the cause is named, not merely the symptom. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::OriginNamed; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::StaticBase; }
 	virtual void Arm() override;
 };

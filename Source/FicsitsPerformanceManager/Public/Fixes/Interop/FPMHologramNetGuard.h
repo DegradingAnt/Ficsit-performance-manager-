@@ -94,5 +94,12 @@ public:
 	 */
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::NeverOnDedicatedServer; }
 
+	/** ChokePointRepair: vanilla derives mCachedAttachmentPoints locally and never replicates it, and the modded proxy's
+	 * cacheless arrival is named for ModularStations -- close to OriginNamed, deliberately NOT promoted
+	 * until the carousel-class mechanism carries a receipt. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::ChokePointRepair; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::HologramNet; }
+
 	virtual void Arm() override;
 };

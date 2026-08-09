@@ -80,6 +80,12 @@ public:
 	 */
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::NeverOnDedicatedServer; }
 
+	/** OriginNamed: a soft reference (BPW_UserIcon.json:2827) that nothing holds a hard reference to, so LoadSynchronous
+	 * takes its TryLoad branch every bind -- cause receipted from the shipped asset's own bytes. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::OriginNamed; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::Residency; }
+
 	virtual void Arm() override;
 	virtual void OnWorldLoad(UWorld* World) override;
 	virtual void Disarm() override;

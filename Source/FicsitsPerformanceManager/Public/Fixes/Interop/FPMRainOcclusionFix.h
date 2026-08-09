@@ -57,6 +57,12 @@ public:
 
 	virtual const TCHAR* Name() const override { return TEXT("rain-occlusion"); }
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::NeverOnDedicatedServer; }
+
+	/** OriginNamed: classes ship with an unauthored mRainOcclusionBoundingBox and their real geometry lives on
+	 * mInstanceDataCDO -- both read from FModel bytes, so the cause is receipted. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::OriginNamed; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::Rain; }
 	virtual void Arm() override;
 
 	/**

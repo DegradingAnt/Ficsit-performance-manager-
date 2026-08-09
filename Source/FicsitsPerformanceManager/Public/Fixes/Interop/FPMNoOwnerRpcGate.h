@@ -51,5 +51,11 @@ public:
 
 	virtual const TCHAR* Name() const override { return TEXT("no-owner-rpc-gate"); }
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
+
+	/** Guard: the cause lives in ANOTHER mod's sign dispatch. We prevent the harm; naming and reporting it upstream
+	 * IS the origin work, and it is not ours to close. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::Guard; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::RpcGate; }
 	virtual void Arm() override;
 };

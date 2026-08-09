@@ -70,5 +70,11 @@ public:
 	 */
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
 
+	/** UnknownCause: the family's mechanism is not receipted ON OUR STACK. The enum has four values and this is the honest
+	 * one; the probe IS this family's origin-naming instrument. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::UnknownCause; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::SchematicProbe; }
+
 	virtual void Arm() override;
 };

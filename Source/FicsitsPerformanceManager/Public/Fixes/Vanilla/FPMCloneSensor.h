@@ -51,5 +51,13 @@ public:
 
 	virtual const TCHAR* Name() const override { return TEXT("clone-sensor"); }
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
+
+	/** UnknownCause: it is the origin-naming instrument for the clone family, so its own status is the honest one until the
+	 * family's mechanism is receipted. 2026-08-09 advanced it -- the inactive array holds the SAME object
+	 * twice (equal uid) and every matching candidate is identity-identical -- but WHY duplicates accrue is
+	 * still unnamed. */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::UnknownCause; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::CloneSensor; }
 	virtual void Arm() override;
 };

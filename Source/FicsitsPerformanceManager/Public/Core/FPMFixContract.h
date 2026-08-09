@@ -4,6 +4,37 @@
 
 #include "CoreMinimal.h"
 
+#include "Core/FPMDiag.h"
+
+/**
+ * ★ WHAT KIND OF CLAIM A FIX IS MAKING — Ant's Q1 ruling, in structural form (design §2.2).
+ *
+ * The word "fixed" was being used for work that repaired a SYMPTOM at a convenient place without ever
+ * naming the CAUSE. That is not dishonesty, it is drift: every individual case reads as reasonable and
+ * the corpus ends up claiming more than it earned. Making the distinction a compile-time obligation is
+ * what stops it, because an author cannot ship without answering the question.
+ *
+ * ⚠ DELIBERATELY FOUR VALUES. The moment this wants sub-states it has outrun its evidence — the same
+ * discipline the fix contract itself is pinned to.
+ */
+enum class EFPMOriginStatus : uint8
+{
+	/** The CAUSE is identified with a receipt. This is the only value beside which "fixed" may be used. */
+	OriginNamed,
+
+	/** Repairs at the earliest reachable point; the cause is not yet named. */
+	ChokePointRepair,
+
+	/** Prevents a harm from a cause we may never own — another mod, or the engine. */
+	Guard,
+
+	/** Symptom handled, mechanism not understood. Highest scrutiny, and it must carry a diagnostic. */
+	UnknownCause,
+};
+
+/** For the armed line and `FPM.Diag.Dump`. */
+FICSITSPERFORMANCEMANAGER_API const TCHAR* LexToString(EFPMOriginStatus Status);
+
 /**
  * WHERE A FIX IS ALLOWED TO ARM.
  *
@@ -110,10 +141,21 @@ enum class EFPMFixSide : uint8
  * 2,300-line module file — not more UE modules, which cost real build-trap risk, but one translation
  * unit per fix inside the one runtime module.
  *
- * IT IS DELIBERATELY FOUR MEMBERS. The design pinned this to an interface plus a review rule: the
- * moment it grows metadata tooling — surface descriptors, dependency graphs, a registry with policy —
- * it has outrun the evidence that anything needs it. The declared HOOK surface already exists for free
- * and cannot drift, because FPMHookLedger records every hook under the owner name the fix passes.
+ * ★ IT IS NOW SIX MEMBERS, AND THE FREEZE IS RE-STATED RATHER THAN QUIETLY BROKEN.
+ *
+ * It used to say "DELIBERATELY FOUR MEMBERS", and that comment is rewritten HERE, in the same commit
+ * that adds the two — because a comment contradicting the code it sits on is the project's own named
+ * defect, and leaving a stale freeze note is how a rule stops being believed.
+ *
+ * The two additions are Ant-ruled, not author-chosen: `OriginStatus()` (her Q1 ruling — a fix must
+ * declare what kind of claim it is making) and `Channel()` (design §3.1 — a fix must declare where its
+ * diagnostics go). Both are PURE VIRTUAL on purpose. A default would let a new fix inherit somebody
+ * else's answer silently, and the entire value here is that the author cannot avoid answering.
+ *
+ * THE FREEZE ITSELF STANDS, unchanged in substance: the moment this grows metadata tooling — surface
+ * descriptors, dependency graphs, a registry with policy — it has outrun the evidence that anything
+ * needs it. The declared HOOK surface still comes for free and still cannot drift, because
+ * FPMHookLedger records every hook under the owner name the fix passes.
  *
  * A fix is not done when it compiles. It is done when something calls Arm() and a log line proves the
  * hook installed.
@@ -128,6 +170,17 @@ public:
 
 	/** Read the enum's comment before choosing. The default is Any for a reason. */
 	virtual EFPMFixSide Side() const = 0;
+
+	/**
+	 * WHAT KIND OF CLAIM THIS FIX MAKES. Printed on the armed line and in `FPM.Diag.Dump`, and it governs
+	 * the changelog: **"fixed" may only appear beside `OriginNamed`.** Anything else is named as what it
+	 * actually is, and anything that is not `OriginNamed` owes an origin-naming diagnostic — a channel
+	 * whose stated job is to name the cause from play data.
+	 */
+	virtual EFPMOriginStatus OriginStatus() const = 0;
+
+	/** Where this fix's diagnostics go. Pure virtual so a new fix cannot inherit somebody else's channel. */
+	virtual FPMDiag::EChannel Channel() const = 0;
 
 	/** Install. Called once, from StartupModule. The ledger refuses the hooks in an editor build. */
 	virtual void Arm() = 0;
@@ -194,4 +247,7 @@ namespace FPMFixes
 	 * wants load-time work, which is the coupling the old mod's structure died of.
 	 */
 	FICSITSPERFORMANCEMANAGER_API void NotifyWorldLoad(UWorld* World);
+
+	/** `FPM.Diag.Dump` -- every armed fix with its side, origin status and channel, then every channel. */
+	FICSITSPERFORMANCEMANAGER_API void Dump();
 }

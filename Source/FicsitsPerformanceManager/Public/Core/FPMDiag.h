@@ -53,6 +53,12 @@ public:
 	/** One channel per diagnostic surface. Keep in sync with the cvar table in the .cpp. */
 	enum class EChannel : uint8
 	{
+		// ★ EVERY FIX MUST NAME ONE — `IFPMFix::Channel()` is a pure virtual as of P1.1, so a fix without
+		// a channel does not compile. StaticBase / RpcGate / Rain were added here for exactly that reason:
+		// they had diagnostics but no channel, which is the drift the pure virtual now prevents.
+		StaticBase,       // FPM.Diag.StaticBase
+		RpcGate,          // FPM.Diag.RpcGate
+		Rain,             // FPM.Diag.Rain — the SWEEP's reporting, not FPM.Rain.* which change BEHAVIOUR
 		SchematicProbe,   // FPM.Diag.Schematic
 		HologramNet,      // FPM.Diag.Hologram
 		InventoryInit,    // FPM.Diag.Inventory
@@ -81,6 +87,10 @@ public:
 	 * Per-channel gating belongs at the CALL SITE, where the channel is known. This is the floor.
 	 */
 	static bool IsSilenced();
+
+	/** The channel's cvar name, e.g. "FPM.Diag.Rain". Used by the fix inventory so a reader can go
+	 *  straight from a fix to the switch that silences it. */
+	static const TCHAR* NameOf(EChannel Channel);
 
 	/** Prints every channel and its level. Bound to `FPM.Diag.List`. */
 	static void LogAll();

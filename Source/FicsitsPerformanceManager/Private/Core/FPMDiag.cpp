@@ -22,6 +22,23 @@ static TAutoConsoleVariable<int32> CVarDiagMaster(
  * below indexes this table by the enum — so a new channel goes in BOTH places or the compile-time size
  * check underneath fires.
  */
+static TAutoConsoleVariable<int32> CVarDiagStaticBase(
+	TEXT("FPM.Diag.StaticBase"), 1,
+	TEXT("Immobile-base movement repair. 0 = silent, 1 = throttled totals, 2 = every correction."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagRpcGate(
+	TEXT("FPM.Diag.RpcGate"), 1,
+	TEXT("Owner-less RPC gate. 0 = silent, 1 = throttled totals + per-class attribution, 2 = every call."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagRain(
+	TEXT("FPM.Diag.Rain"), 1,
+	TEXT("Rain-occlusion sweep REPORTING. 0 = silent, 1 = the sweep summary + unrepairable classes, "
+	     "2 = every class. ⚠ This changes what is PRINTED. FPM.Rain.Sweep / FPM.Rain.Hooks change what "
+	     "the fix DOES - different things, deliberately different names."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarDiagSchematic(
 	TEXT("FPM.Diag.Schematic"), 1,
 	TEXT("Schematic access probe. 0 = silent, 1 = anomalies + throttled totals, 2 = every call."),
@@ -58,13 +75,17 @@ static TAutoConsoleVariable<int32> CVarDiagResidency(
 
 static TAutoConsoleVariable<int32> CVarDiagOverlay(
 	TEXT("FPM.Diag.Overlay"), 1,
-	TEXT("The on-screen dev feed. 0 = hide it, 1 = show it. Ant asked for a keybind; until the Game "
-	     "Instance Module's keybind registry is wired up, this is the switch."),
+	TEXT("The on-screen dev feed. 0 = hide it, 1 = show it. The KEYBIND is FPM.Diag.OverlayKey "
+	     "(default F8) - built 2026-08-09; SML's UGameInstanceModule never had the keybind registry the "
+	     "old note here was waiting for."),
 	ECVF_Default);
 
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
+		&CVarDiagStaticBase,
+		&CVarDiagRpcGate,
+		&CVarDiagRain,
 		&CVarDiagSchematic,
 		&CVarDiagHologram,
 		&CVarDiagInventory,
@@ -89,6 +110,9 @@ namespace
 	{
 		switch (Channel)
 		{
+		case FPMDiag::EChannel::StaticBase:     return TEXT("FPM.Diag.StaticBase");
+		case FPMDiag::EChannel::RpcGate:        return TEXT("FPM.Diag.RpcGate");
+		case FPMDiag::EChannel::Rain:           return TEXT("FPM.Diag.Rain");
 		case FPMDiag::EChannel::SchematicProbe: return TEXT("FPM.Diag.Schematic");
 		case FPMDiag::EChannel::HologramNet:    return TEXT("FPM.Diag.Hologram");
 		case FPMDiag::EChannel::InventoryInit:  return TEXT("FPM.Diag.Inventory");
@@ -99,6 +123,11 @@ namespace
 		default:                                return TEXT("<unknown>");
 		}
 	}
+}
+
+const TCHAR* FPMDiag::NameOf(EChannel Channel)
+{
+	return ChannelName(Channel);
 }
 
 int32 FPMDiag::LevelOf(EChannel Channel)
