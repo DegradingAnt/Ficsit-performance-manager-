@@ -335,6 +335,78 @@ static FAutoConsoleCommandWithOutputDevice GFPMD0Cmd(
 			Say(TEXT("     This is not 'no settings'; it is 'we did not look'. P1.3 stays gated."));
 		}
 
+		/*
+		 * ---- 1b. WOULD ANY OF IT ACTUALLY BE WRITTEN? The SaveSettings interceptor's core question,
+		 *          asked WITHOUT WRITING ANYTHING.
+		 *
+		 * There is an unresolved contradiction in our own records and it decides how the interceptor must
+		 * be built. `FPMCVarWriter.h:30-33` and design §2.3.6 state, from disassembly (AC4), that
+		 * `FGGameUserSettings` serialises every `mUserSettings` entry on every save with NO DIRTY GATE.
+		 * But the engine-side API says otherwise, in its own words:
+		 *
+		 *     FGUserSettingApplyType.h:101-102
+		 *     "Returns a non empty FVariant if we have a value to actually save i.e the value is
+		 *      different from the default value and marked as dirty"
+		 *     virtual FVariant GetValueToSave() const;
+		 *
+		 * Both cannot be true. So ASK, rather than argue: `GetValueToSave()` is const and takes nothing,
+		 * so every cvar-backed setting can be polled for what it would persist with ZERO risk to Ant's
+		 * settings file. That is the whole reason this is a read and not an experiment — the obvious
+		 * experiment (hold a real US_*-backed cvar, force a save, see if it stuck) deliberately risks
+		 * writing to her settings, which is precisely what clause 6 exists to prevent.
+		 *
+		 * HOW TO READ THE RESULT:
+		 *  - every cvar-backed setting reports EMPTY  => a dirty gate exists and is closed. A value FPM
+		 *    holds on a cvar cannot leak through the save unless something also marks the setting dirty,
+		 *    and the interceptor's job shrinks to "never mark dirty".
+		 *  - some report a value                      => those are settings Ant has genuinely changed.
+		 *    Whether OUR cvar write can make one non-empty is the follow-up, and it needs the write test.
+		 *  - ALL report a value                       => the no-dirty-gate reading is right and the
+		 *    interceptor must restore-before-serialise exactly as §2.3.6 specifies.
+		 */
+		Say(TEXT(""));
+		Say(TEXT("-- would the settings save actually WRITE any of these? (GetValueToSave, read-only) --"));
+		if (UFGGameUserSettings* SaveProbe = Cast<UFGGameUserSettings>(GEngine ? GEngine->GetGameUserSettings() : nullptr))
+		{
+			TMap<FString, TObjectPtr<UFGUserSettingApplyType>> ToSaveMap;
+			SaveProbe->GetAllUserSettingsMap(ToSaveMap);
+
+			int32 CVarBackedSeen = 0;
+			int32 WouldWrite = 0;
+
+			for (const TPair<FString, TObjectPtr<UFGUserSettingApplyType>>& Pair : ToSaveMap)
+			{
+				const UFGUserSettingApplyType* Apply = Pair.Value;
+				const UFGUserSetting* Setting = Apply ? Apply->GetUserSetting() : nullptr;
+				if (!Setting || !Setting->ShouldUseCVar()) { continue; }
+
+				++CVarBackedSeen;
+
+				const FVariant Pending = Apply->GetValueToSave();
+				if (Pending.GetType() == EVariantTypes::Empty) { continue; }
+
+				++WouldWrite;
+				Say(FString::Printf(TEXT("    %-44s WOULD WRITE '%s'   (applied '%s', default '%s')"),
+					*Setting->StrId,
+					*UFGUserSettingApplyType::VariantAsString(Pending),
+					*UFGUserSettingApplyType::VariantAsString(Apply->GetAppliedValue()),
+					*UFGUserSettingApplyType::VariantAsString(Apply->GetDefaultValue())));
+			}
+
+			Say(FString::Printf(TEXT("  %d of %d cvar-backed settings would be written by a save right now"),
+				WouldWrite, CVarBackedSeen));
+			Say(WouldWrite == 0
+				? FString(TEXT("  => a DIRTY GATE EXISTS AND IS CLOSED. Nothing here persists unless something "
+				               "marks it dirty first. The interceptor's job may be 'never mark dirty' rather "
+				               "than 'restore before serialise'. NOT yet proof that OUR write cannot dirty one."))
+				: FString(TEXT("  => these carry a value the save would persist. If FPM ever holds one of THESE "
+				               "cvars, the interceptor is mandatory before the write, not after.")));
+		}
+		else
+		{
+			Say(TEXT("  ** COULD NOT REACH UFGGameUserSettings - save probe NOT performed. **"));
+		}
+
 		// ---- 2. The cvar reads D0 asks for, with their full layer stacks. ---------------------
 		Say(TEXT(""));
 		Say(TEXT("-- D0 cvar reads (value, owning layer, full history) --"));

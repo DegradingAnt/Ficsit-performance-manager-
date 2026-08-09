@@ -62,6 +62,38 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 14:45 — VERSION — 0.5.6 → 0.5.7
+
+- **What:** `0.5.7`; pin generated. **PATCH** — a read-only diagnostic plus a log-timing repair. With
+  the console closed, nothing to notice.
+- **Contents:** the `GetValueToSave` save probe · the map's own read moved off `OnPostEngineInit`, which
+  the 0.5.6 boot proved fires too early.
+- **⚠ SERVER STILL 0.5.5.** Unchanged from 0.5.6: client-only deploy, so a DatHost join is refused.
+
+---
+
+## 2026-08-09 14:42 — CODE — ask the settings system what it would actually SAVE, and write nothing to find out
+
+- **What:** a new read-only section in `FPM.D0` that polls `GetValueToSave()` on every cvar-backed
+  setting and reports which ones a save would persist right now, with applied and default values.
+- **Why it settles a real contradiction:** `FPMCVarWriter.h:30-33` and design §2.3.6 state, from
+  disassembly (AC4), that `FGGameUserSettings` serialises every `mUserSettings` entry on every save
+  **with no dirty gate**. The engine-side API says the opposite in its own words
+  (`FGUserSettingApplyType.h:101-102`): *"Returns a non empty FVariant if we have a value to actually
+  save i.e the value is different from the default value **and marked as dirty**"*. Both cannot be
+  true, and which one is decides how the SaveSettings interceptor must be built.
+- **Read-only by design, and that is the point.** The obvious experiment — hold a real US_*-backed cvar,
+  force a save, see whether it stuck — deliberately risks writing into Ant's own settings, which is
+  exactly what clause 6 exists to prevent. `GetValueToSave()` is `const` and takes no arguments, so the
+  whole question can be asked without touching anything.
+- **How to read it:** all empty ⇒ a dirty gate exists and is closed, and the interceptor's job may
+  shrink to *never mark dirty*. Some non-empty ⇒ those are settings Ant genuinely changed. All
+  non-empty ⇒ the no-dirty-gate reading is right and restore-before-serialise is mandatory.
+  It is stated in the output that this does **not** yet prove our own cvar write cannot dirty one.
+- **Files:** `Private/Core/FPMCVarProbe.cpp`. **Verified:** build-only — `Result: Succeeded`.
+
+---
+
 ## 2026-08-09 14:26 — VERSION — 0.5.5 → 0.5.6
 
 - **What:** `0.5.6`; pin generated. **PATCH** — everything in it is a diagnostic. By the player-notice
