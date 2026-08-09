@@ -3,7 +3,12 @@
 #include "Core/FPMResidueSentinel.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMBoxCache.h"
 #include "Core/FPMCVarWriter.h"
+
+#include "HAL/FileManager.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/Paths.h"
 
 #include "HAL/IConsoleManager.h"
 
@@ -22,12 +27,40 @@ namespace
 	 */
 	const TCHAR* const GFPMSentinelNamedExceptions[] = { nullptr };
 	constexpr int32 GFPMSentinelNumExceptions = 0;
+
+	/**
+	 * ★ THE CLASSIFIER'S LIVENESS PROOF — Ant, 2026-08-09: *"dead instruments are not my preferred item
+	 * to exist."*
+	 *
+	 * The audit's US_* check can never fire in normal operation, because clause 6 REFUSES the writes that
+	 * would trip it. That is correct behaviour and it leaves the detector unproven — the exact shape that
+	 * has now cost this project six incidents. The real failure path cannot be staged safely (the sentinel
+	 * must not leak on purpose), so the CLASSIFIER is proven instead: a known-positive must return true
+	 * and a known-negative must return false. If either stops holding, the audit has gone blind and says
+	 * so, rather than reporting a confident clean sheet forever.
+	 */
+	bool FPMSentinelClassifierIsAlive()
+	{
+		const bool bPositive = FPMCVarWriter::IsUserSettingBacked(TEXT("t.MaxFPS"));
+		const bool bNegative = FPMCVarWriter::IsUserSettingBacked(TEXT("FPM.SelfTest.Probe"));
+		if (bPositive && !bNegative) { return true; }
+
+		UE_LOG(LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM]   ⚠ THE RESIDUE CLASSIFIER IS DEAD: 't.MaxFPS' classified %s (expected US_*-backed) "
+			     "and 'FPM.SelfTest.Probe' classified %s (expected NOT backed). Every 'nothing would remain' "
+			     "below is worthless until this is fixed."),
+			bPositive ? TEXT("backed") : TEXT("NOT backed"),
+			bNegative ? TEXT("BACKED") : TEXT("not backed"));
+		return false;
+	}
 }
 
 int32 FPMResidueSentinel::Audit()
 {
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] ---- residue audit: if settings saved now and the mod were deleted, what remains? ----"));
+
+	const bool bClassifierAlive = FPMSentinelClassifierIsAlive();
 
 	// INPUT 1 — the named-exception table. Enumerated even when empty, because "we checked and there are
 	// none" and "nobody looked" produce identical silence otherwise.
@@ -76,7 +109,40 @@ int32 FPMResidueSentinel::Audit()
 			*CVar);
 	}
 
-	if (WouldRemain == 0 && GFPMSentinelNumExceptions == 0)
+	/*
+	 * INPUT 4 — FILES. ⚠ ADDED 2026-08-09 AFTER THIS AUDIT MISSED 120,681 BYTES OF ITS OWN MOD'S RESIDUE.
+	 *
+	 * The audit inspected cvars only, so a file written outside the plugin was a category it could not
+	 * see — and it reported "NOTHING would remain" while `DerivedBoxes.json` sat in the game's Saved
+	 * directory surviving every uninstall. A residue auditor blind to files is not a partial auditor; on
+	 * the question actually being asked it is a wrong one.
+	 */
+	const FString CachePath = FPMBoxCache::GetCacheFilePath();
+	const bool bCacheExists = IFileManager::Get().FileExists(*CachePath);
+	FString PluginDir;
+	if (const TSharedPtr<IPlugin> Self = IPluginManager::Get().FindPlugin(TEXT("FicsitsPerformanceManager")))
+	{
+		PluginDir = FPaths::ConvertRelativePathToFull(Self->GetBaseDir());
+	}
+	const bool bInsidePlugin = !PluginDir.IsEmpty()
+		&& FPaths::ConvertRelativePathToFull(CachePath).StartsWith(PluginDir);
+
+	if (bCacheExists && bInsidePlugin)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   file: %s — INSIDE the plugin, so it is deleted with the mod. Not residue."),
+			*CachePath);
+	}
+	else if (bCacheExists)
+	{
+		++WouldRemain;
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM]   file: %s — OUTSIDE the plugin, so it SURVIVES uninstall. This is the declared "
+			     "fallback for a read-only plugin directory: derived data only, safe to delete by hand."),
+			*CachePath);
+	}
+
+	if (WouldRemain == 0 && GFPMSentinelNumExceptions == 0 && bClassifierAlive)
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Display,
 			TEXT("[FPM]   RESULT: NOTHING would remain. FPM holds only transient console values at 0x07, "
@@ -119,7 +185,16 @@ bool FPMResidueSentinel::Drill()
 	FPMCVarWriter::Get().Hold(Owner, Probe, TEXT("7777"), TEXT("residue drill: acquire"));
 	const int32 DuringHeld = Audit();
 
-	FPMCVarWriter::Get().ReleaseAll(TEXT("residue drill: the OFF switch under test"));
+	/*
+	 * ★ ReleaseOwner, NOT ReleaseAll — review finding, 2026-08-09, and it would have been a live defect.
+	 *
+	 * `ReleaseAll` drops EVERY hold in the process. This is a console command a human can run at any
+	 * moment, so once the governor exists, running a diagnostic would silently tear down live levers and
+	 * the player would see the mod stop working for no visible reason. Releasing only what the drill
+	 * itself took proves exactly the same thing about the release path. The all-or-nothing OFF switch
+	 * still has its own command, `FPM.Off`, where that IS the intent.
+	 */
+	FPMCVarWriter::Get().ReleaseOwner(Owner);
 
 	const FString After = Var->GetString();
 	const EConsoleVariableFlags SetByAfter =

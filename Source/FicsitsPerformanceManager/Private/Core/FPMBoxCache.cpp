@@ -22,11 +22,107 @@ namespace
 	const TCHAR* GeometrylessField = TEXT("geometryless");
 }
 
+FString FPMBoxCache::GetLegacyCacheFilePath()
+{
+	// Where every build up to 0.4.1 wrote it: under the GAME's Saved directory, OUTSIDE the plugin. That
+	// file survives uninstall, which is the residue this fix exists to end. Kept as a named constant so
+	// the one-time cleanup below has something exact to delete rather than a pattern to guess with.
+	return FPaths::ProjectSavedDir() / TEXT("FicsitsPerformanceManager") / TEXT("DerivedBoxes.json");
+}
+
 FString FPMBoxCache::GetCacheFilePath()
 {
-	// Its own folder, clearly named. A file dropped into the game's own Config directory is the kind of
-	// leftover nobody can attribute two months later.
-	return FPaths::ProjectSavedDir() / TEXT("FicsitsPerformanceManager") / TEXT("DerivedBoxes.json");
+	/*
+	 * ★ INSIDE THE PLUGIN WHEN WE CAN, UNDER Saved/ WHEN WE CANNOT — Ant's ruling, 2026-08-09:
+	 * *"would be good to keep it in the mod if possible, if its not we declare it an exception."*
+	 *
+	 * FOUND BY AUDIT, NOT BY DESIGN. Every build to 0.4.1 wrote 120,681 bytes to
+	 * `%LOCALAPPDATA%/FactoryGame/Saved/FicsitsPerformanceManager/DerivedBoxes.json` — outside the plugin
+	 * folder, so deleting the mod left it behind. Meanwhile the residue sentinel reported "NOTHING would
+	 * remain", because it audits cvars and file residue was a category it could not see. Both halves are
+	 * fixed: this chooses a location that uninstalls with the mod, and the sentinel now audits files.
+	 *
+	 * ⚠ THE PLUGIN DIRECTORY IS NOT RELIABLY WRITABLE AND THAT IS WHY THIS IS A FALLBACK, NOT A MOVE.
+	 * It IS writable unelevated on Ant's Steam install (probed 2026-08-09) because Steam's tree grants
+	 * Users write access — but `Program Files` is read-only on plenty of machines, and FPM is heading for
+	 * a public release. So we ASK the filesystem rather than assume, every boot, and degrade to the old
+	 * location when the answer is no. A cache that silently stops persisting would be a slow performance
+	 * regression nobody could attribute.
+	 *
+	 * Also true and worth knowing rather than discovering: the plugin folder is overwritten by a mod
+	 * update (`deploy_fpm_client.py` extracts over it, and SMM manages it), so a cache living there is
+	 * lost on every update. That costs one re-derive and is the correct trade against permanent residue.
+	 */
+	static FString Resolved;
+	if (!Resolved.IsEmpty()) { return Resolved; }
+
+	if (const TSharedPtr<IPlugin> Self = IPluginManager::Get().FindPlugin(TEXT("FicsitsPerformanceManager")))
+	{
+		const FString InPlugin = FPaths::ConvertRelativePathToFull(Self->GetBaseDir()) / TEXT("DerivedBoxes.json");
+
+		// The only honest writability test is a write. Permissions, virtualisation and read-only media all
+		// lie to every cheaper check.
+		const FString Probe = FPaths::GetPath(InPlugin) / TEXT("_fpm-write-probe.tmp");
+		if (FFileHelper::SaveStringToFile(TEXT("x"), *Probe))
+		{
+			IFileManager::Get().Delete(*Probe, /*RequireExists*/ false, /*EvenReadOnly*/ true);
+			Resolved = InPlugin;
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] box cache: writing INSIDE the plugin (%s) - it uninstalls with the mod, so it "
+				     "is not residue."), *Resolved);
+			return Resolved;
+		}
+	}
+
+	Resolved = GetLegacyCacheFilePath();
+	UE_LOG(LogFicsitsPerformanceManager, Warning,
+		TEXT("[FPM] box cache: the plugin directory is not writable, so the cache goes to %s - OUTSIDE the "
+		     "plugin. ⚠ THAT FILE SURVIVES UNINSTALL. It is a DECLARED named exception, it is listed by "
+		     "FPM.Residue, and deleting it by hand is always safe: it is derived data and nothing else."),
+		*Resolved);
+	return Resolved;
+}
+
+void FPMBoxCache::CleanUpLegacyResidue()
+{
+	/*
+	 * ONE-TIME CLEANUP of the file older builds left behind. Only ever the EXACT path we wrote ourselves,
+	 * inside a directory carrying the mod's own name, containing nothing but derived bounding boxes.
+	 *
+	 * ⚠ Deliberately narrow, because deletion is the one verb this project treats as dangerous. It is not
+	 * a pattern, not a sweep and not recursive; it removes one known path and then the directory only if
+	 * that left it empty. If anything else is in there, it stays and is reported.
+	 */
+	const FString Legacy = GetLegacyCacheFilePath();
+	if (Legacy == GetCacheFilePath()) { return; }              // Saved/ IS the live location; nothing to clean
+	if (!IFileManager::Get().FileExists(*Legacy)) { return; }
+
+	if (IFileManager::Get().Delete(*Legacy, /*RequireExists*/ false, /*EvenReadOnly*/ true))
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] box cache: removed the pre-0.4.2 cache left outside the plugin at %s. It was ours, "
+			     "it was derived data, and it would have survived uninstall."), *Legacy);
+
+		const FString Dir = FPaths::GetPath(Legacy);
+		TArray<FString> Remaining;
+		IFileManager::Get().FindFiles(Remaining, *(Dir / TEXT("*")), true, true);
+		if (Remaining.Num() == 0)
+		{
+			IFileManager::Get().DeleteDirectory(*Dir, /*RequireExists*/ false, /*Tree*/ false);
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] box cache: %s still holds %d other item(s), so the folder stays. Nothing that "
+				     "is not ours gets deleted."), *Dir, Remaining.Num());
+		}
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] box cache: could not remove the legacy cache at %s. It is harmless derived data and "
+			     "safe to delete by hand."), *Legacy);
+	}
 }
 
 FString FPMBoxCache::ComputeEnvironmentKey()

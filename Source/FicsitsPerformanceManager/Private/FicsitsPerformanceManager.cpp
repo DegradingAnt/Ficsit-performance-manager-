@@ -2,6 +2,7 @@
 
 #include "FicsitsPerformanceManager.h"
 
+#include "Core/FPMBoxCache.h"
 #include "Core/FPMCVarWriter.h"
 #include "Core/FPMFixContract.h"
 #include "Core/FPMHitchMeter.h"
@@ -48,6 +49,10 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * mod's whole posture exists to prevent.
 	 */
 	FPMCVarWriter::Get().SelfTest();
+
+	// Remove the cache older builds left OUTSIDE the plugin. Found by audit 2026-08-09: 120,681 bytes
+	// under the game's Saved directory that survived uninstall while the sentinel reported nothing.
+	FPMBoxCache::CleanUpLegacyResidue();
 
 	// ARMING. There is no `if (!WITH_EDITOR)` here on purpose: the editor gate lives inside
 	// FPMHookLedger::Install, so a fix's Arm() still COMPILES and RUNS in the editor while installing

@@ -163,10 +163,27 @@ bool FPMCVarWriter::Hold(FName Owner, const TCHAR* CVarName, const TCHAR* Value,
 		break;
 	}
 
-	// Recorded BEFORE the write, because afterwards it is our own value we would be reading back.
-	const FString PriorValue = Var->GetString();
-	const EConsoleVariableFlags PriorSetBy =
+	/*
+	 * ★ THE PRIOR VALUE IS THE PLAYER'S, NOT OUR LAST ONE — review finding, 2026-08-09.
+	 *
+	 * Reading the cvar here is only correct the FIRST time we hold it. On a RE-HOLD (a reclaim, or the
+	 * governor moving a lever to a new value) the current value is the one WE wrote, so recording it
+	 * would make `FPM.Changes` answer "what has this mod changed?" with a value the mod itself set. The
+	 * engine's history still releases correctly — this was never a residue bug — but the ledger is the
+	 * thing a support dump is read from, and a ledger that misreports the baseline is worse than none.
+	 *
+	 * So: if we already hold this cvar for this owner, KEEP the prior we captured the first time.
+	 */
+	FString PriorValue = Var->GetString();
+	EConsoleVariableFlags PriorSetBy =
 		static_cast<EConsoleVariableFlags>(Var->GetFlags() & ECVF_SetByMask);
+
+	if (const FHold* Previous = Ledger.FindByPredicate([&](const FHold& H)
+			{ return H.Owner == Owner && H.CVar.Equals(CVarName, ESearchCase::IgnoreCase); }))
+	{
+		PriorValue = Previous->PriorValue;
+		PriorSetBy = Previous->PriorSetBy;
+	}
 
 	// THE WRITE. Tagged, so the engine-native release can find it; at 0x07, so the console still wins.
 	Var->Set(Value, GFPMWriterPriority, Tag());

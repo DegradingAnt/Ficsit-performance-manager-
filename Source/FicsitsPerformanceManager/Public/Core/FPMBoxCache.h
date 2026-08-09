@@ -61,6 +61,12 @@ public:
 	/** Where the file lives. Exposed so a diagnostic can name it rather than a reader guessing. */
 	static FString GetCacheFilePath();
 
+	/** Where builds up to 0.4.1 wrote it - outside the plugin, so it survived uninstall. */
+	static FString GetLegacyCacheFilePath();
+
+	/** Remove the pre-0.4.2 cache from outside the plugin. One exact path, never a pattern. */
+	static void CleanUpLegacyResidue();
+
 private:
 	TMap<FName, FBox> Boxes;
 	TSet<FName> Geometryless;
