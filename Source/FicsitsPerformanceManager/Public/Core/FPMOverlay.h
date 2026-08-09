@@ -46,6 +46,33 @@ public:
 	 */
 	static void Post(const TCHAR* Category, const FString& Line);
 
+	/**
+	 * ★ POST A GAUGE, NOT AN EVENT. One row per Key, rewritten in place instead of appended.
+	 *
+	 * Ant, 2026-08-09: *"i also need a way to reset this window, since it just prints forever"*. `Clear`
+	 * below is the reset she asked for; this is the reason she needed one. The hitch meter posts a
+	 * 60-second summary that is a GAUGE — the current reading of a thing that always has a reading — and
+	 * appending a gauge means the panel is entirely gauge history within eighteen minutes, with the
+	 * startup and rain-sweep lines scrolled off the top. Clearing buys eighteen more minutes; this stops
+	 * it happening.
+	 *
+	 * Key identifies the SLOT, and the row keeps the position it first took, so the panel stops
+	 * reshuffling under a screenshot. Distinct keys stay distinct rows: the hitch meter's rolling
+	 * summary is a gauge, but its one-off `world load` line is an event and must not overwrite it.
+	 *
+	 * Events still use Post. A hitch that happened is a fact with a time, and collapsing those would
+	 * throw away the record.
+	 */
+	static void PostSticky(const TCHAR* Category, const TCHAR* Key, const FString& Line);
+
+	/**
+	 * Empty the feed. `FPM.Diag.Clear`.
+	 *
+	 * The LOG is untouched — Post has already written every line there and that is the durable half. This
+	 * only clears the screen, so clearing can never destroy evidence.
+	 */
+	static void Clear();
+
 	/** Show/hide. Safe before a viewport exists; it attaches as soon as one appears. */
 	void SetVisible(bool bInVisible);
 	void Toggle() { SetVisible(!bVisible); }
@@ -83,7 +110,14 @@ private:
 	void EnsureAttached();
 	FString ComposeText() const;
 
-	TArray<FString> Lines;
+	/** A feed row. An empty Key means an EVENT (append-only); a non-empty one is a gauge slot. */
+	struct FRow
+	{
+		FString Key;
+		FString Text;
+	};
+
+	TArray<FRow> Lines;
 	mutable FCriticalSection LinesLock;
 
 	TSharedPtr<class SWidget> Root;

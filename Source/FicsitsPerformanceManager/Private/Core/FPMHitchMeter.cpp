@@ -375,9 +375,19 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 
 	// Post writes to the screen AND the log, so this must not also UE_LOG or every summary appears twice.
 	// Gated on the channel because the master switch alone is not per-channel control.
+	//
+	// ★ STICKY, KEYED ON Reason. Ant, 2026-08-09: "i also need a way to reset this window, since it just
+	// prints forever." This summary is a GAUGE -- it always has a current reading -- and appending one
+	// every 60 s filled all 18 panel rows with hitch history inside twenty minutes, scrolling the startup
+	// and rain-sweep lines off the top. `Reason` is exactly the right slot key and needs no new state:
+	// "running" keeps ONE row that updates in place, while "world load" is a different Reason and so keeps
+	// its own row rather than being overwritten by the next rolling window.
+	//
+	// The LOG still receives every summary. Only the screen row is replaced -- the series is the thing you
+	// want when reading a session back, and it is the half that cannot be reconstructed afterwards.
 	if (FPMDiag::IsOn(FPMDiag::EChannel::Hitch))
 	{
-		FPMOverlay::Post(TEXT("hitch meter"), Line);
+		FPMOverlay::PostSticky(TEXT("hitch meter"), Reason, Line);
 	}
 
 	// Window resets; session totals do not.

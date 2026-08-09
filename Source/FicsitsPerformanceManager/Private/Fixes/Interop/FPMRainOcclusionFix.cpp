@@ -82,6 +82,24 @@ namespace
 	int32 GGeometryless = 0;
 	int32 GOffThreadSkips = 0;
 
+	/*
+	 * ★ THE TWO SILENT SKIPS, NOW COUNTED. Found 2026-08-09 from Ant's second world load, which printed
+	 *     cache HIT | 3679 classes examined | 0 from cache, 0 instance-data, 0 components, 0 none
+	 * Every bucket zero, against a denominator of 3679. Nothing was broken — CDOs live for the whole
+	 * process, so a class settled by the FIRST sweep genuinely needs no work on the second, and
+	 * GHandledClasses correctly short-circuits it. But the REPORT could not say so: both early returns
+	 * incremented nothing, so "we already did this" and "we did nothing" printed identically.
+	 *
+	 * That is the dead-instrument shape again, in its subtler form. The line is not incapable of being
+	 * non-zero in general — it was non-zero on the first sweep — it is incapable of being non-zero on
+	 * EVERY SWEEP AFTER THE FIRST, which is every sweep Ant will ever look at in a long session.
+	 *
+	 * With these, the four outcome buckets plus these two sum to the examined count, so the denominator
+	 * is accounted for rather than merely printed. A residual would now be visible as arithmetic.
+	 */
+	int32 GAlreadySettled = 0;     // handled by an earlier sweep in THIS process
+	int32 GNoRepairNeeded = 0;     // vanilla already gave it a usable occlusion box
+
 	TSet<FName> GReportedSkippedProfiles;
 
 	/**
@@ -357,8 +375,18 @@ namespace
 		// packages can share a short name — `Build_Wall_C` from two different mods is not hypothetical
 		// in a 65-mod install — and a collision would skip the second one forever.
 		const FName ClassName(*CDO->GetClass()->GetPathName());
-		if (GHandledClasses.Contains(ClassName)) { return EBoxSource::None; }
-		if (!NeedsRepair(CDO)) { return EBoxSource::None; }
+		// Counted only for sweep calls: the hooks fire between sweeps and would otherwise inflate the
+		// next sweep's tally with work that did not belong to it.
+		if (GHandledClasses.Contains(ClassName))
+		{
+			if (bFromSweep) { ++GAlreadySettled; }
+			return EBoxSource::None;
+		}
+		if (!NeedsRepair(CDO))
+		{
+			if (bFromSweep) { ++GNoRepairNeeded; }
+			return EBoxSource::None;
+		}
 
 		FBox Box(ForceInit);
 		EBoxSource Source = EBoxSource::None;
@@ -430,6 +458,7 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 	// load in a session re-printed the FIRST sweep's totals and read as a fresh result. Found on the
 	// 2026-08-08 reload: a "cache HIT" line showing the MISS run's numbers.
 	GAppliedFromCache = GDerivedInstanceData = GDerivedComponents = GGeometryless = 0;
+	GAlreadySettled = GNoRepairNeeded = 0;
 
 	if (CVarRainSweep.GetValueOnGameThread() == 0)
 	{
@@ -451,10 +480,39 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 
 	// Posted to the overlay AND the log — this is the line Ant wants to see on the loading screen to
 	// know the fix ran and what it actually did.
-	FPMOverlay::Post(TEXT("rain sweep"), FString::Printf(
-		TEXT("cache %s | %d classes examined | %d from cache, %d instance-data, %d components, %d none"),
+	/*
+	 * EVERY EXAMINED CLASS LANDS IN A BUCKET, and the line says so by printing the residual. Six outcomes
+	 * are exhaustive by construction -- HandleClass has exactly six exits for a sweep call -- so a
+	 * non-zero "unaccounted" is a real defect surfacing as arithmetic rather than as silence. That is the
+	 * property the previous line lacked: it printed a denominator of 3679 against four zeros and looked
+	 * like a broken sweep when nothing was wrong.
+	 */
+	const int32 Examined = BuildableClasses.Num();
+	const int32 Bucketed = GAppliedFromCache + GDerivedInstanceData + GDerivedComponents
+	                     + GGeometryless + GAlreadySettled + GNoRepairNeeded;
+	FString Summary = FString::Printf(
+		TEXT("cache %s | %d classes examined | %d from cache, %d instance-data, %d components, %d none, "
+		     "%d already settled, %d needed no repair"),
 		bHit ? TEXT("HIT") : TEXT("MISS->rebuilt"),
-		BuildableClasses.Num(), GAppliedFromCache, GDerivedInstanceData, GDerivedComponents, GGeometryless));
+		Examined, GAppliedFromCache, GDerivedInstanceData, GDerivedComponents, GGeometryless,
+		GAlreadySettled, GNoRepairNeeded);
+	if (Bucketed != Examined)
+	{
+		Summary += FString::Printf(TEXT(" | ⚠ %d UNACCOUNTED"), Examined - Bucketed);
+	}
+	if (GOffThreadSkips > 0)
+	{
+		// Stated, never silent -- an off-thread skip is a coverage gap, not a no-op.
+		//
+		// ⚠ AND LABELLED "this session", because unlike every other counter here it is NOT reset per
+		// sweep. That is deliberate: off-thread skips come from the HOOK call sites, which fire between
+		// sweeps, so a per-sweep reset would throw the interesting ones away. But printing a cumulative
+		// figure unlabelled beside six per-sweep ones is exactly the defect the comment above the reset
+		// line records -- a second sweep re-showing the first sweep's numbers as though they were fresh.
+		// Caught on the review pass for this bump, before it shipped. Same bug, opposite direction.
+		Summary += FString::Printf(TEXT(" | %d off-thread skip(s) this session"), GOffThreadSkips);
+	}
+	FPMOverlay::Post(TEXT("rain sweep"), Summary);
 
 	if (bGCacheDirty)
 	{
