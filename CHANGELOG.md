@@ -62,6 +62,29 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 17:20 — VERSION — 0.5.7 → 0.6.0
+
+- **What:** MINOR bump. Ships everything since 0.5.7: the P1.3 SaveSettings interceptor, the P3.2/3.4/3.5/3.9
+  fixes, the chat relay, `FPM.Support`, the §7.10 CL drift watch and the §7.12 parity self-check.
+- **Why MINOR, tested against this file's own rule rather than assumed** — "would Ant notice this while
+  just PLAYING, with the console closed?" That rule exists because the call was gotten wrong TWICE on this
+  same day, both times bumping MINOR for console-only work. Three things here pass it honestly:
+    · **P3.4** raises the navmesh tile ceiling, so local fauna can path the whole map to reach you. Visible.
+    · **P3.9** fixes a real bug where the zipline volume could never return to vanilla once lowered. Audible.
+    · **the chat relay** puts FPM messages in the chat window, which is a new on-screen surface.
+  Plus the crash-class fixes (P3.2's ~1,900–2,550 averted asserts per server start). `FPM.Support` and the
+  drift watch on their OWN would have been a PATCH — they are console work. They ride along; they do not
+  justify the bump.
+- **Files:** `FicsitsPerformanceManager.uplugin` (VersionName, SemVersion, RemoteVersionRange =0.6.0).
+  No source bump needed: FPM2's boot banner reads `GetDescriptor().VersionName` at runtime, so the old
+  mod's "the version string appears twice and one copy lies" trap does not exist here.
+- **Revert:** `git tag -d 0.6.0` and restore the three descriptor fields to 0.5.7. Undo if the packaged
+  artefact fails its byte verification, or if a boot shows the new diagnostics misbehaving.
+- **Verified:** build-only (`Result: Succeeded`). NOT boot-tested — that is the very next step, and it is
+  the Phase 1 verification boot (P1.5 legs A+B, P1.4's residue drill) that Phase 1 has been waiting on.
+
+---
+
 ## 2026-08-09 15:52 — CODE — P3.9 zipline volume: ported, and a real bug fixed on the way
 
 - **What:** hooks `AFGEquipmentZipline::Equip` and sets the per-actor Wwise output-bus volume from
