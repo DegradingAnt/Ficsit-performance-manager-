@@ -57,6 +57,7 @@ public:
 		HologramNet,      // FPM.Diag.Hologram
 		InventoryInit,    // FPM.Diag.Inventory
 		CloneSensor,      // FPM.Diag.Clone
+		Hitch,            // FPM.Diag.Hitch    — frame-time meter
 		Overlay,          // FPM.Diag.Overlay  — the on-screen feed
 		Count
 	};

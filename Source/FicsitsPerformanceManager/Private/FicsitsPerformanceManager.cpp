@@ -3,6 +3,7 @@
 #include "FicsitsPerformanceManager.h"
 
 #include "Core/FPMFixContract.h"
+#include "Core/FPMHitchMeter.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
 #include "Fixes/Interop/FPMHologramNetGuard.h"
@@ -62,6 +63,13 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// breaks and why". It overrides nothing - the crash dumps show this is a VANILLA crash (one has
 	// neither FPM nor KPrivateCodeLib on the stack), so there is nothing here for us to guard yet.
 	FPMFixes::Arm(FFPMSchematicProbe::Get());
+
+	// MEASUREMENT ONLY, AND IT INSTALLS NO HOOKS - it subscribes to two engine delegates and a ticker, so it
+	// will not appear in the hook ledger below. Armed here because Ant's hitches (2026-08-09) had no
+	// instrument at all: the engine's own hitch detector is compiled out of this build, which the header
+	// proves from the build's preprocessor definitions rather than from reputation. It arms on the dedicated
+	// server too - the 560 ms save stall is a server-side hitch and a client-only readout could never see it.
+	FPMFixes::Arm(FFPMHitchMeter::Get());
 
 	// Always printed, even when empty - an empty inventory is itself a finding.
 	FPMHookLedger::LogInventory();

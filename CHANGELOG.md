@@ -34,6 +34,50 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 07:10 — CODE — hitch meter: the engine's frame-time detector is compiled out of this game, so FPM brings its own
+
+- **What:** `FFPMHitchMeter` (`Core/FPMHitchMeter.{h,cpp}`), plus a new `FPM.Diag.Hitch` channel and three
+  cvars — `FPM.Hitch.ThresholdMs` (50), `FPM.Hitch.IgnoreAboveMs` (1000), `FPM.Hitch.SummarySeconds` (60) —
+  and one console command, `FPM.Hitch.Report`. It samples wall clock once per engine tick, counts frames
+  at or above the threshold, and reports **with its denominator**. It subscribes to
+  `FCoreDelegates::OnAsyncLoadingFlush` (`CoreDelegates.h:105`) so each hitch line says whether an
+  async-load flush happened *inside that frame*; at level 2 it also names the packages in flight via
+  `FCoreDelegates::GetOnAsyncLoadPackage()` (`:115`). Arms on client **and** dedicated server. Installs no
+  hook, writes no cvar, no ini, no save.
+- **Why:** Ant, 2026-08-09, in-game on 0.3.1: *"game hitches when opening menus and such and sometimes when
+  moving fast through the world"*, and earlier *"i got a big hitch a few min ago. maybe visible in logs"* —
+  it was not, because **nothing in this build measures frame time.** `FGameThreadHitchHeartBeat` is guarded
+  by `USE_HITCH_DETECTION` = `(ALLOW_HITCH_DETECTION && …)` (`Misc/Build.h:454`), `ALLOW_HITCH_DETECTION`
+  defaults to `0` (`:439-441`) and is redefined nowhere in this engine tree; the shipped client's own
+  `SharedDefinitions.Engine.Project.…h` carries `UE_BUILD_SHIPPING 1` / `WITH_EDITORONLY_DATA 0` and **no
+  `ALLOW_HITCH_DETECTION` line at all**. So `-hitchdetection=50` and the `[Core.System]`
+  `GameThreadHeartBeatHitchDuration` ini key are both **no-ops in the retail game** — the detector is absent
+  from the binary, not switched off.
+- **Two design points that are the whole difference between an instrument and a decoration:**
+  (1) **Wall clock, not the delta the ticker is handed.** The core ticker is driven by
+  `FTSTicker::GetCoreTicker().Tick(FApp::GetDeltaTime())` (`LaunchEngineLoop.cpp:5852`), and that delta is
+  smoothed and range-clamped (`UEngine::bSmoothFrameRate` / `SmoothedFrameRateRange`, `Engine.h:1552`,
+  `:1564`). Smoothing exists precisely to hide spikes, so an instrument built on it would report a tidy
+  number across the exact event it was built to catch.
+  (2) **Every summary carries the frame count it was measured over**, so a dead meter reads as `0 in 0`
+  rather than as a calm session. This is the fourth instrument-gap incident in two days — saturation
+  (`LogNetTraffic` Verbose under a Warning default), rain (needed an older log to prove the category
+  emits), hitches (no instrument at all). A zero that reproduces is still a zero that means nothing if the
+  emitter never fires.
+- **What it settles:** `m6249889` measured 54 blocking `FlushAsyncLoading` calls in ~14 min and two log
+  signatures that always precede them — and correctly flagged that adjacency is not causation. The
+  per-frame flush count converts that into a counted coincidence rate.
+- **Files:** `Public/Core/FPMHitchMeter.h` (new) · `Private/Core/FPMHitchMeter.cpp` (new) ·
+  `Public/Core/FPMDiag.h` + `Private/Core/FPMDiag.cpp` (new channel, in both places — the `static_assert`
+  in the cpp enforces that) · `Private/FicsitsPerformanceManager.cpp` (arm). No `Build.cs` change: `Core`
+  and `CoreUObject` are already public dependencies. No version bump — the integrator owns it.
+- **Revert:** delete the two new files, drop the `Hitch` enumerator + its cvar + its `ChannelName` case, and
+  remove the one `FPMFixes::Arm` line. Nothing is written at runtime, so there is nothing else to undo.
+- **Verified:** **build-only** — `Build.bat FactoryEditor Win64 Development -Module=FicsitsPerformanceManager`
+  → `Result: Succeeded`, compiled and linked. **NOT boot-tested.** The boot check is falsifiable: a summary
+  line every 60 s carrying a non-zero frame count. If the frame count is 0, the meter is dead and every
+  number beside it is void.
+
 ## 2026-08-08 19:40 — VERSION — 0.2.2 → 0.3.0
 
 - **What:** `VersionName` / `SemVersion` → `0.3.0`.

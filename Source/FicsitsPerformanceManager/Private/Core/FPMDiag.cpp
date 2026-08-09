@@ -43,6 +43,13 @@ static TAutoConsoleVariable<int32> CVarDiagClone(
 	TEXT("Join-time player-state clone sensor. 0 = silent, 1 = per-join summary, 2 = every candidate."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagHitch(
+	TEXT("FPM.Diag.Hitch"), 1,
+	TEXT("Frame-time hitch meter. 0 = silent, 1 = every hitch + the periodic summary, 2 = also names the "
+	     "packages that were loading when it hit. Level 2 costs a string copy per async load - it is for a "
+	     "deliberate boot, not for playing."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarDiagOverlay(
 	TEXT("FPM.Diag.Overlay"), 1,
 	TEXT("The on-screen dev feed. 0 = hide it, 1 = show it. Ant asked for a keybind; until the Game "
@@ -56,6 +63,7 @@ namespace
 		&CVarDiagHologram,
 		&CVarDiagInventory,
 		&CVarDiagClone,
+		&CVarDiagHitch,
 		&CVarDiagOverlay,
 	};
 
@@ -71,6 +79,7 @@ namespace
 		case FPMDiag::EChannel::HologramNet:    return TEXT("FPM.Diag.Hologram");
 		case FPMDiag::EChannel::InventoryInit:  return TEXT("FPM.Diag.Inventory");
 		case FPMDiag::EChannel::CloneSensor:    return TEXT("FPM.Diag.Clone");
+		case FPMDiag::EChannel::Hitch:          return TEXT("FPM.Diag.Hitch");
 		case FPMDiag::EChannel::Overlay:        return TEXT("FPM.Diag.Overlay");
 		default:                                return TEXT("<unknown>");
 		}
