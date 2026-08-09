@@ -123,6 +123,15 @@ static TAutoConsoleVariable<int32> CVarDiagTexturePool(
 	     "cause it had not tested, and went unnoticed for months because that one line was believed."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagWireGuard(
+	TEXT("FPM.Diag.WireGuard"), 1,
+	TEXT("Null entries in UFGCircuitConnectionComponent::mWires, swept before the autosave walks them. "
+	     "0 = silent, 1 = a summary per sweep that found something, plus the NAME of every owning actor, "
+	     "2 = also every clean sweep. Level 1 names the owners deliberately: a count cannot tell you "
+	     "WHICH building carries the damage, and the name is the only route back to the mod that caused "
+	     "it. On 2026-08-09 this exact state SIGSEGV'd the dedicated server inside its autosave."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -142,6 +151,7 @@ namespace
 		&CVarDiagHudGuard,
 		&CVarDiagZipline,
 		&CVarDiagTexturePool,
+		&CVarDiagWireGuard,
 	};
 
 	/*
@@ -175,6 +185,7 @@ namespace
 		case FPMDiag::EChannel::HudGuard:       return TEXT("FPM.Diag.HudGuard");
 		case FPMDiag::EChannel::Zipline:        return TEXT("FPM.Diag.Zipline");
 		case FPMDiag::EChannel::TexturePool:    return TEXT("FPM.Diag.TexturePool");
+		case FPMDiag::EChannel::WireGuard:      return TEXT("FPM.Diag.WireGuard");
 		default:                                return TEXT("<unknown>");
 		}
 	}

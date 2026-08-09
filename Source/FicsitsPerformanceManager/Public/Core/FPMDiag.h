@@ -72,6 +72,7 @@ public:
 		HudGuard,         // FPM.Diag.HudGuard  — the blueprint-hook descriptor strip
 		Zipline,          // FPM.Diag.Zipline   — the zipline output-bus volume
 		TexturePool,      // FPM.Diag.TexturePool — the card-sized streaming pool
+		WireGuard,        // FPM.Diag.WireGuard — null mWires entries, found before the save walks them
 		Count
 	};
 

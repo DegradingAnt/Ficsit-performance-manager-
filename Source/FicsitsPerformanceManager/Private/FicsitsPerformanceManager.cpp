@@ -22,6 +22,7 @@
 #include "Fixes/Interop/FPMTexturePoolGuard.h"
 #include "Fixes/Interop/FPMZiplineVolume.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
+#include "Fixes/Vanilla/FPMWireNullGuard.h"
 #include "Streaming/FPMAssetResidency.h"
 
 #include "Interfaces/IPluginManager.h"
@@ -89,6 +90,12 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// P3.4. Installs no hook; it acts at world load and READS BACK, because its predecessor logged a
 	// raise the engine ignored for twenty-two seconds.
 	FPMFixes::Arm(FFPMNavMeshCeiling::Get());
+
+	// Installs no hook either - it sweeps at world load. Guards the autosave path that took the
+	// dedicated server down on 2026-08-09 (null UClass in FFastSaveReferenceCollector, from a null entry
+	// in a power-wire array). Armed on BOTH sides: the client log carries the same 2,549 unresolvable
+	// level references the server does, so the same invalid state exists there.
+	FPMFixes::Arm(FFPMWireNullGuard::Get());
 
 	// P3.5. CLIENT ONLY by contract, not by a hand-rolled early return - a server has no player HUD and
 	// the old mod's server failed to boot carrying an earlier version of this.
