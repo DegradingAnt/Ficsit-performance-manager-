@@ -109,6 +109,12 @@ static TAutoConsoleVariable<int32> CVarDiagHudGuard(
 	     "and taking that silently is how two earlier versions cost Ant her mod UI without anyone knowing."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagZipline(
+	TEXT("FPM.Diag.Zipline"), 1,
+	TEXT("Zipline output-bus volume. 0 = silent, 1 = one line per VALUE CHANGE (not per equip - ziplines "
+	     "are equipped constantly and per-equip logging would be the noisiest line in the log)."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -126,6 +132,7 @@ namespace
 		&CVarDiagRailGuard,
 		&CVarDiagNavMesh,
 		&CVarDiagHudGuard,
+		&CVarDiagZipline,
 	};
 
 	/*
@@ -157,6 +164,7 @@ namespace
 		case FPMDiag::EChannel::RailGuard:      return TEXT("FPM.Diag.RailGuard");
 		case FPMDiag::EChannel::NavMesh:        return TEXT("FPM.Diag.NavMesh");
 		case FPMDiag::EChannel::HudGuard:       return TEXT("FPM.Diag.HudGuard");
+		case FPMDiag::EChannel::Zipline:        return TEXT("FPM.Diag.Zipline");
 		default:                                return TEXT("<unknown>");
 		}
 	}

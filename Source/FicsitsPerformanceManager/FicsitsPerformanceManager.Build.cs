@@ -24,7 +24,7 @@ public class FicsitsPerformanceManager : ModuleRules
 			"GeometryCollectionEngine",
 			//"ChaosVehiclesCore", "ChaosVehicles", "ChaosSolverEngine",
 			"AnimGraphRuntime",
-			//"AkAudio",
+			"AkAudio",   // P3.9 zipline volume: UAkGameplayStatics::SetOutputBusVolume. Ant 2026-08-09: "the wwise is fine to depend on since its part of vanilla".
 			"AssetRegistry",
 			"NavigationSystem",
 			//"ReplicationGraph",

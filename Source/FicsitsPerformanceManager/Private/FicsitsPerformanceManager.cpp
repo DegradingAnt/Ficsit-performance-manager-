@@ -19,6 +19,7 @@
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
 #include "Fixes/Interop/FPMSchematicProbe.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
+#include "Fixes/Interop/FPMZiplineVolume.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 #include "Streaming/FPMAssetResidency.h"
 
@@ -91,6 +92,10 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// P3.5. CLIENT ONLY by contract, not by a hand-rolled early return - a server has no player HUD and
 	// the old mod's server failed to boot carrying an earlier version of this.
 	FPMFixes::Arm(FFPMHudHookGuard::Get());
+
+	// P3.9. Client-only by contract. Default 1.0 writes nothing, so vanilla is bit-identical until Ant
+	// moves FPM.Zipline.Volume.
+	FPMFixes::Arm(FFPMZiplineVolume::Get());
 
 	// LOG-ONLY. Ant, on the old mod's forced-TRUE milestone override: "maybe carry it with just
 	// diagnostics and we'll see what happens?" and "diagnostics are good either way so we KNOW what
