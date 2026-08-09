@@ -8,6 +8,7 @@
 #include "Core/FPMHitchMeter.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
+#include "Core/FPMUserSettingMap.h"
 #include "Fixes/Interop/FPMHologramNetGuard.h"
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
 #include "Fixes/Interop/FPMNoOwnerRpcGate.h"
@@ -95,6 +96,15 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 
 	// Always printed, even when empty - an empty inventory is itself a finding.
 	FPMHookLedger::LogInventory();
+
+	/*
+	 * Binds the user-setting map's automatic read to post-engine-init, so every boot reports which cvars
+	 * the game's own settings save would capture WITHOUT anyone typing a console command. Measured
+	 * 2026-08-09: a console command cannot be delivered from outside this game - UE strips -ExecCmds in
+	 * Shipping, SML reimplements it, and Steam then replaces the command line with its own options. So a
+	 * diagnostic that must be typed costs one of Ant's boots; this one does not.
+	 */
+	FPMUserSettingMap::Init();
 
 	// The debug feed, on by default while the mod is pre-release. Ant: "i want UI to show when and what
 	// the rain fix thing is doing so i can see that its working." It attaches as soon as a viewport

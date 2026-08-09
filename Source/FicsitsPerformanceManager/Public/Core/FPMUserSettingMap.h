@@ -71,6 +71,22 @@ public:
 	};
 
 	/**
+	 * Bind the automatic read. Called once from StartupModule.
+	 *
+	 * ★ WHY THIS EXISTS RATHER THAN "TYPE FPM.D0 AFTER BOOT". Ant's standing rule: *"automate as much as
+	 * possible by default. i dont like running around throwing commands around."* And the practical
+	 * reason, measured 2026-08-09: console commands CANNOT be delivered to this game from the outside.
+	 * UE strips `-ExecCmds` in Shipping, SML reimplements it (`SatisfactoryModLoader.cpp:218-227`), but
+	 * Steam replaces the command line with its own launch options — both a direct launch and
+	 * `steam://run/526870//<args>` came up with `-NO_EOS_OVERLAY -useallavailablecores` and nothing else.
+	 * So a command that must be TYPED is a command that costs one of Ant's boots. This one reports itself.
+	 *
+	 * It hooks post-engine-init rather than running inline, because at StartupModule there is no engine
+	 * and therefore no settings object — the read would fail every time and cache nothing.
+	 */
+	static void Init();
+
+	/**
 	 * THE QUESTION. True if holding `CVarName` risks it being serialised into the player's settings.
 	 *
 	 * ⚠ FALSE MEANS "NOT IN ANYTHING WE HAVE READ", NOT "PROVEN SAFE". While `Source()` is `TablesOnly`

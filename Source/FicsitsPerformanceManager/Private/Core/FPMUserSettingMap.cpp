@@ -9,6 +9,7 @@
 #include "Settings/FGUserSettingApplyType.h"
 
 #include "Engine/Engine.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/OutputDevice.h"
 
 // GENERATED, beside this file: FPMUserSettingTable::GDerivedUSBackedCVars, the 66 vanilla cvar-backed
@@ -78,6 +79,25 @@ namespace
 
 	/** So the "running on the vanilla table only" warning is said once, not once per refused write. */
 	bool bGFPMUSFallbackWarned = false;
+}
+
+void FPMUserSettingMap::Init()
+{
+	/*
+	 * POST-ENGINE-INIT, not StartupModule. The module loads during engine init, so `GEngine` is not yet
+	 * usable there and `GetGameUserSettings()` returns nothing — a read at arm time would fail on every
+	 * boot and quietly leave us on the tables forever, which is indistinguishable in the log from
+	 * "there were no settings".
+	 *
+	 * This makes a MAIN-MENU boot sufficient to answer P1.3's gate: no save load, no typing, no console.
+	 * The world-load refresh in the game-world module still runs and still matters — it is the one that
+	 * picks up MOD-registered settings once their game features have activated.
+	 */
+	FCoreDelegates::OnPostEngineInit.AddLambda([]()
+	{
+		Refresh();
+		LogState();
+	});
 }
 
 bool FPMUserSettingMap::Refresh()

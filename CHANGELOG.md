@@ -62,6 +62,28 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 14:20 — CODE — the user-setting map reports itself every boot, because a console command cannot be delivered from outside
+
+- **What:** `FPMUserSettingMap::Init()`, bound to `FCoreDelegates::OnPostEngineInit` from `StartupModule`.
+  Every boot now logs which cvars the game's own settings save would capture — **at the main menu, with
+  no save loaded and nothing typed.**
+- **Why, measured today rather than assumed:** a console command cannot be delivered to this game from
+  outside. UE strips `-ExecCmds` in Shipping; SML reimplements it
+  (`SatisfactoryModLoader.cpp:218-227`, queuing deferred commands) — but Steam replaces the command
+  line with its own launch options. Both a direct launch and `steam://run/526870//-ExecCmds=...` came up
+  as `-NO_EOS_OVERLAY -useallavailablecores`. A diagnostic that must be TYPED costs one of Ant's boots.
+- **Post-engine-init, not `StartupModule`:** the module loads *during* engine init, so `GEngine` is not
+  usable yet and the read would fail on every boot, leaving us silently on the vanilla tables — which in
+  a log is indistinguishable from "there were no settings".
+- The world-load refresh still runs and still matters: it is the one that sees **mod-registered**
+  settings, once their game features have activated.
+- **Files:** `Public/Core/FPMUserSettingMap.h`, `Private/Core/FPMUserSettingMap.cpp`,
+  `Private/FicsitsPerformanceManager.cpp`. No version bump — ships with P1.3.
+- **Verified:** build-only — `Result: Succeeded`. NOT boot-tested: the deployed build is 0.5.5 and
+  predates this.
+
+---
+
 ## 2026-08-09 13:42 — CODE — P1.3 part 1: the user-setting map, read from the running game; and D0's cross-check stops crying wolf 188 times
 
 - **What:** new `FPMUserSettingMap` (`Public/Core/FPMUserSettingMap.h`,
