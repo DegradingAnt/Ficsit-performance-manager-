@@ -127,37 +127,70 @@ int32 FPMResidueSentinel::Audit()
 	const bool bInsidePlugin = !PluginDir.IsEmpty()
 		&& FPaths::ConvertRelativePathToFull(CachePath).StartsWith(PluginDir);
 
-	if (bCacheExists && bInsidePlugin)
+	int32 FileResidue = 0;
+	if (!bCacheExists)
+	{
+		// Stated, not silent. "We looked and there is no file" and "nobody checked files" must not produce
+		// the same output -- that equivalence is the whole reason this input was missing in the first place.
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   file: no cache on disk yet (%s)."), *CachePath);
+	}
+	else if (bInsidePlugin)
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Display,
 			TEXT("[FPM]   file: %s — INSIDE the plugin, so it is deleted with the mod. Not residue."),
 			*CachePath);
 	}
-	else if (bCacheExists)
+	else
 	{
-		++WouldRemain;
+		/*
+		 * ⚠ THIS IS A DECLARED EXCEPTION, AND IT IS COUNTED AS ONE — corrected on a second pass over my own
+		 * fix, 2026-08-09. The first version LOGGED the words "the declared fallback" while the exception
+		 * table held zero entries, so the audit simultaneously claimed the file was sanctioned and counted
+		 * it as unsanctioned residue. Prose is not a declaration; the table is. Ant's ruling was "keep it in
+		 * the mod if possible, if its not we declare it an exception" — so when the fallback is in force it
+		 * belongs in the count of DECLARED things, not in the count of surprises.
+		 */
+		++FileResidue;
 		UE_LOG(LogFicsitsPerformanceManager, Warning,
-			TEXT("[FPM]   file: %s — OUTSIDE the plugin, so it SURVIVES uninstall. This is the declared "
-			     "fallback for a read-only plugin directory: derived data only, safe to delete by hand."),
+			TEXT("[FPM]   file: %s — OUTSIDE the plugin, so it SURVIVES uninstall. DECLARED EXCEPTION: the "
+			     "plugin directory was not writable, so the cache fell back here. Derived data only, and "
+			     "safe to delete by hand at any time."),
 			*CachePath);
 	}
 
-	if (WouldRemain == 0 && GFPMSentinelNumExceptions == 0 && bClassifierAlive)
+	/*
+	 * ⚠ THE TWO KINDS OF RESIDUE GET DIFFERENT REMEDIES, so the verdict must not merge them — second-pass
+	 * correction. The first version printed "find the write path that bypassed clause 6" for ANY non-zero,
+	 * which for a FILE would have sent the reader hunting a cvar bug that does not exist. A wrong remedy in
+	 * a diagnostic costs more than no remedy.
+	 */
+	if (WouldRemain == 0 && FileResidue == 0 && bClassifierAlive)
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Display,
 			TEXT("[FPM]   RESULT: NOTHING would remain. FPM holds only transient console values at 0x07, "
-			     "released through the engine's own tagged history. ⚠ This says nothing about a leak from "
-			     "an EARLIER build - a value already written into GameUserSettings.ini is now the player's "
-			     "own setting and is indistinguishable from one they chose."));
+			     "released through the engine's own tagged history, and writes no file outside its own "
+			     "plugin folder. ⚠ This says nothing about a leak from an EARLIER build - a value already "
+			     "written into GameUserSettings.ini is now the player's own setting and is indistinguishable "
+			     "from one they chose."));
 	}
 	else
 	{
-		UE_LOG(LogFicsitsPerformanceManager, Warning,
-			TEXT("[FPM]   RESULT: %d hold(s) would survive beyond the %d declared exception(s). "
-			     "That is residue and it is not acceptable - find the write path that bypassed clause 6."),
-			WouldRemain, GFPMSentinelNumExceptions);
+		UE_CLOG(WouldRemain > 0, LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM]   RESULT: %d UNDECLARED cvar hold(s) would survive. This is not acceptable - a "
+			     "US_*-backed cvar is being held, so find the write path that bypassed clause 6."),
+			WouldRemain);
+		UE_CLOG(FileResidue > 0, LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM]   RESULT: %d declared file exception(s) would survive. Expected when the plugin "
+			     "directory is read-only; it is derived data and deleting it by hand is always safe."),
+			FileResidue);
+		UE_CLOG(!bClassifierAlive, LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM]   RESULT: UNKNOWN - the classifier is dead, so no verdict above can be trusted."));
 	}
 
+	// ⚠ RETURNS ONLY THE UNDECLARED cvar count. A DECLARED file exception is not a failure, and folding it
+	// in would make the residue drill fail permanently on any read-only install while blaming the release
+	// path — which was exactly the defect this second pass found.
 	return WouldRemain;
 }
 
@@ -201,9 +234,21 @@ bool FPMResidueSentinel::Drill()
 		static_cast<EConsoleVariableFlags>(Var->GetFlags() & ECVF_SetByMask);
 	const int32 AfterRelease = Audit();
 
-	// The value AND the SetBy must both come back. A drill that only checked the value would pass while
-	// our priority tag sat on the variable locking out every lower writer -- residue that is invisible
-	// to anyone reading the number.
+	/*
+	 * The value AND the SetBy must both come back. A drill that only checked the value would pass while our
+	 * priority tag still sat on the variable locking out every lower writer — residue invisible to anyone
+	 * reading the number.
+	 *
+	 * ⚠ `Audit() == 0` IS THE RIGHT BAR **ONLY BECAUSE** Audit returns the UNDECLARED cvar count and not the
+	 * declared file exception. Fold the file count into that return and this drill fails permanently on
+	 * every read-only install — while its message blames the release path, which would be working perfectly.
+	 * That was a real defect in the first version of this fix, caught on a second pass over it; it is why
+	 * the return value is deliberately narrow. Do not widen it without changing this line too.
+	 *
+	 * Context worth keeping: the UE convention for "uninstall a plugin cleanly" is that the USER deletes
+	 * Saved/ and Intermediate/ by hand. There is no engine facility that audits what a plugin leaves
+	 * behind, which is why this exists at all rather than wrapping something.
+	 */
 	const bool bPass = (After == Before) && (SetByAfter == SetByBefore)
 	                && (DuringHeld == 0) && (AfterRelease == 0);
 
