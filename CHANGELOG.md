@@ -34,6 +34,112 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 09:48 — VERSION — 0.4.1 → 0.5.0
+
+- **What:** `VersionName` / `SemVersion` → `0.5.0`; `RemoteVersionRange` → `=0.5.0`, **generated** by
+  `stamp_version.py --stamp`, never typed. Descriptor `Description` gained the F8 keybind and the
+  uninstall-cleanliness claim, both of which are user-visible and were missing from the ficsit.app text.
+- **Why MINOR and not PATCH:** the table above puts "new capability, new surface" at MINOR, and 0.5.0 adds
+  both. Phase 1 shipped the CVar writer, the residue sentinel, the origin/channel contract, and an overlay
+  keybind; the mod now registers **26 distinct `FPM.*` console surfaces** where 0.4.1 had far fewer. No
+  existing behaviour changed incompatibly, so this is not MAJOR.
+- **Release notes for this version** = the six `CODE` entries below, back to the `0.4.0 → 0.4.1` line.
+- **Files:** `FicsitsPerformanceManager.uplugin`. **No source file carries a version literal** — the runtime
+  banner reads the loaded descriptor, so there is exactly one place to bump and the log cannot disagree
+  with the file.
+- **Revert:** re-run `stamp_version.py --stamp` after restoring `SemVersion`, and delete the `0.5.0` tag.
+  Undo if the boot below reveals a Phase 1 fault serious enough to unship.
+- **Verified:** version predicate `0.5.0 == 0.5.0 == =0.5.0` after tagging. Packaged + deployed + booted:
+  see the boot line appended to this entry. **NOT-YET at the time of writing.**
+
+---
+
+## 2026-08-09 09:35 — CODE — third pass: the residue check's path prefix needed a trailing separator
+
+- **What:** `FPMBoxCache`'s plugin-dir prefix now ends in a separator before `StartsWith`.
+- **Why:** without it the comparison is a plain string prefix, so a sibling directory named
+  `FicsitsPerformanceManagerAnything` would be classified **"inside the plugin, not residue"**. Latent —
+  no such directory exists — but a false NOT-RESIDUE verdict is the single error this checker must never
+  make, and it would be completely silent.
+- **Checked and found clean in the same pass**, recorded so it is not re-derived: `CleanUpLegacyResidue`
+  can only ever target one fully-determined path (engine Saved dir + two literals, no pattern), and
+  `DeleteDirectory` with `Tree=false` makes the OS refuse a non-empty directory regardless of whether our
+  own emptiness check is right — the guard is the belt, `Tree=false` is the braces. `Audit`'s two counters
+  are genuinely separate: `WouldRemain` for undeclared cvars, `FileResidue` for the declared file, only the
+  former returned, so the drill cannot break on a read-only install.
+- **Files:** `Private/Core/FPMBoxCache.cpp`.
+- **Revert:** drop the separator. Do not — the failure is silent and in the safety path.
+- **Verified:** build-only, `Result: Succeeded`.
+
+---
+
+## 2026-08-09 09:28 — CODE — second pass over the fix round itself: four more, one of which broke the drill
+
+- **What:** reviewing the FIX ROUND with the same scrutiny as the code it fixed. Four defects, all mine,
+  all introduced by the previous entry.
+  1. **Self-contradiction.** The file branch logged the words *"the declared fallback"* while the exception
+     table held zero entries — the audit simultaneously claimed the cache was sanctioned and counted it as
+     unsanctioned residue. **Prose is not a declaration.** It is now an actual declared exception, which is
+     what Ant's ruling said.
+  2. **Wrong remedy.** The failure verdict printed *"find the write path that bypassed clause 6"* for any
+     non-zero result — so a FILE would have sent the reader hunting a cvar bug that does not exist. Cvar
+     residue and file residue now carry separate verdicts and separate remedies. **A wrong remedy in a
+     diagnostic costs more than no remedy.**
+  3. **The drill would have failed permanently on any read-only install.** It required `Audit() == 0`, and
+     a fallback cache made `Audit()` return 1 forever — so it would report *"FPM is capable of leaving
+     residue"* while blaming a release path that worked perfectly. `Audit()` now returns only the
+     undeclared **cvar** count, with a comment saying why widening it breaks the drill.
+  4. **Silence on the no-file case.** Neither branch ran when no cache existed, so *"we looked and there is
+     none"* and *"nobody checked files"* produced identical output — the exact equivalence that let this
+     input be missing in the first place. It now says so.
+- **Tooling ladder closed for this work** (bank → catalogue → online): there is no off-the-shelf residue
+  auditor for UE mods; the ecosystem convention is that the *user* deletes `Saved/` and `Intermediate/` by
+  hand. Building it was correct, and keeping the cache inside the plugin is stricter than the norm.
+- **Files:** `Private/Core/FPMResidueSentinel.cpp`, `Private/Core/FPMBoxCache.cpp`.
+- **Revert:** each of the four is independent; revert individually. Finding 3 is the one that matters.
+- **Verified:** build-only, `Result: Succeeded`.
+
+---
+
+## 2026-08-09 09:22 — CODE — review pass on P1: three defects, and the residue the auditor could not see
+
+- **Reviewed inline** after two subagents stalled with 0-byte transcripts. Every finding here was found by
+  hand.
+- **★ FOUND BY THE SPEC AXIS, and it is the big one.** FPM wrote a **120,681-byte** derived-box cache to
+  `%LOCALAPPDATA%/FactoryGame/Saved/FicsitsPerformanceManager/DerivedBoxes.json` — **outside the plugin,
+  surviving uninstall** — while `FPM.Residue` reported *"NOTHING would remain"*. The auditor inspected
+  cvars only; **file residue was a category it could not see.** Sixth dead instrument in two days, in the
+  file whose entire job is catching exactly this.
+  - The cache now writes **inside the plugin** when that directory is writable — probed by an actual write,
+    every boot, because permissions and read-only media lie to every cheaper check — falling back to
+    `Saved/` with a loud declaration when it is not. Ant's ruling: *"would be good to keep it in the mod if
+    possible, if its not we declare it an exception."* `Program Files` is writable on her Steam install but
+    is not universally, and FPM ships publicly.
+  - The sentinel gained **INPUT 4: files**, classifying inside-plugin vs outside and counting the latter.
+  - A one-time cleanup deletes the exact legacy path at startup, and the directory only if that left it
+    empty. Never a pattern, never recursive.
+- **Q1 defect:** `Drill()` called `ReleaseAll`, dropping **every** hold in the process. Harmless today, but
+  once the governor exists, running a diagnostic would silently tear down live levers. Now `ReleaseOwner`;
+  `FPM.Off` still covers the all-or-nothing case.
+- **Q2 defect:** `Hold()` captured `PriorValue` by reading the cvar, so on a **re-hold** it recorded our own
+  previous value as the player's baseline. Release was never affected — the engine's history handles that —
+  but `FPM.Changes` would have answered *"what has this mod changed?"* with a value the mod set. The first
+  hold's prior now survives re-holds.
+- **Q3, Q4: no finding.** Int cvars round-trip `GetString` cleanly; the observe-mode loop warns on a
+  different owner and stays silent on reclaim.
+- **The classifier now proves itself**, per Ant's *"dead instruments are not my preferred item to exist."*
+  The `US_*` check can never fire normally, because clause 6 refuses the writes that would trip it —
+  correct behaviour that leaves the detector unproven. So the classifier is **asserted at every audit**:
+  `t.MaxFPS` must classify as backed, `FPM.SelfTest.Probe` must not. If either fails, the audit reports
+  that it is **blind** rather than printing a clean sheet.
+- **Files:** `Private/Core/FPMBoxCache.cpp`, `Public/Core/FPMBoxCache.h`,
+  `Private/Core/FPMResidueSentinel.cpp`, `Private/Core/FPMCVarWriter.cpp`,
+  `Private/FicsitsPerformanceManager.cpp`.
+- **Revert:** the cache relocation is the only player-visible one — reverting it re-creates the residue.
+- **Verified:** build-only, `Result: Succeeded`.
+
+---
+
 ## 2026-08-09 09:10 — CODE — P1.4: the residue sentinel, whose first draft could not fail
 
 - **What:** `Core/FPMResidueSentinel.{h,cpp}`. `FPM.Residue` audits what would remain on the machine if
