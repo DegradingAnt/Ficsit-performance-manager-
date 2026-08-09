@@ -11,6 +11,8 @@
 #include "Online/ClientIdentification.h"
 #include "Online/CoreOnline.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerState.h"   // GetUniqueId() — the field vanilla reports failing to serialize
+#include "Engine/NetConnection.h"        // PlayerId — the server's own copy of the identity
 
 /*
  * ★ PRINT THE IDS THEMSELVES, NOT JUST HOW MANY THERE ARE — added 2026-08-09.
@@ -79,10 +81,75 @@ void FFPMCloneSensor::Arm()
 		const AFGPlayerState* JoinerState = Cast<AFGPlayerState>(PC->PlayerState);
 		if (!JoinerState)
 		{
+			/*
+			 * ★ WIDENED 2026-08-09, because this branch FIRED IN ANT'S GAME and told us almost nothing.
+			 *
+			 * What happened: she could not revive SunFry, and the log carried exactly one line from here —
+			 * "join by FGPlayerControllerBase_2147481134 arrived with NO AFGPlayerState". Twenty-six
+			 * seconds later vanilla logged, three times:
+			 *     LogProperty: Warning: Native NetSerialize StructProperty
+			 *     /Script/Engine.PlayerState:UniqueID (FUniqueNetIdRepl) failed.
+			 * Those two facts almost certainly describe one mechanism — an identity that failed to
+			 * replicate leaves nothing for FindInactivePlayer to match, so vanilla mints a fresh state and
+			 * the old one (with the body attached to it) is orphaned. But 26 seconds apart in two
+			 * different log categories is CORRELATION, and the design's P3.7 stage is explicitly
+			 * "candidate-side ORIGIN NAMING", which correlation cannot deliver.
+			 *
+			 * So this now captures, IN ONE LINE AT THE ONE INSTANT THAT MATTERS, the three things that
+			 * distinguish the competing explanations:
+			 *
+			 *   1. IS PlayerState NULL, OR PRESENT-BUT-WRONG-TYPE? `Cast<AFGPlayerState>` returns null for
+			 *      BOTH, and they are completely different diagnoses — "the state never arrived" versus
+			 *      "something replaced the state class". The old line could not tell them apart and
+			 *      silently implied the first.
+			 *   2. THE PLAYER STATE'S OWN UniqueId, if there is a state at all. This is the exact field
+			 *      whose NetSerialize vanilla reports failing.
+			 *   3. THE NET CONNECTION'S PlayerId, which is the identity the SERVER holds independently of
+			 *      the replicated PlayerState. If the connection has a valid id while the state does not,
+			 *      the loss is in replication of the state — and that is a named origin rather than a
+			 *      suspicion.
+			 *
+			 * Read-only. Every one of these is a getter; the sensor still moves nothing.
+			 */
+			const APlayerState* AnyState = PC->PlayerState;
+			const UNetConnection* Conn   = PC->GetNetConnection();
+
+			const TCHAR* StateShape =
+				!AnyState ? TEXT("PlayerState is NULL — nothing replicated at all")
+				          : TEXT("PlayerState EXISTS but is NOT an AFGPlayerState — wrong class");
+
+			const FString StateClass = AnyState ? GetNameSafe(AnyState->GetClass()) : FString(TEXT("<none>"));
+			const bool bStateIdValid = AnyState && AnyState->GetUniqueId().IsValid();
+			const FString StateId    = AnyState && AnyState->GetUniqueId().IsValid()
+				? AnyState->GetUniqueId().ToString() : FString(TEXT("<invalid>"));
+
+			const bool bConnIdValid = Conn && Conn->PlayerId.IsValid();
+			const FString ConnId    = (Conn && Conn->PlayerId.IsValid())
+				? Conn->PlayerId.ToString() : FString(TEXT("<invalid>"));
+
 			UE_LOG(LogFicsitsPerformanceManager, Warning,
-				TEXT("[FPM] clone sensor: join by %s arrived with NO AFGPlayerState — vanilla is about "
-				     "to match against nothing. That alone would explain a fresh state being minted."),
+				TEXT("[FPM] clone sensor: join by %s has NO USABLE AFGPlayerState — vanilla is about to "
+				     "match against nothing, which alone would explain a fresh state being minted."),
 				*GetNameSafe(PC));
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM]   shape        : %s  (class=%s)"), StateShape, *StateClass);
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM]   state uniqueId: %s  '%s'"),
+				bStateIdValid ? TEXT("VALID") : TEXT("INVALID"), *StateId);
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM]   conn  playerId: %s  '%s'  (connection %s)"),
+				bConnIdValid ? TEXT("VALID") : TEXT("INVALID"), *ConnId,
+				Conn ? TEXT("present") : TEXT("ABSENT"));
+
+			/*
+			 * The reading, stated here so the next person does not have to re-derive it from four lines:
+			 * conn VALID + state INVALID/absent  ⇒ the identity reached the server and was lost on the
+			 *   way into the PlayerState. That is the UniqueNetIdRepl NetSerialize failure, and it names
+			 *   the origin as replication of the state rather than anything mod-side.
+			 * conn INVALID too                   ⇒ the identity never arrived. Look upstream at the
+			 *   online subsystem (the failure sits 1 ms after an EOS SetPresenceResult in Ant's log).
+			 * state present, wrong class         ⇒ a mod replaced the player-state class. Different bug.
+			 */
 			return;
 		}
 
