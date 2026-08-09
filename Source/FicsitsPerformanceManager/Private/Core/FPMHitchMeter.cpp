@@ -10,6 +10,7 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/ScopeLock.h"
+#include "ShaderPipelineCache.h"
 #include "UObject/UObjectGlobals.h"
 
 /*
@@ -66,6 +67,18 @@ void FFPMHitchMeter::Arm()
 	SyncLoadHandle = FCoreDelegates::OnSyncLoadPackage.AddRaw(this, &FFPMHitchMeter::OnSyncLoadPackage);
 	PreGcHandle    = FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddRaw(this, &FFPMHitchMeter::OnPreGarbageCollect);
 
+	// ★ LAMBDAS RATHER THAN AddRaw, and for one specific reason: the context parameter's type
+	// `FShaderPipelineCache::FShaderCachePrecompileContext` is a NESTED class (`ShaderPipelineCache.h:158`),
+	// so it cannot be forward-declared, and a member-function binding would drag a RenderCore header into
+	// FPM's public header for a parameter neither callback wants. The lambda drops it here instead. The
+	// lifetime contract is identical to the four AddRaw calls above — both handles are removed in Disarm().
+	PsoBeginHandle = FShaderPipelineCache::GetPrecompilationBeginDelegate().AddLambda(
+		[this](uint32 Count, const FShaderPipelineCache::FShaderCachePrecompileContext&)
+		{ OnPsoPrecompileBegin(Count); });
+	PsoCompleteHandle = FShaderPipelineCache::GetPrecompilationCompleteDelegate().AddLambda(
+		[this](uint32 Count, double Seconds, const FShaderPipelineCache::FShaderCachePrecompileContext&)
+		{ OnPsoPrecompileComplete(Count, Seconds); });
+
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
 	// that distinguishes "measured nothing" from "never measured".
 	UE_LOG(LogFicsitsPerformanceManager, Display,
@@ -105,6 +118,52 @@ void FFPMHitchMeter::Disarm()
 	{
 		FCoreUObjectDelegates::GetPreGarbageCollectDelegate().Remove(PreGcHandle);
 		PreGcHandle.Reset();
+	}
+	if (PsoBeginHandle.IsValid())
+	{
+		FShaderPipelineCache::GetPrecompilationBeginDelegate().Remove(PsoBeginHandle);
+		PsoBeginHandle.Reset();
+	}
+	if (PsoCompleteHandle.IsValid())
+	{
+		FShaderPipelineCache::GetPrecompilationCompleteDelegate().Remove(PsoCompleteHandle);
+		PsoCompleteHandle.Reset();
+	}
+}
+
+void FFPMHitchMeter::OnPsoPrecompileBegin(uint32 Count)
+{
+	bPsoRunActive.store(true, std::memory_order_relaxed);
+
+	// ⚠ RENDER THREAD (`FShaderPipelineCache : FTickableObjectRenderThread`, `ShaderPipelineCache.h:78`).
+	// UE_LOG is thread-safe and `FPMDiag::IsOn` is already called off the game thread by
+	// `OnAsyncLoadPackage` in this same file. `FPMOverlay` is NOT, so nothing here posts to the screen —
+	// the summary does that, from the game thread, where it belongs.
+	if (FPMDiag::IsOn(FPMDiag::EChannel::Hitch))
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] PSO precompile run STARTED - %u task(s) queued. Spans from here until it finishes "
+			     "are counted against their own denominator, so the in-run hitch rate is comparable to the "
+			     "out-of-run one rather than just larger."), Count);
+	}
+}
+
+void FFPMHitchMeter::OnPsoPrecompileComplete(uint32 Count, double Seconds)
+{
+	bPsoRunActive.store(false, std::memory_order_relaxed);
+	PsoRunsCompleted.fetch_add(1, std::memory_order_relaxed);
+	PsoTasksLastRun.store(Count, std::memory_order_relaxed);
+	PsoSecondsLastRun.store(Seconds, std::memory_order_relaxed);
+
+	// The wording is load-bearing. `Seconds` is `TotalPrecompileTime`, summed per completed task across the
+	// whole run (`ShaderPipelineCache.cpp:1204`) and reset right after this broadcast (`:1826-1827`). Calling
+	// it a stall would be the exact species of overstatement this meter was built to stop.
+	if (FPMDiag::IsOn(FPMDiag::EChannel::Hitch))
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] PSO precompile run FINISHED - %u task(s), %.2f s of compile time summed across the "
+			     "whole run. That is NOT one frame's cost and is not attributable to any single frame."),
+			Count, Seconds);
 	}
 }
 
@@ -200,6 +259,25 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	++FramesTotal;
 	WindowSeconds += SpanMs / 1000.0;
 
+	/*
+	 * ★ READ, NOT CONSUMED — and counted for EVERY span, not only the hitching ones.
+	 *
+	 * The other three inputs arrive as parameters because they are read-and-reset atomics that must be
+	 * consumed exactly once per span. This one is a LEVEL that spans many frames, so it is read here
+	 * instead, which also leaves both `ClassifySpan` call sites untouched.
+	 *
+	 * `FramesDuringPso` is the whole reason the bucket is worth having. A precompile run can cover an entire
+	 * window; "these 18 hitches happened during it" would then be true, useless, and easy to mistake for a
+	 * finding. With the denominator it becomes a rate that can be compared against the out-of-run rate, and
+	 * a rate that is NOT elevated is a real answer too.
+	 */
+	const bool bPsoInSpan = bPsoRunActive.load(std::memory_order_relaxed);
+	if (bPsoInSpan) { ++FramesDuringPso; }
+
+	// The point of the widening: a span that matched nothing is now counted rather than merely absent from
+	// four other counters. Design `:1218` -- "most stalls were anonymous BY CONSTRUCTION".
+	const bool bAttributed = FlushesInSpan > 0 || SyncLoadsInSpan > 0 || GcInSpan > 0 || bPsoInSpan;
+
 	const float ThresholdMs = CVarHitchThresholdMs.GetValueOnAnyThread();
 	const float CeilingMs   = CVarHitchIgnoreAboveMs.GetValueOnAnyThread();
 
@@ -220,6 +298,8 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 		if (FlushesInSpan > 0)   { ++LoadStallsWithFlush; }
 		if (SyncLoadsInSpan > 0) { ++StallsWithSyncLoad; }
 		if (GcInSpan > 0)        { ++StallsWithGc; }
+		if (bPsoInSpan)          { ++StallsWithPso; }
+		if (!bAttributed)        { ++StallsUnattributed; }
 		return;
 	}
 
@@ -233,6 +313,8 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	if (FlushesInSpan > 0)   { ++HitchesWithFlush; }
 	if (SyncLoadsInSpan > 0) { ++HitchesWithSyncLoad; }
 	if (GcInSpan > 0)        { ++HitchesWithGc; }
+	if (bPsoInSpan)          { ++HitchesWithPso; }
+	if (!bAttributed)        { ++HitchesUnattributed; }
 
 	if (!FPMDiag::IsOn(FPMDiag::EChannel::Hitch)) { return; }
 
@@ -263,11 +345,18 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 		SyncPart = FString::Printf(TEXT(" | %d SYNC LOAD(S), last='%s'"), SyncLoadsInSpan, *LastSyncPackage);
 	}
 
+	// ⚠ THE TWO NEW FIELDS ARE WORDED DOWN, DELIBERATELY. The sync-load half names a package and is a direct
+	// answer; the PSO half is an overlap with a run that may have covered the whole window, so it says
+	// "during", not "because of". And a span that matched nothing is stamped UNATTRIBUTED so the anonymous
+	// ones are greppable in the log rather than only countable in the summary.
+	const TCHAR* PsoPart = bPsoInSpan ? TEXT(" | during a PSO precompile run") : TEXT("");
+	const TCHAR* UnattributedPart = bAttributed ? TEXT("") : TEXT(" | UNATTRIBUTED");
+
 	UE_LOG(LogFicsitsPerformanceManager, Warning,
 		TEXT("[FPM] HITCH %.1f ms%s - %d async-load flush(es), %d GC pass(es) in this span, %d package(s) "
-		     "still loading%s%s"),
+		     "still loading%s%s%s%s"),
 		SpanMs, bClosedByLoad ? TEXT(" (closed by a world load)") : TEXT(""),
-		FlushesInSpan, GcInSpan, GetNumAsyncPackages(), *SyncPart, *Packages);
+		FlushesInSpan, GcInSpan, GetNumAsyncPackages(), *SyncPart, PsoPart, UnattributedPart, *Packages);
 }
 
 bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
@@ -353,20 +442,64 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		// BOTH halves, always, and never folded together. The async-flush count alone was structurally
 		// blind to sync loads, so reporting it on its own is what made a partial zero look like a whole one.
 		Line += FString::Printf(
-			TEXT(" | worst %.1f ms, mean %.1f ms | %d had an async-load flush, %d had a SYNC load, %d had a GC"),
-			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc);
+			TEXT(" | worst %.1f ms, mean %.1f ms | %d had an async-load flush, %d had a SYNC load, %d had a "
+			     "GC, %d were during a PSO precompile"),
+			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc, HitchesWithPso);
+
+		/*
+		 * ★ THE UNATTRIBUTED SHARE IS THE NUMBER THIS WIDENING LIVES OR DIES BY, so it is printed as a
+		 * PERCENTAGE and not left to be worked out from the four counters above.
+		 *
+		 * Design `:1218` asks for exactly this: "an unattributed-stall RATE, printed, so 'most stalls
+		 * anonymous' becomes a number that can fall." Without it, adding a fifth bucket reads as progress
+		 * whether or not the anonymous share actually moved -- and on 0.6.0 that share was 21 of 21.
+		 * `Hitches > 0` is guaranteed inside this branch, so the division is safe.
+		 */
+		Line += FString::Printf(TEXT(" | %d UNATTRIBUTED (%.0f%% of hitches)"),
+			HitchesUnattributed, 100.0 * HitchesUnattributed / Hitches);
+	}
+
+	/*
+	 * ★ THE RATE COMPARISON IS THE PSO BUCKET'S ENTIRE VALUE, and without it the bucket would be one more
+	 * coincidence count. "18 hitches during a precompile run" says nothing when the run covered the window;
+	 * "18 in 40 spans inside it versus 3 in 4,200 outside" is a finding. Printed only when a run actually
+	 * overlapped this window, so a normal window stays quiet.
+	 */
+	if (FramesDuringPso > 0)
+	{
+		const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuringPso)
+			? FramesInWindow - static_cast<uint64>(FramesDuringPso)
+			: 0;
+		const int32 HitchesOutside = Hitches - HitchesWithPso;
+		Line += FString::Printf(
+			TEXT(" | PSO precompile overlapped %d span(s): %d hitch(es) there (%.2f%%) vs %d in the other "
+			     "%llu (%.2f%%)"),
+			FramesDuringPso, HitchesWithPso, 100.0 * HitchesWithPso / FramesDuringPso,
+			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
+			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
 	}
 	if (LoadStalls > 0)
 	{
 		// The stalls carry their own flush count. Folding them into the hitch figure would overstate the
 		// hitch rate; dropping the count entirely is what review finding B caught.
 		Line += FString::Printf(
-			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc), not counted as hitches"),
+			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc, %d pso, %d UNATTRIBUTED), not "
+			     "counted as hitches"),
 			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread(), LoadStallsWithFlush, StallsWithSyncLoad,
-			StallsWithGc);
+			StallsWithGc, StallsWithPso, StallsUnattributed);
 	}
 	Line += FString::Printf(TEXT(" | session totals: %d flush(es), %d sync load(s), %d GC pass(es)"),
 		FlushesTotal.GetValue(), SyncLoadsTotal.GetValue(), GcTotal.GetValue());
+
+	// Run-level context, appended only once a run has actually completed. The seconds figure is labelled as
+	// compile time rather than stall time every place it is printed, because it is the former.
+	if (const int32 PsoRuns = PsoRunsCompleted.load(std::memory_order_relaxed); PsoRuns > 0)
+	{
+		Line += FString::Printf(
+			TEXT(", %d PSO precompile run(s) (last: %u task(s), %.2f s compile time)"),
+			PsoRuns, PsoTasksLastRun.load(std::memory_order_relaxed),
+			PsoSecondsLastRun.load(std::memory_order_relaxed));
+	}
 	if (LinesSuppressed > 0)
 	{
 		// Stated, never silent. A capped log that does not say it capped reads as a quiet session.
@@ -401,6 +534,14 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	StallsWithSyncLoad = 0;
 	HitchesWithGc = 0;
 	StallsWithGc = 0;
+	// ⚠ `bPsoRunActive` is NOT reset here — it is a level owned by the render thread's Begin/Complete pair,
+	// and clearing it on a window boundary would fake the end of a run that is still going. Only its
+	// per-window counters reset.
+	FramesDuringPso = 0;
+	HitchesWithPso = 0;
+	StallsWithPso = 0;
+	HitchesUnattributed = 0;
+	StallsUnattributed = 0;
 	LinesThisWindow = 0;
 	LinesSuppressed = 0;
 	WorstHitchMs = 0.0;

@@ -6,6 +6,8 @@
 #include "Containers/Ticker.h"
 #include "HAL/ThreadSafeCounter.h"
 
+#include <atomic>
+
 #include "Core/FPMFixContract.h"
 
 /**
@@ -72,7 +74,8 @@ public:
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
 
 	/** UnknownCause: a pure instrument. It handles no symptom and claims no cause -- it exists to NAME one, and as of
-	 * 2026-08-09 the majority of measured hitches remain unattributed by it. */
+	 * 2026-08-09 the majority of measured hitches remain unattributed by it. That share is now PRINTED as a
+	 * percentage rather than left implicit, so the next measurement can say whether it moved. */
 	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::UnknownCause; }
 
 	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::Hitch; }
@@ -158,11 +161,49 @@ private:
 	 */
 	void OnPreGarbageCollect();
 
+	/**
+	 * ★ PSO PRECOMPILE — A RUN-LEVEL SIGNAL, AND THE WHOLE POINT IS THAT IT IS NOT PRETENDING TO BE A
+	 * PER-FRAME ONE. Wired 2026-08-09 as the fourth bucket.
+	 *
+	 * `FShaderPipelineCache::GetPrecompilationBeginDelegate()` / `GetPrecompilationCompleteDelegate()`
+	 * (`ShaderPipelineCache.h:214`, `:219`) bracket an entire precompile RUN, which is batched across many
+	 * frames by `r.ShaderPipelineCache.BatchSize`/`BatchTime`. So the flag they maintain is true for a long
+	 * stretch — during startup, potentially minutes — and a naive "this hitch overlapped a PSO run" count
+	 * would mark nearly every hitch in that stretch and mean nothing.
+	 *
+	 * ⚠ THAT IS WHY `FramesDuringPso` EXISTS. The bucket is reported as a RATE against its own denominator:
+	 * hitches-per-span inside the run versus outside it. An elevated rate inside is evidence; a raw overlap
+	 * count is not. This is the same denominator discipline the header opens with, applied to the one bucket
+	 * that would otherwise be free to look impressive.
+	 *
+	 * ⚠ THE TWO THINGS I FIRST GOT WRONG HERE, both settled from engine bytes rather than from the plan:
+	 *   1. `FShaderPipelineCache : public FTickableObjectRenderThread` (`ShaderPipelineCache.h:78`), and the
+	 *      Complete broadcast is in its Tick (`ShaderPipelineCache.cpp:1816`). These fire on the RENDER
+	 *      THREAD. The flag is `std::atomic` because it has to be, not as a precaution.
+	 *   2. The Complete delegate's `Seconds` is NOT this run's stall duration. It is
+	 *      `FShaderPipelineCacheTask::TotalPrecompileTime`, a `std::atomic_int64_t` accumulated with
+	 *      `+= TimeDelta` per completed task (`:1204`) and reset after the broadcast (`:1826-1827`) — a sum
+	 *      of compile time across the run, unattributable to any frame. It is recorded as session context
+	 *      and deliberately kept OUT of the per-span attribution.
+	 *
+	 * The polling alternative was rejected on inspection, not on taste: `NumPrecompilesRemaining()` returns a
+	 * wall-time DECAY ESTIMATE rather than a task count whenever `r.PSOFileCache.MaxPrecompileTime > 0`
+	 * (`:831-835`), and is floored at 1 while any cache is pending (`:849-850`). Its per-frame delta would be
+	 * a number that looks like work done and is not.
+	 *
+	 * On a dedicated server this simply never fires — no RHI means no `ShaderPipelineCache`, so the flag
+	 * stays false and the bucket reads as an honest zero rather than needing a `Side()` exception.
+	 */
+	void OnPsoPrecompileBegin(uint32 Count);
+	void OnPsoPrecompileComplete(uint32 Count, double Seconds);
+
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle FlushHandle;
 	FDelegateHandle PackageHandle;
 	FDelegateHandle SyncLoadHandle;
 	FDelegateHandle PreGcHandle;
+	FDelegateHandle PsoBeginHandle;
+	FDelegateHandle PsoCompleteHandle;
 
 	double LastTickSeconds = 0.0;
 	double WindowSeconds = 0.0;
@@ -213,6 +254,39 @@ private:
 	FThreadSafeCounter GcTotal;
 	int32 HitchesWithGc = 0;
 	int32 StallsWithGc = 0;
+
+	/**
+	 * The PSO run flag, and — the part that makes it worth having — its own denominator. See the long note
+	 * on `OnPsoPrecompileBegin` above for why a run-level flag needs one and the other three buckets do not:
+	 * a flush, a sync load and a GC pass are EVENTS inside a span, this is a LEVEL that spans many.
+	 *
+	 * Read, never consumed, so `ClassifySpan` reads it directly instead of taking a sixth parameter. That
+	 * also leaves both of its call sites untouched, which is the smaller change and the smaller risk.
+	 */
+	std::atomic<bool> bPsoRunActive{false};
+	int32 FramesDuringPso = 0;
+	int32 HitchesWithPso = 0;
+	int32 StallsWithPso = 0;
+
+	/**
+	 * ★ THE UNATTRIBUTED RATE IS THIS WIDENING'S DONE-CONDITION, not a by-product of it.
+	 *
+	 * Ant's 0.6.0 overlay read `21 hitch(es) ... 0 async-load flush, 0 SYNC load, 0 GC` — every hitch outside
+	 * every bucket. Adding a fifth bucket LOOKS like progress whether or not the anonymous share actually
+	 * falls, so the share itself is printed. It is the number that has to move, and it is the number that
+	 * makes the next bucket's value arguable in advance instead of in hindsight.
+	 */
+	int32 HitchesUnattributed = 0;
+	int32 StallsUnattributed = 0;
+
+	/**
+	 * Session context from the Complete delegate. Atomic because it is written on the render thread and read
+	 * on the game thread in `LogSummary` — a torn read here would be a real race, not a theoretical one.
+	 * `PsoSecondsLastRun` is the run's TOTAL compile time, reported as exactly that and nothing more.
+	 */
+	std::atomic<int32>  PsoRunsCompleted{0};
+	std::atomic<uint32> PsoTasksLastRun{0};
+	std::atomic<double> PsoSecondsLastRun{0.0};
 
 	/** The most recent sync-loaded package name, so a hitch line can NAME what blocked it. */
 	mutable FCriticalSection SyncNameLock;
