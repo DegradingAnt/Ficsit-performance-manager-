@@ -102,7 +102,17 @@ void FFPMNoOwnerRpcGate::Arm()
 			}
 		}
 
-		if (Count == 1 || (Count % 100000) == 0)
+		/*
+		 * ⚠ A BARE LITERAL, AND A STATED EXCEPTION TO THE FPMLog POLICY RATHER THAN AN OVERSIGHT.
+		 * Flagged by review 2026-08-09. FPMLog offers Routine=200 and Notable=50, and its header says a
+		 * third tier is DELIBERATELY absent — so adding one to fit this site would break a stated freeze.
+		 * This gate suppresses dispatches at a rate no other fix approaches (millions per session on a busy
+		 * factory), where even Routine would produce thousands of lines. The divisor still encodes how
+		 * expected the event is, which is the policy's actual rule; it is simply an order of magnitude the
+		 * two named tiers do not cover. Named here so it is an exception on the record, not a stray number.
+		 */
+		constexpr uint64 ThrottleFlood = 100000;
+		if (Count == 1 || (Count % ThrottleFlood) == 0)
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,
 				TEXT("[FPM] no-owner RPC gate: %llu buildable dispatches suppressed this session"), Count);

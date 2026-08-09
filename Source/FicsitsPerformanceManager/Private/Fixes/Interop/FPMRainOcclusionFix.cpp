@@ -80,7 +80,13 @@ namespace
 	int32 GDerivedInstanceData = 0;
 	int32 GDerivedComponents = 0;
 	int32 GGeometryless = 0;
-	int32 GOffThreadSkips = 0;
+	/**
+	 * ⚠ ATOMIC, and the irony of the original is the reason. This counter exists to measure the OFF-GAME-
+	 * THREAD branch, and it was a bare int32 incremented from exactly that branch — an unsynchronised
+	 * read-modify-write on the one path guaranteed to be concurrent. Found by review 2026-08-09.
+	 * The fix's own instrument was the racy part.
+	 */
+	std::atomic<int32> GOffThreadSkips{0};
 
 	/*
 	 * ★ THE TWO SILENT SKIPS, NOW COUNTED. Found 2026-08-09 from Ant's second world load, which printed
@@ -550,7 +556,7 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 		// whole job is to be noticed.
 		Summary += FString::Printf(TEXT(" | ** %d UNACCOUNTED **"), Examined - Bucketed);
 	}
-	if (GOffThreadSkips > 0)
+	if (GOffThreadSkips.load() > 0)
 	{
 		// Stated, never silent -- an off-thread skip is a coverage gap, not a no-op.
 		//
@@ -560,7 +566,7 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 		// figure unlabelled beside six per-sweep ones is exactly the defect the comment above the reset
 		// line records -- a second sweep re-showing the first sweep's numbers as though they were fresh.
 		// Caught on the review pass for this bump, before it shipped. Same bug, opposite direction.
-		Summary += FString::Printf(TEXT(" | %d off-thread skip(s) this session"), GOffThreadSkips);
+		Summary += FString::Printf(TEXT(" | %d off-thread skip(s) this session"), GOffThreadSkips.load());
 	}
 	FPMOverlay::Post(TEXT("rain sweep"), Summary);
 

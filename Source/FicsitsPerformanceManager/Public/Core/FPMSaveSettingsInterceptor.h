@@ -89,7 +89,13 @@ public:
 	virtual void Arm() override;
 
 	/**
-	 * ★ THE WRITER ASKS THIS BEFORE EVERY MAPPED WRITE.
+	 * ★ THE WRITER WILL ASK THIS BEFORE EVERY MAPPED WRITE — once clause 6 is lifted.
+	 *
+	 * ⚠ NOT WIRED YET, AND THE PRESENT TENSE WAS A LIE. This said "the writer asks this" while nothing
+	 * called it (review 2026-08-09). Clause 6 currently refuses the whole US_*-backed set outright, so
+	 * there is no mapped write for it to gate. It is here so the lift is one edit rather than a design
+	 * task — but a comment claiming a live integration that does not exist is the project's own named
+	 * defect, so it says what is true instead.
 	 *
 	 * False when the hook did not install, when the self-test failed, or when a restore has ever failed.
 	 * Fail CLOSED: it is also false before `Arm()` has run, so a write racing startup is refused rather
