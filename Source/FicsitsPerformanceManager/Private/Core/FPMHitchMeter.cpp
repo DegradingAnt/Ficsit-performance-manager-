@@ -160,6 +160,19 @@ void FFPMHitchMeter::OnSyncLoadPackage(const FString& PackageName)
 	// copy to be able to NAME it is the trade this instrument exists to make.
 	FScopeLock Lock(&SyncNameLock);
 	LastSyncPackage = PackageName;
+
+	/*
+	 * ★ COUNT PER PACKAGE, BECAUSE "last=" IS A BIASED SAMPLE — added 2026-08-09 the moment I tried to
+	 * act on it.
+	 *
+	 * The hitch line reports the LAST sync load of its span. One measured span contained 283 of them and
+	 * named exactly one. So the seven names harvested from a session are "whatever finished last", not
+	 * "what costs the most" — and choosing what to pin from that list would be choosing by an artefact of
+	 * the reporting, which is the same class of mistake as reading a count off a grep that matched my own
+	 * log line. A frequency map costs one hash lookup per sync load and answers the question actually
+	 * being asked: WHICH packages block, and how often.
+	 */
+	SyncLoadCounts.FindOrAdd(PackageName)++;
 }
 
 void FFPMHitchMeter::OnAsyncLoadPackage(FStringView PackageName)
@@ -288,6 +301,38 @@ bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 	return true;
 }
 
+void FFPMHitchMeter::LogSyncPackages()
+{
+	// Copied out under the lock, then sorted outside it: the sort is O(n log n) with a string compare and
+	// has no business holding a lock that a cross-thread load callback is waiting on.
+	TArray<TPair<FString, int32>> Ranked;
+	{
+		FScopeLock Lock(&SyncNameLock);
+		Ranked.Reserve(SyncLoadCounts.Num());
+		for (const TPair<FString, int32>& Pair : SyncLoadCounts) { Ranked.Add(Pair); }
+	}
+	Ranked.Sort([](const TPair<FString, int32>& A, const TPair<FString, int32>& B)
+		{ return A.Value > B.Value; });
+
+	int32 Total = 0;
+	for (const TPair<FString, int32>& Pair : Ranked) { Total += Pair.Value; }
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] sync loads: %d distinct package(s), %d load(s) total this session. "
+		     "Each one BLOCKED the game thread. Top 25:"),
+		Ranked.Num(), Total);
+
+	const int32 Show = FMath::Min(Ranked.Num(), 25);
+	for (int32 i = 0; i < Show; ++i)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   %4d x  %s"), Ranked[i].Value, *Ranked[i].Key);
+	}
+	// Stated, never silent -- a truncated list that does not say it truncated reads as the whole list.
+	UE_CLOG(Ranked.Num() > Show, LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   ... and %d more package(s) not shown."), Ranked.Num() - Show);
+}
+
 void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 {
 	/*
@@ -356,6 +401,21 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
  * `FPM.Hitch.Report` — because a running summary you have to wait sixty seconds for is not the one you want
  * the moment after a hitch happens. This also prints the SESSION totals, which the windowed line never does.
  */
+/*
+ * `FPM.Hitch.Packages` — the ranked list the hitch lines cannot give you.
+ *
+ * This is what a pin list must be chosen FROM. The per-hitch `last=` field names whichever package
+ * happened to finish last in that span, so harvesting names from the log ranks by coincidence. This ranks
+ * by count.
+ */
+static FAutoConsoleCommand GHitchPackagesCmd(
+	TEXT("FPM.Hitch.Packages"),
+	TEXT("Print the synchronously-loaded packages this session, most frequent first."),
+	FConsoleCommandDelegate::CreateStatic([]()
+	{
+		FFPMHitchMeter::Get().LogSyncPackages();
+	}));
+
 static FAutoConsoleCommand GHitchReportCmd(
 	TEXT("FPM.Hitch.Report"),
 	TEXT("Print the FPM hitch meter's running totals now, plus the session totals."),

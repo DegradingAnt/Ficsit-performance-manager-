@@ -85,6 +85,17 @@ public:
 	/** Print the running totals WITH their denominator. Bound to `FPM.Hitch.Report`, and run on disarm. */
 	void LogSummary(const TCHAR* Reason);
 
+	/**
+	 * Print every synchronously-loaded package this session, most frequent first. Bound to
+	 * `FPM.Hitch.Packages`.
+	 *
+	 * ★ THIS IS THE LIST A PIN SET MUST BE CHOSEN FROM. The per-hitch line names only the LAST sync load
+	 * of its span, and one measured span contained 283 of them — so ranking by what appears in hitch lines
+	 * ranks by coincidence. The asset-residency fix's own scope rule says to add an asset only when a
+	 * blocking load of it has been shown in a log; this is the honest form of that evidence.
+	 */
+	void LogSyncPackages();
+
 private:
 	/**
 	 * The `float` this is handed is `FApp::GetDeltaTime()` and is DELIBERATELY UNUSED — see the header
@@ -200,6 +211,13 @@ private:
 	/** The most recent sync-loaded package name, so a hitch line can NAME what blocked it. */
 	mutable FCriticalSection SyncNameLock;
 	FString LastSyncPackage;
+
+	/**
+	 * ★ HOW OFTEN EACH PACKAGE BLOCKS — because `last=` is a BIASED SAMPLE and acting on it would be
+	 * choosing by an artefact of the reporting. One measured span held 283 sync loads and named one.
+	 * Guarded by SyncNameLock, which already covers this callback.
+	 */
+	TMap<FString, int32> SyncLoadCounts;
 
 	/** Guarded because `GetOnAsyncLoadPackage()` fires on whichever thread issued the load, by contract. */
 	mutable FCriticalSection PackagesLock;
