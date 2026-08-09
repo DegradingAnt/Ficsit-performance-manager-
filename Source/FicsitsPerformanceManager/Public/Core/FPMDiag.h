@@ -66,6 +66,7 @@ public:
 		Hitch,            // FPM.Diag.Hitch    — frame-time meter
 		Residency,        // FPM.Diag.Residency — the vanilla-asset pin
 		Overlay,          // FPM.Diag.Overlay  — the on-screen feed
+		SaveGuard,        // FPM.Diag.SaveGuard — the SaveSettings interceptor
 		Count
 	};
 

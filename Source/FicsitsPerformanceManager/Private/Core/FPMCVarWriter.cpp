@@ -104,6 +104,33 @@ void FPMCVarWriter::GetHeldCVars(TArray<FString>& Out) const
 	for (const FHold& H : Ledger) { Out.Add(H.CVar); }
 }
 
+void FPMCVarWriter::GetHolds(TArray<FHoldView>& Out) const
+{
+	/*
+	 * A COPY, not a view into the ledger, and that is deliberate. The one caller — the SaveSettings
+	 * interceptor — iterates this while calling Release() on each entry, and Release MUTATES the ledger.
+	 * Handing out anything that aliases `Ledger` would be iterator invalidation with a cvar write on the
+	 * other side of it.
+	 *
+	 * PriorValue and PriorSetBy are NOT exposed. Restoring is the ENGINE's job through the tagged
+	 * history Unset that Release performs; a caller holding its own copy of a prior value would be
+	 * hand-rolled capture-and-restore, which is the pattern R33 killed because a captured baseline can
+	 * be our own earlier write.
+	 */
+	Out.Reset();
+	Out.Reserve(Ledger.Num());
+	for (const FHold& H : Ledger)
+	{
+		FHoldView V;
+		V.CVar   = H.CVar;
+		V.Value  = H.Value;
+		V.Owner  = H.Owner;
+		V.Reason = H.Reason;
+		V.Lease  = H.Lease;
+		Out.Add(MoveTemp(V));
+	}
+}
+
 bool FPMCVarWriter::Hold(FName Owner, const TCHAR* CVarName, const TCHAR* Value, const TCHAR* Reason,
                          EFPMLease Lease)
 {

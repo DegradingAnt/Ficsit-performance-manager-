@@ -8,6 +8,7 @@
 #include "Core/FPMHitchMeter.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
+#include "Core/FPMSaveSettingsInterceptor.h"
 #include "Core/FPMUserSettingMap.h"
 #include "Fixes/Interop/FPMHologramNetGuard.h"
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
@@ -105,6 +106,10 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * diagnostic that must be typed costs one of Ant's boots; this one does not.
 	 */
 	FPMUserSettingMap::Init();
+
+	// Armed AFTER the map, because its arm-time self-test reports which source the map is answering
+	// from, and BEFORE anything can hold a cvar — the guard refuses to arm if a hold already exists.
+	FPMFixes::Arm(FFPMSaveSettingsInterceptor::Get());
 
 	// The debug feed, on by default while the mod is pre-release. Ant: "i want UI to show when and what
 	// the rain fix thing is doing so i can see that its working." It attaches as soon as a viewport

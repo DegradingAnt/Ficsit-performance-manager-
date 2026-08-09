@@ -137,6 +137,26 @@ public:
 	void GetHeldCVars(TArray<FString>& Out) const;
 
 	/**
+	 * One hold, flattened — enough to RELEASE it and later re-HOLD it identically.
+	 *
+	 * Exists for the SaveSettings interceptor and nothing else. It needs to stand our writes down across
+	 * the game's serialise and put them back afterwards, and it must do that through the SAME public
+	 * Hold/Release path everything else uses — not by reaching into the ledger. A second code path that
+	 * can write cvars is a second code path that can leak them.
+	 */
+	struct FHoldView
+	{
+		FString CVar;
+		FString Value;
+		FName   Owner;
+		FString Reason;
+		EFPMLease Lease = EFPMLease::Module;
+	};
+
+	/** Snapshot of every live hold. The interceptor filters this by `FPMUserSettingMap::IsBacked`. */
+	void GetHolds(TArray<FHoldView>& Out) const;
+
+	/**
  	 * True if this cvar is one the game's own settings save would CAPTURE.
  	 *
  	 * ⚠ Exposed so the SENTINEL can reach the same judgement the writer's refusal uses, instead of the

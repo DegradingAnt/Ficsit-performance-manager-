@@ -62,6 +62,40 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 15:05 — CODE — P1.3 part 2: the SaveSettings interceptor. Phase 1's last piece
+
+- **What:** `FFPMSaveSettingsInterceptor` — two hooks on `UFGGameUserSettings::SaveSettings`
+  (`FGGameUserSettings.h:115`). **Before:** release every hold on a capturable cvar so the game
+  serialises the *player's* values. **After:** re-apply them. Plus `FPMCVarWriter::GetHolds()`, a
+  flattened snapshot so the guard can suspend and resume through the ordinary public Hold/Release path
+  rather than reaching into the ledger.
+- **Why it is mandatory — measured, not argued.** The read-only `GetValueToSave` probe on the live
+  0.5.7 boot: **28 cvar-backed settings would be written by a save right now, 16 of them sitting at
+  exactly their default.** `sg.TextureQuality` at `3` with default `3` would still be persisted. So the
+  "different from the default and marked as dirty" promise in `FGUserSettingApplyType.h:101-102` is
+  false in practice and the AC4 disassembly reading is correct: no dirty gate protects us.
+- **Release, never restore-a-remembered-value.** Release is the engine's tagged-history `Unset`, so the
+  cvar falls back to the player's own layer. Remembering a prior value would be capture-and-restore —
+  the ratchet R33 removed baseline capture to kill, because a captured baseline can be our own write.
+- **The three §2.3.6 invariants, all present:** arm-time self-test · **permanent, latching** fail-safe
+  (never self-heals; the writer refuses every mapped write afterwards) · refuse-to-arm-while-held.
+  `IsHealthy()` fails CLOSED before arming, after a failure, and mid-suspension.
+- **The self-test's reach is stated in its own log line.** It proves both hooks installed and the
+  user-setting map answers. It does **not** call `SaveSettings` — doing so would write Ant's real
+  `GameUserSettings.ini`, which is the harm being guarded. End-to-end needs a boot with a real save.
+- **Clause 6 is NOT lifted.** Shipping the interceptor is the design's condition for lifting it, but the
+  lift is a separate deliberate change: P1.5 Leg B (does the menu's APPLY button write at 0x08 and
+  outrank our 0x07?) is unanswered. Startup applies at `GameSetting` 0x02, measured on 0.5.6 — the
+  apply-button path is a different one.
+- **Files:** `Public/Core/FPMSaveSettingsInterceptor.h` (new), `Private/Core/FPMSaveSettingsInterceptor.cpp`
+  (new), `Public/Core/FPMCVarWriter.h`, `Private/Core/FPMCVarWriter.cpp`, `Public/Core/FPMDiag.h`,
+  `Private/Core/FPMDiag.cpp` (new `FPM.Diag.SaveGuard` channel), `Private/FicsitsPerformanceManager.cpp`.
+- **Verified:** build-only — `Result: Succeeded`. NOT boot-tested. A compile error on the way in was
+  informative and is recorded in the source: the `_AFTER` handler takes no `Scope`, because an
+  after-hook cannot cancel or override a call that already ran.
+
+---
+
 ## 2026-08-09 14:45 — VERSION — 0.5.6 → 0.5.7
 
 - **What:** `0.5.7`; pin generated. **PATCH** — a read-only diagnostic plus a log-timing repair. With

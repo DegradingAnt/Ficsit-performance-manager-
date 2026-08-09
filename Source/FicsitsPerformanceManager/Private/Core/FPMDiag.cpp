@@ -80,6 +80,14 @@ static TAutoConsoleVariable<int32> CVarDiagOverlay(
 	     "old note here was waiting for."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagSaveGuard(
+	TEXT("FPM.Diag.SaveGuard"), 1,
+	TEXT("SaveSettings interceptor. 0 = silent, 1 = arm line, every restore/re-apply and every refusal, "
+	     "2 = also the no-op saves where FPM held nothing. Level 1 is deliberately chatty: this guard "
+	     "stands between a transient write and a PERMANENT change to the player's own settings file, so "
+	     "its firings are not routine events to be sampled."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -93,6 +101,7 @@ namespace
 		&CVarDiagHitch,
 		&CVarDiagResidency,
 		&CVarDiagOverlay,
+		&CVarDiagSaveGuard,
 	};
 
 	/*
@@ -120,6 +129,7 @@ namespace
 		case FPMDiag::EChannel::Hitch:          return TEXT("FPM.Diag.Hitch");
 		case FPMDiag::EChannel::Residency:      return TEXT("FPM.Diag.Residency");
 		case FPMDiag::EChannel::Overlay:        return TEXT("FPM.Diag.Overlay");
+		case FPMDiag::EChannel::SaveGuard:      return TEXT("FPM.Diag.SaveGuard");
 		default:                                return TEXT("<unknown>");
 		}
 	}
