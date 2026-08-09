@@ -92,6 +92,15 @@ private:
 	 */
 	bool Tick(float SmoothedEngineDeltaDoNotUse);
 
+	/**
+	 * The single place a measured span is graded, so `Tick()` and `OnWorldLoad()` cannot grade it
+	 * differently. Extracted 2026-08-09 when a review found that the world-load path graded it not at all.
+	 *
+	 * `bClosedByLoad` only affects what the log line SAYS. A span is a span; what closed it does not change
+	 * how long the game thread was gone.
+	 */
+	void ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClosedByLoad);
+
 	void OnAsyncLoadingFlush();
 	void OnAsyncLoadPackage(FStringView PackageName);
 
@@ -110,6 +119,13 @@ private:
 	int32 Hitches = 0;
 	int32 HitchesWithFlush = 0;
 	int32 LoadStalls = 0;
+
+	/**
+	 * ⚠ Stalls keep their flush count too, and the first version did NOT — a review found it and graded it
+	 * HIGH. Dropping it meant the severe tail, where a synchronous load is most likely to BE the mechanism,
+	 * silently fell out of the very statistic the meter exists to produce.
+	 */
+	int32 LoadStallsWithFlush = 0;
 	int32 LinesThisWindow = 0;
 	int32 LinesSuppressed = 0;
 	double WorstHitchMs = 0.0;

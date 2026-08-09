@@ -98,6 +98,25 @@ void FFPMHitchMeter::Disarm()
 
 void FFPMHitchMeter::OnWorldLoad(UWorld* World)
 {
+	/*
+	 * ⚠ CLOSE THE OPEN SPAN BEFORE RE-PRIMING — review finding A, 2026-08-09.
+	 *
+	 * The first version just set `bPrimed = false` here. But this is dispatched from the game world
+	 * module's CONSTRUCTION phase (`RootGameWorld_FicsitsPerformanceManager.cpp:61-64`) on the SAME game
+	 * thread, and it can land inside a span that no `Tick()` has closed yet — a slow UI or gameplay
+	 * callstack that itself triggers the load. Re-priming without measuring that span made `Tick()` take
+	 * its `!bPrimed` branch and report NOTHING for it: neither hitch nor stall. So the meter could MISS a
+	 * real hitch precisely when one coincided with a load boundary, which is a plausible place for one.
+	 *
+	 * An instrument that silently drops the sample it was least likely to see is the failure this whole
+	 * file exists to argue against, so the span is classified first and re-primed second.
+	 */
+	if (bPrimed)
+	{
+		const double Now = FPlatformTime::Seconds();
+		ClassifySpan((Now - LastTickSeconds) * 1000.0, FlushesInFrame.Set(0), /*bClosedByLoad*/ true);
+	}
+
 	// Close the books on the previous world before the clock jumps, so its numbers are attributable to it.
 	if (FramesTotal > 0)
 	{
@@ -128,6 +147,70 @@ void FFPMHitchMeter::OnAsyncLoadPackage(FStringView PackageName)
 	RecentPackages.Emplace(PackageName);
 }
 
+void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClosedByLoad)
+{
+	// A world-load-closed span is counted as one sample like any other. It is genuine elapsed game-thread
+	// time; the only difference is which event closed it, and there is at most one per world load.
+	++FramesInWindow;
+	++FramesTotal;
+	WindowSeconds += SpanMs / 1000.0;
+
+	const float ThresholdMs = CVarHitchThresholdMs.GetValueOnAnyThread();
+	const float CeilingMs   = CVarHitchIgnoreAboveMs.GetValueOnAnyThread();
+
+	if (SpanMs >= CeilingMs)
+	{
+		++LoadStalls;
+
+		/*
+		 * ⚠ STALLS CARRY THEIR FLUSH COUNT TOO — review finding B, 2026-08-09, and it was a HIGH.
+		 *
+		 * The first version incremented `LoadStalls` and threw `FlushesInSpan` away, so any span over the
+		 * ceiling lost its flush attribution permanently — while the count had already been computed one
+		 * line earlier and was sitting right there. That is precisely backwards: the header's whole claim
+		 * is ATTRIBUTION, NOT ADJACENCY, and the severe tail is where a synchronous load is MOST likely to
+		 * be the mechanism. The statistic would have silently stopped covering exactly the cases the
+		 * hypothesis lives or dies on.
+		 */
+		if (FlushesInSpan > 0) { ++LoadStallsWithFlush; }
+		return;
+	}
+
+	if (SpanMs < ThresholdMs) { return; }
+
+	++Hitches;
+	++SessionHitches;
+	HitchMsTotal += SpanMs;
+	WorstHitchMs   = FMath::Max(WorstHitchMs, SpanMs);
+	SessionWorstMs = FMath::Max(SessionWorstMs, SpanMs);
+	if (FlushesInSpan > 0) { ++HitchesWithFlush; }
+
+	if (!FPMDiag::IsOn(FPMDiag::EChannel::Hitch)) { return; }
+
+	if (LinesThisWindow >= MaxLinesPerWindow)
+	{
+		++LinesSuppressed;
+		return;
+	}
+	++LinesThisWindow;
+
+	FString Packages;
+	if (FPMDiag::IsOn(FPMDiag::EChannel::Hitch, 2))
+	{
+		FScopeLock Lock(&PackagesLock);
+		Packages = RecentPackages.Num() > 0
+			? FString::Printf(TEXT(" | in flight: %s"), *FString::Join(RecentPackages, TEXT(", ")))
+			: FString(TEXT(" | in flight: none recorded"));
+	}
+
+	// Warning, not Display: a hitch is the thing being hunted, and Warning is what survives a default log
+	// filter when Ant sends the file over.
+	UE_LOG(LogFicsitsPerformanceManager, Warning,
+		TEXT("[FPM] HITCH %.1f ms%s - %d async-load flush(es) in this span, %d package(s) still loading%s"),
+		SpanMs, bClosedByLoad ? TEXT(" (closed by a world load)") : TEXT(""),
+		FlushesInSpan, GetNumAsyncPackages(), *Packages);
+}
+
 bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 {
 	const double Now = FPlatformTime::Seconds();
@@ -146,58 +229,9 @@ bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 	const double FrameMs = (Now - LastTickSeconds) * 1000.0;
 	LastTickSeconds = Now;
 
-	++FramesInWindow;
-	++FramesTotal;
-	WindowSeconds += FrameMs / 1000.0;
-
-	// Set() returns the old value, so the read and the reset are one operation and a flush landing between
-	// them cannot be lost.
-	const int32 FlushesThisFrame = FlushesInFrame.Set(0);
-
-	const float ThresholdMs = CVarHitchThresholdMs.GetValueOnAnyThread();
-	const float CeilingMs   = CVarHitchIgnoreAboveMs.GetValueOnAnyThread();
-
-	if (FrameMs >= CeilingMs)
-	{
-		++LoadStalls;
-	}
-	else if (FrameMs >= ThresholdMs)
-	{
-		++Hitches;
-		++SessionHitches;
-		HitchMsTotal += FrameMs;
-		WorstHitchMs   = FMath::Max(WorstHitchMs, FrameMs);
-		SessionWorstMs = FMath::Max(SessionWorstMs, FrameMs);
-		if (FlushesThisFrame > 0) { ++HitchesWithFlush; }
-
-		if (FPMDiag::IsOn(FPMDiag::EChannel::Hitch))
-		{
-			if (LinesThisWindow < MaxLinesPerWindow)
-			{
-				++LinesThisWindow;
-
-				FString Packages;
-				if (FPMDiag::IsOn(FPMDiag::EChannel::Hitch, 2))
-				{
-					FScopeLock Lock(&PackagesLock);
-					Packages = RecentPackages.Num() > 0
-						? FString::Printf(TEXT(" | in flight: %s"), *FString::Join(RecentPackages, TEXT(", ")))
-						: FString(TEXT(" | in flight: none recorded"));
-				}
-
-				// Warning, not Display: a hitch is the thing being hunted, and Warning is what survives a
-				// default log filter when Ant sends the file over.
-				UE_LOG(LogFicsitsPerformanceManager, Warning,
-					TEXT("[FPM] HITCH %.1f ms - %d async-load flush(es) in this frame, %d package(s) still "
-					     "loading%s"),
-					FrameMs, FlushesThisFrame, GetNumAsyncPackages(), *Packages);
-			}
-			else
-			{
-				++LinesSuppressed;
-			}
-		}
-	}
+	// Set() returns the old value (`ThreadSafeCounter.h:99-102`), so the read and the reset are one atomic
+	// operation and a flush landing between them cannot be lost.
+	ClassifySpan(FrameMs, FlushesInFrame.Set(0), /*bClosedByLoad*/ false);
 
 	if (WindowSeconds >= CVarHitchSummarySeconds.GetValueOnAnyThread())
 	{
@@ -229,8 +263,10 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	}
 	if (LoadStalls > 0)
 	{
-		Line += FString::Printf(TEXT(" | %d load stall(s) over %.0f ms, not counted as hitches"),
-			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread());
+		// The stalls carry their own flush count. Folding them into the hitch figure would overstate the
+		// hitch rate; dropping the count entirely is what review finding B caught.
+		Line += FString::Printf(TEXT(" | %d load stall(s) over %.0f ms (%d with a flush), not counted as hitches"),
+			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread(), LoadStallsWithFlush);
 	}
 	Line += FString::Printf(TEXT(" | %d flush(es) total this session"), FlushesTotal.GetValue());
 	if (LinesSuppressed > 0)
@@ -252,6 +288,7 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	Hitches = 0;
 	HitchesWithFlush = 0;
 	LoadStalls = 0;
+	LoadStallsWithFlush = 0;
 	LinesThisWindow = 0;
 	LinesSuppressed = 0;
 	WorstHitchMs = 0.0;

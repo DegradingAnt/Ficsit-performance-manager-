@@ -34,6 +34,38 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 07:35 — CODE — review pass on 0.4.0: three findings, all fixed before it was ever packaged
+
+Verdict was **NEEDS REVISION** — 0 blockers, 1 High, 2 Medium. Ant's standing rule is that the version bump
+is the trigger and the last cheap moment; this is that pass paying for itself. Fixed in place: 0.4.0 was
+never packaged or published, so the tag moves rather than a 0.4.1 being minted for pre-release churn.
+
+- **HIGH — the meter dropped flush attribution for its worst cases.** `if (SpanMs >= CeilingMs)
+  { ++LoadStalls; }` never looked at the flush count, though it had been computed one line earlier. So any
+  span over `IgnoreAboveMs` (1000 ms) was bucketed as a stall and lost its flush coincidence **permanently**
+  — and the severe tail is exactly where a synchronous load is most likely to BE the mechanism. The header
+  claims "ATTRIBUTION, NOT ADJACENCY"; the statistic silently stopped covering the cases that claim lives or
+  dies on. Now `LoadStallsWithFlush` is counted and reported beside the stall count.
+- **MEDIUM — the meter could MISS a hitch that coincided with a world load.** `OnWorldLoad` set
+  `bPrimed = false` without grading the open span first, so `Tick()` took its `!bPrimed` branch and reported
+  nothing for it: neither hitch nor stall. It is dispatched from the game world module's CONSTRUCTION phase
+  on the same game thread (`RootGameWorld_FicsitsPerformanceManager.cpp:61-64`), so it can land inside an
+  unticked span. Grading was extracted into one `ClassifySpan()` that both paths call, so the two cannot
+  disagree again.
+- **MEDIUM — a comment claimed a guarantee the code did not give.** `FPMDiag.cpp`'s `static_assert` compares
+  only the COUNT of `GChannelCVars` against `EChannel::Count`, while the comment said "this is the whole
+  reason the indexing is safe". Adding two channels in the wrong ORDER keeps the count equal, passes the
+  assert, and reports one channel's level under another's name. The comment now says what the assert
+  actually checks, and `FPM.Diag.List` cross-checks each entry against its registered console name
+  (`IConsoleManager.h:1104`) and logs an Error on a mismatch — a runtime order check where a compile-time
+  one is not available.
+- **SPEC DRIFT, recorded rather than argued away:** the review flagged `FFPMAssetResidency` as unasked-for
+  scope, and it is right about the moment it was built — Ant asked for the instruments, and the residency
+  fix is a behaviour fix found mid-task in a shelved note. She has since ratified it, but it went into the
+  same bump with no separate review point, and that is the part worth not repeating.
+- **Files:** `Core/FPMHitchMeter.{h,cpp}`, `Core/FPMDiag.cpp`.
+- **Verified:** build-only — `Result: Succeeded`. **NOT boot-tested.**
+
 ## 2026-08-09 07:30 — VERSION — 0.3.1 → 0.4.0
 
 - **What:** `VersionName` / `SemVersion` → `0.4.0`, `RemoteVersionRange` → `=0.4.0`, and the `Description`

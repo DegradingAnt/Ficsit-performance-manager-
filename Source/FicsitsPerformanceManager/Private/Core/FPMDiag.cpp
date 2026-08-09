@@ -74,7 +74,14 @@ namespace
 		&CVarDiagOverlay,
 	};
 
-	// The table and the enum must not drift. This is the whole reason the indexing is safe.
+	/*
+	 * ⚠ THIS ASSERT CHECKS COUNT ONLY, NOT ORDER — corrected 2026-08-09 after a review caught the comment
+	 * claiming more than the code delivered. It used to read "this is the whole reason the indexing is
+	 * safe", which is false: adding two channels and putting them in the wrong ORDER keeps the count equal,
+	 * sails past this line, and silently reports one channel's level under another channel's name. A
+	 * comment that overstates its guarantee is worse than no comment, because it stops the next reader
+	 * looking. The order check is a RUNTIME one, in LogAll below.
+	 */
 	static_assert(UE_ARRAY_COUNT(GChannelCVars) == static_cast<int32>(FPMDiag::EChannel::Count),
 		"FPMDiag::EChannel and GChannelCVars are out of sync - add the new channel to BOTH.");
 
@@ -135,6 +142,21 @@ void FPMDiag::LogAll()
 		UE_LOG(LogFicsitsPerformanceManager, Display,
 			TEXT("[FPM]   %-22s = %d   (effective %d)"),
 			ChannelName(Ch), GChannelCVars[i]->GetValueOnAnyThread(), LevelOf(Ch));
+
+		/*
+		 * THE ORDER CHECK THE static_assert CANNOT DO. `ChannelName` is a hand-written switch and
+		 * `GChannelCVars` is a hand-written table; nothing but this compares them. Asking the console
+		 * manager what the cvar at THIS index is actually called (`IConsoleManager.h:1104`) turns a silent
+		 * mislabelling into a loud one, and this is the command someone runs precisely when they are trying
+		 * to work out why a switch is not doing what they expect.
+		 */
+		const FString Registered = IConsoleManager::Get().FindConsoleObjectName(GChannelCVars[i]->AsVariable());
+		UE_CLOG(!Registered.IsEmpty() && Registered != ChannelName(Ch),
+			LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM]   ^^ CHANNEL TABLE IS OUT OF ORDER: index %d is named '%s' by ChannelName() but is "
+			     "registered as '%s'. Every level printed above may be attributed to the wrong channel. "
+			     "Fix the enum / GChannelCVars / ChannelName ordering in FPMDiag before trusting any of it."),
+			i, ChannelName(Ch), *Registered);
 	}
 }
 
