@@ -108,8 +108,16 @@ public:
 	/** THE OFF SWITCH. Engine-native, one call, then the ledger is emptied. */
 	void ReleaseAll(const TCHAR* Reason);
 
-	/** Print every live hold with its prior value and prior SetBy. Bound to `FPM.Changes`. */
-	void LogLedger() const;
+	/**
+	 * Print every live hold with its prior value and prior SetBy. Bound to `FPM.Changes`.
+	 *
+	 * ⚠ TAKES AN OUTPUT DEVICE, and that is a bug fix rather than a convenience. Until 2026-08-09 this
+	 * wrote with UE_LOG only, so `FPM.Changes` printed into FactoryGame.log while Ant watched an empty
+	 * console and reasonably concluded the command had done nothing. A diagnostic that answers somewhere
+	 * the operator is not looking is worth the same as one that does not answer. Pass the console's
+	 * device and it reaches both; pass nullptr and it stays log-only, which is right for internal callers.
+	 */
+	void LogLedger(class FOutputDevice* Ar = nullptr) const;
 
 	/**
 	 * ★ THE SELF-TEST, RUN AT ARM, ON FPM'S OWN CVAR — never on a game cvar.

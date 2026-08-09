@@ -100,6 +100,22 @@ namespace
 	int32 GAlreadySettled = 0;     // handled by an earlier sweep in THIS process
 	int32 GNoRepairNeeded = 0;     // vanilla already gave it a usable occlusion box
 
+	/*
+	 * ★ THE SEVENTH EXIT, FOUND BY THE UNACCOUNTED CHECK ON ITS FIRST RUN. Ant's 0.5.1 boot printed
+	 *     3678 classes examined | 220 instance-data, 353 components, 27 none, 0 already settled,
+	 *     3030 needed no repair | ⚠ 48 UNACCOUNTED
+	 * 0+220+353+27+0+3030 = 3630 against 3678. Exactly the arithmetic the warning exists to surface,
+	 * and it surfaced on the first sweep the check ever ran — which is the difference between this and
+	 * the six dead instruments before it.
+	 *
+	 * The gap is the `if (!CDO)` guard: 48 classes come back from GetDerivedClasses(AFGBuildable) whose
+	 * GetDefaultObject() does not Cast to AFGBuildable. They are NOT a defect on our side — a class can
+	 * legitimately have no usable CDO — but "we could not look at it" and "we looked and it was fine"
+	 * are different facts, and the sweep was reporting them as the same silence. Rain falling through a
+	 * buildable whose class is in this bucket would otherwise be unexplainable from the log.
+	 */
+	int32 GNoUsableCDO = 0;
+
 	TSet<FName> GReportedSkippedProfiles;
 
 	/**
@@ -359,7 +375,13 @@ namespace
 	 */
 	EBoxSource HandleClass(AFGBuildable* CDO, bool bFromSweep)
 	{
-		if (!CDO) { return EBoxSource::None; }
+		// Counted, not silent. The sweep passes Cast<AFGBuildable>(Class->GetDefaultObject()), which can
+		// be null for a class with no usable CDO -- 48 of them on Ant's 0.5.1 boot.
+		if (!CDO)
+		{
+			if (bFromSweep) { ++GNoUsableCDO; }
+			return EBoxSource::None;
+		}
 
 		if (!IsInGameThread())
 		{
@@ -458,7 +480,7 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 	// load in a session re-printed the FIRST sweep's totals and read as a fresh result. Found on the
 	// 2026-08-08 reload: a "cache HIT" line showing the MISS run's numbers.
 	GAppliedFromCache = GDerivedInstanceData = GDerivedComponents = GGeometryless = 0;
-	GAlreadySettled = GNoRepairNeeded = 0;
+	GAlreadySettled = GNoRepairNeeded = GNoUsableCDO = 0;
 
 	if (CVarRainSweep.GetValueOnGameThread() == 0)
 	{
@@ -489,16 +511,19 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 	 */
 	const int32 Examined = BuildableClasses.Num();
 	const int32 Bucketed = GAppliedFromCache + GDerivedInstanceData + GDerivedComponents
-	                     + GGeometryless + GAlreadySettled + GNoRepairNeeded;
+	                     + GGeometryless + GAlreadySettled + GNoRepairNeeded + GNoUsableCDO;
 	FString Summary = FString::Printf(
 		TEXT("cache %s | %d classes examined | %d from cache, %d instance-data, %d components, %d none, "
-		     "%d already settled, %d needed no repair"),
+		     "%d already settled, %d needed no repair, %d no usable CDO"),
 		bHit ? TEXT("HIT") : TEXT("MISS->rebuilt"),
 		Examined, GAppliedFromCache, GDerivedInstanceData, GDerivedComponents, GGeometryless,
-		GAlreadySettled, GNoRepairNeeded);
+		GAlreadySettled, GNoRepairNeeded, GNoUsableCDO);
 	if (Bucketed != Examined)
 	{
-		Summary += FString::Printf(TEXT(" | ⚠ %d UNACCOUNTED"), Examined - Bucketed);
+		// ASCII, not '⚠'. The overlay's Mono font rendered the warning sign as a tofu box on Ant's
+		// 0.5.1 boot -- a warning nobody can read is not a warning, and this is the one line whose
+		// whole job is to be noticed.
+		Summary += FString::Printf(TEXT(" | ** %d UNACCOUNTED **"), Examined - Bucketed);
 	}
 	if (GOffThreadSkips > 0)
 	{

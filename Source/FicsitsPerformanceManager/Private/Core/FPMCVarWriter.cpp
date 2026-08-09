@@ -272,24 +272,34 @@ bool FPMCVarWriter::IsHeld(const TCHAR* CVarName) const
 		{ return H.CVar.Equals(CVarName, ESearchCase::IgnoreCase); });
 }
 
-void FPMCVarWriter::LogLedger() const
+void FPMCVarWriter::LogLedger(FOutputDevice* Ar) const
 {
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] ---- cvar ledger: %d hold(s) ----"), Ledger.Num());
+	// Both destinations, always. Ar reaches the console the operator is reading; the log is what
+	// survives the session and what a support dump carries. Which one is "the" output depends on who
+	// is asking, and on 2026-08-09 both of us needed it at once.
+	auto Emit = [Ar](const FString& Line)
+	{
+		if (Ar) { Ar->Logf(TEXT("%s"), *Line); }
+		UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM] %s"), *Line);
+	};
+
+	Emit(FString::Printf(TEXT("---- cvar ledger: %d hold(s) ----"), Ledger.Num()));
 
 	for (const FHold& H : Ledger)
 	{
-		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM]   %-44s = %-12s (was %-12s %s)  owner='%s' %s : %s"),
+		Emit(FString::Printf(
+			TEXT("  %-44s = %-12s (was %-12s %s)  owner='%s' %s : %s"),
 			*H.CVar, *H.Value, *H.PriorValue, GetConsoleVariableSetByName(H.PriorSetBy),
 			*H.Owner.ToString(), H.Lease == EFPMLease::Module ? TEXT("module") : TEXT("world"),
-			*H.Reason);
+			*H.Reason));
 	}
 
 	// An empty ledger is a RESULT, not an absence of output — it is what "FPM is holding nothing" looks
 	// like, and it is the state an uninstall has to be able to demonstrate.
-	UE_CLOG(Ledger.Num() == 0, LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM]   (holding nothing - the game is in its own state)"));
+	if (Ledger.Num() == 0)
+	{
+		Emit(TEXT("  (holding nothing - the game is in its own state)"));
+	}
 }
 
 bool FPMCVarWriter::SelfTest()
@@ -356,13 +366,83 @@ bool FPMCVarWriter::SelfTest()
  * This is the question a player or a support dump actually asks, and until now nothing could answer it:
  * "what has this mod changed on my machine?" The honest answer is a list with prior values beside it.
  */
-static FAutoConsoleCommand GWriterLedgerCmd(
+static FAutoConsoleCommandWithOutputDevice GWriterLedgerCmd(
 	TEXT("FPM.Changes"),
 	TEXT("Print every console variable FPM is currently holding, with its prior value and prior SetBy."),
-	FConsoleCommandDelegate::CreateLambda([]() { FPMCVarWriter::Get().LogLedger(); }));
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+		{ FPMCVarWriter::Get().LogLedger(&Ar); }));
 
-static FAutoConsoleCommand GWriterOffCmd(
+static FAutoConsoleCommandWithOutputDevice GWriterOffCmd(
 	TEXT("FPM.Off"),
 	TEXT("THE OFF SWITCH. Release every console variable FPM holds and leave the game in its own state."),
-	FConsoleCommandDelegate::CreateLambda([]()
-		{ FPMCVarWriter::Get().ReleaseAll(TEXT("FPM.Off from the console")); }));
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+	{
+		// Report what it DID, not that it ran. "FPM.Off" printing nothing is indistinguishable from
+		// FPM.Off being broken -- the same defect FPM.Changes shipped with.
+		FPMCVarWriter& W = FPMCVarWriter::Get();
+		TArray<FString> Before;
+		W.GetHeldCVars(Before);
+		W.ReleaseAll(TEXT("FPM.Off from the console"));
+		Ar.Logf(TEXT("FPM.Off: released %d hold(s)%s"), Before.Num(),
+			Before.Num() ? *FString::Printf(TEXT(" - %s"), *FString::Join(Before, TEXT(", "))) : TEXT(" (nothing was held)"));
+	}));
+
+/*
+ * ★ `FPM.Hold` / `FPM.Release` — WHAT MAKES P1.5 RUNNABLE AT ALL.
+ *
+ * Design R2 §9's P1.5 is "THE 0x07 PROOF BOOT", and it is the last Phase 1 increment: write at 0x07,
+ * survive a scalability apply and a vanilla options-menu apply, confirm a console override still WINS,
+ * then release and confirm BOTH the value and the SetBy came back. The recorded project law keeps
+ * prescribing SetByCode until that boot lands, so this is blocking a law change and not a checkbox.
+ *
+ * ⚠ IT COULD NOT BE RUN. Discovered 2026-08-09 while writing the protocol out for Ant: nothing in the
+ * shipped build makes the writer hold anything on demand. The boot self-test holds and releases inside
+ * one frame, and no fix writes a cvar yet. So every instruction of the form "now hold a cvar and change
+ * a setting" was unexecutable, and I had handed her exactly that. The gap was in the BUILD, not in the
+ * protocol -- worth recording, because the protocol had been reviewed several times and nobody noticed
+ * that the mod offered no way to perform step one.
+ *
+ * CLAUSE 6 STILL APPLIES. This routes through Hold(), so a US_*-backed cvar is refused here exactly as
+ * it is everywhere else. That means this command covers P1.5's LEG A only. Leg B deliberately targets
+ * `t.MaxFPS` -- a US_*-backed cvar -- to contest 0x08 SetByGameOverride, and crossing that boundary is
+ * Ant's call, not a decision to bury inside a console command's implementation. See the note surfaced
+ * with the build.
+ */
+static FAutoConsoleCommandWithArgsAndOutputDevice GWriterHoldCmd(
+	TEXT("FPM.Hold"),
+	TEXT("Hold a console variable through FPM's writer, at FPM's priority, until released. "
+	     "Usage: FPM.Hold <cvar> <value>   (US_*-backed cvars are refused - clause 6)"),
+	FConsoleCommandWithArgsAndOutputDeviceDelegate::CreateLambda(
+		[](const TArray<FString>& Args, FOutputDevice& Ar)
+		{
+			if (Args.Num() != 2)
+			{
+				Ar.Logf(TEXT("usage: FPM.Hold <cvar> <value>"));
+				return;
+			}
+			static const FName ProbeOwner(TEXT("console-probe"));
+			const bool bOk = FPMCVarWriter::Get().Hold(ProbeOwner, *Args[0], *Args[1],
+				TEXT("held by hand from the console (P1.5 proof protocol)"));
+			// Hold() logs its own refusal reason; echo the VERDICT to the console so the operator is
+			// not left reading an empty line and guessing whether it took.
+			Ar.Logf(TEXT("FPM.Hold %s = %s : %s"), *Args[0], *Args[1],
+				bOk ? TEXT("HELD") : TEXT("REFUSED - see the log line above for which clause"));
+			if (bOk) { FPMCVarWriter::Get().LogLedger(&Ar); }
+		}));
+
+static FAutoConsoleCommandWithArgsAndOutputDevice GWriterReleaseCmd(
+	TEXT("FPM.Release"),
+	TEXT("Release one hold taken by FPM.Hold. Usage: FPM.Release <cvar>"),
+	FConsoleCommandWithArgsAndOutputDeviceDelegate::CreateLambda(
+		[](const TArray<FString>& Args, FOutputDevice& Ar)
+		{
+			if (Args.Num() != 1)
+			{
+				Ar.Logf(TEXT("usage: FPM.Release <cvar>"));
+				return;
+			}
+			static const FName ProbeOwner(TEXT("console-probe"));
+			const bool bOk = FPMCVarWriter::Get().Release(ProbeOwner, *Args[0]);
+			Ar.Logf(TEXT("FPM.Release %s : %s"), *Args[0],
+				bOk ? TEXT("RELEASED") : TEXT("we were not holding it (not an error)"));
+		}));
