@@ -37,7 +37,9 @@
 #include "Core/FPMCVarWriter.h"
 
 #include "Containers/Ticker.h"
+#include "Engine/Engine.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/OutputDevice.h"
 
 namespace
@@ -215,6 +217,346 @@ static FAutoConsoleCommandWithArgsAndOutputDevice GFPMProbeSnapCmd(
 		}));
 
 /*
+ * ★★★ `FPM.Bisect` — FIND WHICH CVAR IN A SCALABILITY GROUP COSTS THE FRAME. ONE COMMAND.
+ *
+ * Ant, 2026-08-09, after an afternoon of doing this by hand: *"no more command spam. lets build the
+ * mod so it can do this itself. this is what the bench is for anyways."*
+ *
+ * WHAT THAT AFTERNOON PROVED, and every line here is shaped by one of these:
+ *
+ *   * A GROUP IS NOT A LEVER. `sg.ShadowQuality 3 -> 2` moved TEN cvars in her running game. Knowing
+ *     the group costs 65 fps tells you nothing about which lever to build a ladder on.
+ *   * THE ENGINE'S INI IS NOT THE GAME'S TABLE. We bisected against `BaseScalability.ini` for hours;
+ *     three of six candidates did not exist in Satisfactory's table at all. This reads the LIVE cvars
+ *     before and after, so no ini can mislead it.
+ *   * CONSOLE WRITES STICK AND OUTRANK SCALABILITY. Typing a cvar makes it immune to `sg.*` for the
+ *     session, which silently contaminated hours of A/B. This uses console priority DELIBERATELY --
+ *     it is the only way to beat the group's own value -- and `Unset`s each one before the next, so
+ *     candidates cannot accumulate.
+ *   * A HUMAN CANNOT HOLD THE VARIABLES STILL. Time of day, warm-up, camera framing and n=1 eyeballing
+ *     invalidated a whole session. This samples wall-clock frame time over a fixed window, in one
+ *     place, seconds apart.
+ *
+ * WALL CLOCK, NOT `FApp::GetDeltaTime()`. That is smoothed and clamped by `UEngine::bSmoothFrameRate`
+ * (`Engine.h:1552`), so it would flatten exactly the differences being measured. Same finding the
+ * hitch meter is built on.
+ *
+ * IT REPORTS WHAT IT CANNOT ACCOUNT FOR. If the individual recoveries do not add up to the whole
+ * gap, that is printed as UNACCOUNTED rather than hidden -- it means either the cvars interact, or
+ * the real cost is not in the set at all. Same discipline as the rain sweep's bucket check, which
+ * caught a real 48-class gap on its first run.
+ */
+namespace
+{
+	enum class EFPMBisectStep : uint8 { WarmGood, SampleGood, WarmBad, SampleBad, WarmCand, SampleCand, Done };
+
+	struct FFPMBisectRun
+	{
+		FString GroupCVar;
+		int32   GoodLevel = 0;
+		int32   BadLevel  = 0;
+
+		TArray<FString> Names;        // cvars that differ between the two levels
+		TArray<FString> GoodValues;   // parallel: value at the GOOD level
+
+		EFPMBisectStep Step = EFPMBisectStep::Done;
+		int32  Index = 0;
+		double PhaseEnd = 0.0;
+		double LastTick = 0.0;
+		int32  Frames = 0;
+		double Accum = 0.0;
+		double WorstMs = 0.0;
+
+		double GoodMs = 0.0;
+		double BadMs  = 0.0;
+		TArray<TPair<FString, double>> Results;   // name -> mean ms with that cvar at its GOOD value
+
+		FTSTicker::FDelegateHandle Tick;
+		bool bRunning = false;
+	};
+
+	FFPMBisectRun GFPMBisect;
+
+	/** 1.5 s to let the renderer settle after a change, then 2.5 s of samples. */
+	constexpr double GFPMBisectWarm   = 1.5;
+	constexpr double GFPMBisectSample = 2.5;
+
+	void FPMBisectSay(const FString& L) { UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM] %s"), *L); }
+
+	void FPMBisectApplyGroup(int32 Level)
+	{
+		// Exec rather than Set(): the sg.* cvars are applied by a console-variable sink, and going
+		// through the same entry point the settings menu uses is the point of the exercise.
+		if (GEngine)
+		{
+			GEngine->Exec(nullptr, *FString::Printf(TEXT("%s %d"), *GFPMBisect.GroupCVar, Level));
+		}
+	}
+
+	void FPMBisectClearCandidate()
+	{
+		if (GFPMBisect.Names.IsValidIndex(GFPMBisect.Index))
+		{
+			if (IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(*GFPMBisect.Names[GFPMBisect.Index]))
+			{
+				// Unset by PRIORITY. Setting the old value back would append another history layer and
+				// leave ours owning the variable -- the same reason the writer's release uses Unset.
+				V->Unset(ECVF_SetByConsole);
+			}
+		}
+	}
+
+	void FPMBisectStop(bool bRestoreGroup)
+	{
+		FPMBisectClearCandidate();
+		if (bRestoreGroup) { FPMBisectApplyGroup(GFPMBisect.BadLevel); }
+		if (GFPMBisect.Tick.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(GFPMBisect.Tick);
+			GFPMBisect.Tick.Reset();
+		}
+		GFPMBisect.bRunning = false;
+		GFPMBisect.Step = EFPMBisectStep::Done;
+	}
+
+	void FPMBisectReport()
+	{
+		const double Gap = GFPMBisect.BadMs - GFPMBisect.GoodMs;
+		FPMBisectSay(TEXT(""));
+		FPMBisectSay(FString::Printf(TEXT("==== FPM.Bisect %s : %d (bad) vs %d (good) ===="),
+			*GFPMBisect.GroupCVar, GFPMBisect.BadLevel, GFPMBisect.GoodLevel));
+		FPMBisectSay(FString::Printf(TEXT("  whole group : %.2f ms -> %.2f ms   (gap %.2f ms, %.0f -> %.0f fps)"),
+			GFPMBisect.BadMs, GFPMBisect.GoodMs, Gap,
+			GFPMBisect.BadMs > 0 ? 1000.0 / GFPMBisect.BadMs : 0.0,
+			GFPMBisect.GoodMs > 0 ? 1000.0 / GFPMBisect.GoodMs : 0.0));
+
+		if (Gap <= 0.5)
+		{
+			// Stated, never silent. Without a gap there is nothing to attribute, and ranking noise
+			// would produce a confident-looking table built entirely out of jitter.
+			FPMBisectSay(TEXT("  ** NO MEANINGFUL GAP between the two levels here. Nothing to attribute --"));
+			FPMBisectSay(TEXT("     move somewhere the group actually costs you, and re-run."));
+			return;
+		}
+
+		auto Sorted = GFPMBisect.Results;
+		Sorted.Sort([](const TPair<FString, double>& A, const TPair<FString, double>& B)
+			{ return A.Value < B.Value; });   // lowest ms first == biggest recovery first
+
+		double Accounted = 0.0;
+		FPMBisectSay(TEXT("  each cvar alone, set to its GOOD value while the rest stay BAD:"));
+		for (const TPair<FString, double>& R : Sorted)
+		{
+			const double Recovered = GFPMBisect.BadMs - R.Value;
+			Accounted = FMath::Max(Accounted, Recovered);   // best single, not a sum -- see below
+			FPMBisectSay(FString::Printf(TEXT("    %-52s %7.2f ms   recovers %6.2f ms  (%.0f%% of the gap)"),
+				*R.Key, R.Value, Recovered, 100.0 * Recovered / Gap));
+		}
+
+		// WHY "best single" AND NOT A SUM: these are not independent, so adding recoveries would
+		// double-count. What matters is whether ANY ONE of them explains the gap. If the best single
+		// falls well short, the cost is spread or it is not in this set -- and that is a finding, not
+		// a failed run.
+		FPMBisectSay(FString::Printf(TEXT("  best single cvar explains %.0f%% of the gap"),
+			100.0 * Accounted / Gap));
+		if (Accounted < Gap * 0.5)
+		{
+			FPMBisectSay(TEXT("  ** NO SINGLE CVAR EXPLAINS THE GAP. Either they interact, or the cost is"));
+			FPMBisectSay(TEXT("     not in this group's diff at all. Do not pick a ladder lever off this table."));
+		}
+	}
+
+	bool FPMBisectTick(float)
+	{
+		const double Now = FPlatformTime::Seconds();
+		const double Delta = Now - GFPMBisect.LastTick;
+		GFPMBisect.LastTick = Now;
+
+		const bool bSampling = GFPMBisect.Step == EFPMBisectStep::SampleGood
+		                    || GFPMBisect.Step == EFPMBisectStep::SampleBad
+		                    || GFPMBisect.Step == EFPMBisectStep::SampleCand;
+		if (bSampling && Delta > 0.0 && Delta < 1.0)   // >1 s is a stall, not a frame
+		{
+			++GFPMBisect.Frames;
+			GFPMBisect.Accum += Delta;
+			GFPMBisect.WorstMs = FMath::Max(GFPMBisect.WorstMs, Delta * 1000.0);
+		}
+
+		if (Now < GFPMBisect.PhaseEnd) { return true; }
+
+		auto BeginPhase = [&](EFPMBisectStep NextStep, double Seconds)
+		{
+			GFPMBisect.Step = NextStep;
+			GFPMBisect.PhaseEnd = Now + Seconds;
+			GFPMBisect.Frames = 0;
+			GFPMBisect.Accum = 0.0;
+			GFPMBisect.WorstMs = 0.0;
+		};
+		auto MeanMs = [&]() -> double
+			{ return GFPMBisect.Frames > 0 ? (GFPMBisect.Accum / GFPMBisect.Frames) * 1000.0 : 0.0; };
+
+		switch (GFPMBisect.Step)
+		{
+		case EFPMBisectStep::WarmGood:
+			BeginPhase(EFPMBisectStep::SampleGood, GFPMBisectSample);
+			return true;
+
+		case EFPMBisectStep::SampleGood:
+		{
+			GFPMBisect.GoodMs = MeanMs();
+			FPMBisectSay(FString::Printf(TEXT("  good level %d : %.2f ms over %d frames"),
+				GFPMBisect.GoodLevel, GFPMBisect.GoodMs, GFPMBisect.Frames));
+			// Snapshot the GOOD values before switching, so the candidate list is built from live
+			// state rather than from any ini.
+			TMap<FString, FString> GoodSnap;
+			for (const TCHAR* P : GFPMProbeDefaultPrefixes) { FPMProbeCollect(P, GoodSnap); }
+			FPMProbeCollect(TEXT("r.DF"), GoodSnap);
+			FPMProbeCollect(TEXT("r.AO"), GoodSnap);
+			FPMProbeCollect(TEXT("r.Capsule"), GoodSnap);
+			FPMProbeCollect(TEXT("r.DistanceField"), GoodSnap);
+			GFPMBisect.Names.Reset(); GFPMBisect.GoodValues.Reset();
+			for (const TPair<FString, FString>& Pair : GoodSnap)
+			{
+				if (IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(*Pair.Key))
+				{
+					GFPMBisect.Names.Add(Pair.Key);
+					GFPMBisect.GoodValues.Add(V->GetString());
+				}
+			}
+			FPMBisectApplyGroup(GFPMBisect.BadLevel);
+			BeginPhase(EFPMBisectStep::WarmBad, GFPMBisectWarm);
+			return true;
+		}
+
+		case EFPMBisectStep::WarmBad:
+			BeginPhase(EFPMBisectStep::SampleBad, GFPMBisectSample);
+			return true;
+
+		case EFPMBisectStep::SampleBad:
+		{
+			GFPMBisect.BadMs = MeanMs();
+			FPMBisectSay(FString::Printf(TEXT("  bad  level %d : %.2f ms over %d frames"),
+				GFPMBisect.BadLevel, GFPMBisect.BadMs, GFPMBisect.Frames));
+
+			// Keep only cvars that ACTUALLY differ now. Everything else is noise in the table.
+			TArray<FString> KeepN; TArray<FString> KeepV;
+			for (int32 i = 0; i < GFPMBisect.Names.Num(); ++i)
+			{
+				IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(*GFPMBisect.Names[i]);
+				if (V && V->GetString() != GFPMBisect.GoodValues[i])
+				{
+					KeepN.Add(GFPMBisect.Names[i]); KeepV.Add(GFPMBisect.GoodValues[i]);
+				}
+			}
+			GFPMBisect.Names = KeepN; GFPMBisect.GoodValues = KeepV;
+			FPMBisectSay(FString::Printf(TEXT("  %d cvar(s) differ between the levels; testing each alone (~%.0f s)"),
+				GFPMBisect.Names.Num(), GFPMBisect.Names.Num() * (GFPMBisectWarm + GFPMBisectSample)));
+
+			if (GFPMBisect.Names.Num() == 0)
+			{
+				FPMBisectSay(TEXT("  ** the group changed NOTHING in the cvars scanned. Either the prefixes"));
+				FPMBisectSay(TEXT("     miss it, or console overrides are pinning them. Restart clears those."));
+				FPMBisectReport();
+				FPMBisectStop(false);
+				return false;
+			}
+			GFPMBisect.Index = -1;
+			BeginPhase(EFPMBisectStep::SampleCand, 0.0);   // fall through into the advance below
+			GFPMBisect.Step = EFPMBisectStep::SampleCand;
+			GFPMBisect.PhaseEnd = Now;   // trigger the advance immediately
+			return true;
+		}
+
+		case EFPMBisectStep::WarmCand:
+			BeginPhase(EFPMBisectStep::SampleCand, GFPMBisectSample);
+			return true;
+
+		case EFPMBisectStep::SampleCand:
+		{
+			if (GFPMBisect.Index >= 0)
+			{
+				GFPMBisect.Results.Emplace(GFPMBisect.Names[GFPMBisect.Index], MeanMs());
+				FPMBisectClearCandidate();
+			}
+			++GFPMBisect.Index;
+			if (!GFPMBisect.Names.IsValidIndex(GFPMBisect.Index))
+			{
+				FPMBisectReport();
+				FPMBisectStop(true);
+				return false;
+			}
+			if (IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(*GFPMBisect.Names[GFPMBisect.Index]))
+			{
+				// Console priority on purpose: it is the only layer that beats the group's own value.
+				V->Set(*GFPMBisect.GoodValues[GFPMBisect.Index], ECVF_SetByConsole);
+			}
+			BeginPhase(EFPMBisectStep::WarmCand, GFPMBisectWarm);
+			return true;
+		}
+
+		default:
+			FPMBisectStop(false);
+			return false;
+		}
+	}
+}
+
+static FAutoConsoleCommandWithArgsAndOutputDevice GFPMBisectCmd(
+	TEXT("FPM.Bisect"),
+	TEXT("Find which cvar in a scalability group costs the frame. "
+	     "Usage: FPM.Bisect <sg.Group> <badLevel> <goodLevel>   e.g. FPM.Bisect sg.ShadowQuality 3 2"),
+	FConsoleCommandWithArgsAndOutputDeviceDelegate::CreateLambda(
+		[](const TArray<FString>& Args, FOutputDevice& Ar)
+		{
+			auto Say = [&Ar](const FString& L) { Ar.Logf(TEXT("%s"), *L); FPMBisectSay(L); };
+
+			if (GFPMBisect.bRunning)
+			{
+				Say(TEXT("FPM.Bisect is already running. FPM.Bisect.Stop to abort."));
+				return;
+			}
+			if (Args.Num() != 3)
+			{
+				Say(TEXT("usage: FPM.Bisect <sg.Group> <badLevel> <goodLevel>   e.g. FPM.Bisect sg.ShadowQuality 3 2"));
+				return;
+			}
+			if (!IConsoleManager::Get().FindConsoleVariable(*Args[0]))
+			{
+				Say(FString::Printf(TEXT("no such scalability cvar: '%s'"), *Args[0]));
+				return;
+			}
+
+			GFPMBisect = FFPMBisectRun();
+			GFPMBisect.GroupCVar = Args[0];
+			GFPMBisect.BadLevel  = FCString::Atoi(*Args[1]);
+			GFPMBisect.GoodLevel = FCString::Atoi(*Args[2]);
+			GFPMBisect.bRunning  = true;
+
+			Say(FString::Printf(TEXT("---- FPM.Bisect %s : %d (bad) vs %d (good) ----"),
+				*GFPMBisect.GroupCVar, GFPMBisect.BadLevel, GFPMBisect.GoodLevel));
+			Say(TEXT("  STAND STILL AND DO NOT MOVE THE CAMERA until this finishes."));
+			Say(TEXT("  Every sample is the same view seconds apart; moving invalidates the whole table."));
+			Say(TEXT("  Results print here and to the log when it completes."));
+
+			FPMBisectApplyGroup(GFPMBisect.GoodLevel);
+			GFPMBisect.LastTick = FPlatformTime::Seconds();
+			GFPMBisect.Step = EFPMBisectStep::WarmGood;
+			GFPMBisect.PhaseEnd = GFPMBisect.LastTick + GFPMBisectWarm;
+			GFPMBisect.Tick = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateStatic(&FPMBisectTick), 0.f);   // 0 == every frame
+		}));
+
+static FAutoConsoleCommandWithOutputDevice GFPMBisectStopCmd(
+	TEXT("FPM.Bisect.Stop"),
+	TEXT("Abort a running FPM.Bisect and restore the group to its bad level."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+	{
+		if (!GFPMBisect.bRunning) { Ar.Logf(TEXT("FPM.Bisect is not running.")); return; }
+		FPMBisectStop(true);
+		Ar.Logf(TEXT("FPM.Bisect aborted; candidate override cleared and group restored."));
+	}));
+
+/*
  * ★★★ `FPM.Prove` — P1.5's ENTIRE 0x07 PROOF PROTOCOL, AS ONE COMMAND.
  *
  * Ant, 2026-08-09, halfway through running it by hand: *"okey this is too many commands and its
@@ -336,6 +678,23 @@ static FAutoConsoleCommandWithOutputDevice GFPMProveCmd(
 		Var->Set(GFPMProveRival, ECVF_SetByScalability);
 		FPMProveStep(Ar, TEXT("2 survives a Scalability write"), Var->GetString() == GFPMProveHeld,
 			FString::Printf(TEXT("scalability tried %s, live=%s"), GFPMProveRival, *Var->GetString()));
+
+		/*
+		 * ⚠ PUT THE SCALABILITY LAYER BACK, OR STEP 4 REPORTS A FAILURE THAT IS OURS.
+		 *
+		 * Found on the first real run, 2026-08-09: step 4 printed
+		 *     [FAIL] release restores value AND SetBy    2048 (Scalability) -> 888 (Scalability)
+		 * and the writer had done nothing wrong. `Set(..., ECVF_SetByScalability)` does not stack on
+		 * top of the game's value at that priority, it REPLACES that slot -- so the line above had
+		 * already overwritten the game's 2048 with our 888. Release then fell back to the Scalability
+		 * layer exactly as designed, and the layer simply was not 2048 any more.
+		 *
+		 * A test that reports FAIL on a working system is worse than no test: it would have sent us
+		 * hunting a release bug that does not exist, in the one path the zero-residue promise rests on.
+		 * Unset cannot undo it either -- our write and the game's occupy the same untagged slot -- so
+		 * the only honest repair is to write the original value back at the same priority.
+		 */
+		Var->Set(*OrigValue, ECVF_SetByScalability);
 
 		// 3 — MUST pass. If FPM outranked the console, we would have taken away the operator's ability
 		//     to override us, which is a worse outcome than any performance win.

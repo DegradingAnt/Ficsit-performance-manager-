@@ -116,6 +116,9 @@ namespace
 	 */
 	int32 GNoUsableCDO = 0;
 
+	/** Abstract / deprecated / superseded — skipped by the sweep loop before HandleClass ever sees them. */
+	int32 GNotInstantiable = 0;
+
 	TSet<FName> GReportedSkippedProfiles;
 
 	/**
@@ -494,11 +497,32 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 	TArray<UClass*> BuildableClasses;
 	GetDerivedClasses(AFGBuildable::StaticClass(), BuildableClasses, /*bRecursive*/ true);
 
+	/*
+	 * ★ THE 48. Found by the UNACCOUNTED check, then found AGAIN when my first fix for it was wrong.
+	 *
+	 * Ant's 0.5.1 boot printed `** 48 UNACCOUNTED **`. I attributed it to HandleClass's `!CDO` guard
+	 * and added a counter there. Her 0.5.3 boot printed `0 no usable CDO | ** 48 UNACCOUNTED **` --
+	 * the same 48, and my explanation disproved by the very counter I added to confirm it.
+	 *
+	 * The skip is HERE, one line above HandleClass, and it never reached the function I was auditing:
+	 * abstract, deprecated and superseded classes are `continue`d out of the loop while still counting
+	 * toward `BuildableClasses.Num()`. Correct behaviour -- an abstract class has no instances to
+	 * occlude rain -- but it was silent, and silence is what made 48 classes unaccountable.
+	 *
+	 * Worth keeping as a note on method: the arithmetic said 48 were missing and was right BOTH times.
+	 * My first guess at WHERE was wrong, and only a counter that could disprove it revealed that.
+	 */
+	int32 LocalNotInstantiable = 0;
 	for (UClass* Class : BuildableClasses)
 	{
-		if (Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists)) { continue; }
+		if (Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+		{
+			++LocalNotInstantiable;
+			continue;
+		}
 		HandleClass(Cast<AFGBuildable>(Class->GetDefaultObject()), /*bFromSweep*/ true);
 	}
+	GNotInstantiable = LocalNotInstantiable;
 
 	// Posted to the overlay AND the log — this is the line Ant wants to see on the loading screen to
 	// know the fix ran and what it actually did.
@@ -511,13 +535,14 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 	 */
 	const int32 Examined = BuildableClasses.Num();
 	const int32 Bucketed = GAppliedFromCache + GDerivedInstanceData + GDerivedComponents
-	                     + GGeometryless + GAlreadySettled + GNoRepairNeeded + GNoUsableCDO;
+	                     + GGeometryless + GAlreadySettled + GNoRepairNeeded + GNoUsableCDO
+	                     + GNotInstantiable;
 	FString Summary = FString::Printf(
 		TEXT("cache %s | %d classes examined | %d from cache, %d instance-data, %d components, %d none, "
-		     "%d already settled, %d needed no repair, %d no usable CDO"),
+		     "%d already settled, %d needed no repair, %d no usable CDO, %d not instantiable"),
 		bHit ? TEXT("HIT") : TEXT("MISS->rebuilt"),
 		Examined, GAppliedFromCache, GDerivedInstanceData, GDerivedComponents, GGeometryless,
-		GAlreadySettled, GNoRepairNeeded, GNoUsableCDO);
+		GAlreadySettled, GNoRepairNeeded, GNoUsableCDO, GNotInstantiable);
 	if (Bucketed != Examined)
 	{
 		// ASCII, not '⚠'. The overlay's Mono font rendered the warning sign as a tofu box on Ant's

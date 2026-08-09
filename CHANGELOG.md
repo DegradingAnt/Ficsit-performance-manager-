@@ -62,6 +62,77 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 11:45 — VERSION — 0.5.3 → 0.5.4
+
+- **What:** `0.5.4`; pin generated. PATCH — `FPM.Bisect` is a console command; a player would not notice.
+- **Verified:** predicate after tagging. Boot-tested: **NOT YET.**
+
+---
+
+## 2026-08-09 11:42 — CODE — `FPM.Bisect`, and two instruments that were wrong about themselves
+
+### `FPM.Bisect <sg.Group> <badLevel> <goodLevel>`
+
+Ant: *"no more command spam. lets build the mod so it can do this itself. this is what the bench is
+for anyways."* One command. It applies each level, samples wall-clock frame time over a fixed window,
+diffs the LIVE cvars to build its candidate list, then sets each candidate to its good value **alone**
+while the rest stay bad — and prints a ranked table of what each one recovers.
+
+Everything about it is shaped by a failure from the same afternoon:
+
+- **Live cvars, never an ini.** We bisected against the ENGINE's `BaseScalability.ini` for hours;
+  three of six candidates did not exist in Satisfactory's table at all.
+- **Wall clock, not `FApp::GetDeltaTime()`** — that is smoothed and clamped (`Engine.h:1552`) and
+  would flatten the very differences being measured. Same finding the hitch meter rests on.
+- **Console priority, deliberately, and `Unset` between candidates** — console is the only layer that
+  beats the group's own value, and console writes STICK, so without the unset the candidates would
+  accumulate and every row after the first would be a lie.
+- **It reports what it cannot account for.** If the best single cvar explains under half the gap it
+  says so and tells you not to pick a ladder lever off the table. **On today's evidence that is the
+  likely result** — see below.
+- A gap under 0.5 ms prints "nothing to attribute" rather than ranking jitter into a confident table.
+
+### ★ WHY NO SINGLE CVAR WAS EVER GOING TO WORK — Ant's correction
+
+I had just written that the cost was the sun and *"the lamps were never the story"*. Ant: **"wait, but
+the lamps DOES make it worse. those are also light sources."** She is right, and the correction gives
+the model that actually fits the day's data:
+
+| scene | the light doing the work | cvar family |
+|---|---|---|
+| night lamp corridor (39 → 114 with the group) | ~40 local point lights | cube maps — `r.Shadow.MaxResolution`, `RadiusThreshold` |
+| daylit pond, no buildings (53 → 77 at night) | one directional sun | cascades — `r.Shadow.DistanceScale`, `MaxCSMResolution` |
+
+**Two cvar families, one shared bill.** `sg.ShadowQuality` moves both at once, which is why the GROUP
+recovers 65 fps while every individual cvar tested could only ever govern the half that was not
+dominant where she happened to be standing. Each partial result was read as "excluded" when it may
+have meant "this one owns the other half".
+
+### The `FPM.Prove` step-4 FAIL was the TEST's bug, not the writer's
+
+First real run printed `[FAIL] 4 release restores value AND SetBy  2048 (Scalability) -> 888`. The
+writer was correct: step 2's `Set(..., ECVF_SetByScalability)` does not stack on the game's value at
+that priority, it **replaces** the slot — so release fell back to the Scalability layer exactly as
+designed, and the layer was no longer 2048 because our own test had overwritten it. Step 2 now writes
+the original value back before step 4 runs. **A test that reports FAIL on a working system is worse
+than no test** — it would have sent us hunting a release bug in the path the zero-residue promise
+rests on. Steps 1–3 passed and are the law question: `PluginHighPriority` took, survived a Scalability
+write, and the console still beat us.
+
+### The 48 UNACCOUNTED, found twice
+
+0.5.1 printed `** 48 UNACCOUNTED **`. I blamed `HandleClass`'s `!CDO` guard and added a counter there.
+0.5.3 printed `0 no usable CDO | ** 48 UNACCOUNTED **` — same 48, my explanation disproved by the
+counter I added to confirm it. The skip is one line ABOVE `HandleClass`: abstract, deprecated and
+superseded classes are `continue`d out of the sweep loop while still counting toward the denominator.
+Now `%d not instantiable`. **The arithmetic was right both times; my guess at where was wrong, and
+only a counter that could disprove it revealed that.**
+
+- **Files:** `Private/Core/FPMCVarProbe.cpp`, `Private/Fixes/Interop/FPMRainOcclusionFix.cpp`.
+- **Verified:** build-only, `Result: Succeeded`. Not boot-tested.
+
+---
+
 ## 2026-08-09 11:35 — VERSION — 0.5.2 → 0.5.3
 
 - **What:** `0.5.3`; pin generated. PATCH by the player-notice test — `FPM.Prove` is a console command.
