@@ -71,6 +71,7 @@ public:
 		NavMesh,          // FPM.Diag.NavMesh   — the tile-ceiling write-back
 		HudGuard,         // FPM.Diag.HudGuard  — the blueprint-hook descriptor strip
 		Zipline,          // FPM.Diag.Zipline   — the zipline output-bus volume
+		TexturePool,      // FPM.Diag.TexturePool — the card-sized streaming pool
 		Count
 	};
 

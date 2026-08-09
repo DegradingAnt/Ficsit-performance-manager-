@@ -88,6 +88,14 @@ public class FicsitsPerformanceManager : ModuleRules
 			// It also very likely arrives transitively through Engine — depending on that is the
 			// IWYU anti-pattern, so it is declared rather than assumed.
 			"Projects",
+
+			// RHIGetTextureMemoryStats, for the texture-pool guard's card-size read. PRIVATE for the
+			// same reason as Projects: RHIStats.h is included only from Private/.
+			// ⚠ RenderCore is NOT a substitute, and the failure mode is a LINK error rather than a
+			// compile one: RHIGetTextureMemoryStats is inline and dereferences the exported global
+			// GDynamicRHI, so the header compiles happily and LNK2019 fires at the very end of the
+			// build. The old mod listed "RHI" explicitly; the rebuild dropped it.
+			"RHI",
 		});
 		
 		DynamicallyLoadedModuleNames.AddRange(new string[] {

@@ -19,6 +19,7 @@
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
 #include "Fixes/Interop/FPMSchematicProbe.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
+#include "Fixes/Interop/FPMTexturePoolGuard.h"
 #include "Fixes/Interop/FPMZiplineVolume.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 #include "Streaming/FPMAssetResidency.h"
@@ -96,6 +97,14 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// P3.9. Client-only by contract. Default 1.0 writes nothing, so vanilla is bit-identical until Ant
 	// moves FPM.Zipline.Volume.
 	FPMFixes::Arm(FFPMZiplineVolume::Get());
+
+	/*
+	 * The card-sized streaming pool. Measured on Ant's machine 2026-08-09 BEFORE this shipped: vanilla's
+	 * flat 1000 MB pool cost 57 FPS vs 92, and a 1% low of 46 vs 69, on a 16303 MB card - the GPU was
+	 * idling at 83% waiting for textures that were not resident. It writes nothing for the first 45
+	 * seconds, and nothing at all on cards below the tier.
+	 */
+	FPMFixes::Arm(FFPMTexturePoolGuard::Get());
 
 	// LOG-ONLY. Ant, on the old mod's forced-TRUE milestone override: "maybe carry it with just
 	// diagnostics and we'll see what happens?" and "diagnostics are good either way so we KNOW what

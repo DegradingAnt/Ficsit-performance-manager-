@@ -115,6 +115,14 @@ static TAutoConsoleVariable<int32> CVarDiagZipline(
 	     "are equipped constantly and per-equip logging would be the noisiest line in the log)."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagTexturePool(
+	TEXT("FPM.Diag.TexturePool"), 1,
+	TEXT("Card-sized streaming pool. 0 = silent, 1 = the sizing decision and every raise WITH all of its "
+	     "inputs, 2 = also each watchdog poll that found nothing to do. Level 1 prints the inputs on "
+	     "purpose: the old implementation of this guard stood itself down on every boot while logging a "
+	     "cause it had not tested, and went unnoticed for months because that one line was believed."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -133,6 +141,7 @@ namespace
 		&CVarDiagNavMesh,
 		&CVarDiagHudGuard,
 		&CVarDiagZipline,
+		&CVarDiagTexturePool,
 	};
 
 	/*
@@ -165,6 +174,7 @@ namespace
 		case FPMDiag::EChannel::NavMesh:        return TEXT("FPM.Diag.NavMesh");
 		case FPMDiag::EChannel::HudGuard:       return TEXT("FPM.Diag.HudGuard");
 		case FPMDiag::EChannel::Zipline:        return TEXT("FPM.Diag.Zipline");
+		case FPMDiag::EChannel::TexturePool:    return TEXT("FPM.Diag.TexturePool");
 		default:                                return TEXT("<unknown>");
 		}
 	}
