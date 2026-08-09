@@ -954,3 +954,55 @@ static FAutoConsoleCommandWithOutputDevice GFPMProbeDiffCmd(
 			? FString(TEXT("  (identical - nothing in this cvar set changed between A and B)"))
 			: FString::Printf(TEXT("  %d cvar(s) differ"), Changed));
 	}));
+
+/*
+ * ★★★ D0 RUNS ITSELF, ONCE PER BOOT — because a console command CANNOT BE DELIVERED TO THIS GAME.
+ *
+ * Measured 2026-08-09, not assumed. UE strips `-ExecCmds` in Shipping and SML reimplements it
+ * (`SatisfactoryModLoader.cpp:218-227`, queuing deferred commands) — but Steam replaces the command line
+ * with its own launch options before the game ever sees ours. A direct launch of the exe and
+ * `steam://run/526870//-ExecCmds=...` both came up as `-NO_EOS_OVERLAY -useallavailablecores` and
+ * nothing else. There is no outside route in.
+ *
+ * That makes every typed diagnostic cost one of Ant's boots, against her standing rule: *"automate as
+ * much as possible by default. i dont like running around throwing commands around."* Design R2's
+ * D0-client is a page of console reads; this is how that page gets read without her hands.
+ *
+ * ⚠ IT DISPATCHES THE REGISTERED COMMAND rather than calling a copy of its body. `FPM.D0` stays the one
+ * implementation, so the automatic report and the typed one can never drift into saying different
+ * things — which is the whole failure this project keeps paying for.
+ *
+ * ⚠ AND IT WAITS. `OnFEngineLoopInitComplete` fires before the main menu has settled and before mods
+ * have finished registering their settings; reading then would produce a confidently WRONG enumeration
+ * (vanilla-only) that looks exactly like a complete one. The delay is not politeness, it is the
+ * difference between a right answer and a plausible one.
+ */
+static TAutoConsoleVariable<int32> CVarD0Auto(
+	TEXT("FPM.D0.Auto"), 1,
+	TEXT("Run FPM.D0 automatically once, a few seconds after engine init, and write it to the log. "
+	     "1 = on (default while the discovery phase is open), 0 = off. It only READS."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarD0AutoDelay(
+	TEXT("FPM.D0.AutoDelay"), 8.0f,
+	TEXT("Seconds after engine-init-complete before the automatic FPM.D0 run. Long enough for the main "
+	     "menu and for mod-registered settings to exist."),
+	ECVF_Default);
+
+/** Bound once at static init; the ticker is one-shot and unregisters itself by returning false. */
+static FDelegateHandle GFPMD0AutoHandle = FCoreDelegates::OnFEngineLoopInitComplete.AddStatic([]()
+{
+	if (CVarD0Auto.GetValueOnGameThread() == 0) { return; }
+
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateStatic([](float) -> bool
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] D0.Auto: running FPM.D0 by itself (no console input is deliverable to this "
+			     "build - see the comment in FPMCVarProbe.cpp). Disable with FPM.D0.Auto 0."));
+
+		// GLog, so the whole report lands in FactoryGame.log where it can be read after the fact.
+		IConsoleManager::Get().ProcessUserConsoleInput(TEXT("FPM.D0"), *GLog, nullptr);
+
+		return false;   // one-shot
+	}), CVarD0AutoDelay.GetValueOnGameThread());
+});

@@ -62,6 +62,23 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 14:26 — VERSION — 0.5.5 → 0.5.6
+
+- **What:** `0.5.6`; pin generated. **PATCH** — everything in it is a diagnostic. By the player-notice
+  test: with the console closed, Ant sees no difference. The one behaviour change, clause 6 refusing ~43
+  more cvars, is invisible because clause 6 already refuses the whole set and FPM drives no renderer
+  cvars yet.
+- **Contents:** the derived US_*-backed table (66 cvars, generated from the assets) · `FPMUserSettingMap`
+  with the runtime enumeration · `FPM.D0`'s 188-false-positive cross-check fix · the map's automatic
+  post-engine-init report · `FPM.D0.Auto`, which runs the D0 read by itself once per boot.
+- **Why it ships now:** the deployed build is `0.5.5` and predates all of it, so the boot that answers
+  P1.3's gate cannot be taken against what is currently installed.
+- **⚠ SERVER PARITY NOT DONE.** Only the CLIENT is being deployed. `RequiredOnRemote: true`, so a
+  `0.5.6` client will be refused by the `0.5.5` DatHost server on join. Deploying the server needs it
+  STOPPED, which affects SunFry — Ant's call, not one to make while she is asleep.
+
+---
+
 ## 2026-08-09 14:20 — CODE — the user-setting map reports itself every boot, because a console command cannot be delivered from outside
 
 - **What:** `FPMUserSettingMap::Init()`, bound to `FCoreDelegates::OnPostEngineInit` from `StartupModule`.
