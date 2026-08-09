@@ -4,72 +4,18 @@
 
 #include "FicsitsPerformanceManager.h"
 
-// GENERATED, beside this file. `FPMUserSettingTable::GDerivedUSBackedCVars` — the 66 vanilla cvars that
-// really are user-setting-backed, read from each asset's own StrId/UseCVar rather than guessed from its
-// name. Regenerate with 40-TOOLS/satisfactory/extract_user_settings.ps1.
-#include "FPMUserSettingTable.g.h"
+// Clause 6's question now has ONE owner. Both compiled tables and the runtime enumeration live behind
+// FPMUserSettingMap; this file no longer keeps a copy of any of them.
+#include "Core/FPMUserSettingMap.h"
 
 namespace
 {
-	/**
-	 * ★ CLAUSE 6's LEGACY DENYLIST — RETAINED, NOT TRUSTED. The derived table beside it is the real one.
-	 *
-	 * ⚠ THIS LIST WAS BUILT BY GUESSING A CVAR NAME FROM AN ASSET NAME, AND IT GUESSED WRONG BOTH WAYS.
-	 * It came from `20-SOURCES/satisfactory/FPM-US-DENYLIST-1.2.3.1.tsv`, whose columns are
-	 * `us_asset / candidate_cvar / confidence`, and whose 242-of-272 `UNMAPPED` rate was read as "the
-	 * danger we cannot yet spell". Re-derived from the assets themselves on 2026-08-09, that reading was
-	 * wrong: a setting's cvar name is simply its `StrId`, present in every asset
-	 * (FGUserSetting.h:183-189 — "manage and if needed create a cvar for this setting based on StrId").
-	 * Reading StrId directly yields **66 cvar-backed vanilla settings and zero unmapped**. Of the old
-	 * file's 272 rows, 184 name settings that drive no cvar at all, 4 are names truncated at a hyphen
-	 * (`US_HierarchicalZ` for `US_HierarchicalZ-BufferOcclusion`), and 19 match no asset in the game
-	 * (`US_34z`, `US_Jx`, `US_dT`, …). The "242 unmapped" was an artefact of how the file was made.
-	 *
-	 * ⚠ SO WHY IS IT STILL HERE? BECAUSE REMOVING AN ENTRY FROM A BAN LIST IS THE DIRECTION THAT CAN
-	 * HURT. Every name below that the derived table lacks is either an asset with no cvar or a cvar no
-	 * asset claims — both harmless to keep and, on this evidence, harmless to drop. But "on this
-	 * evidence" is exactly the phrase that preceded the 242-unmapped mistake, and a false refusal costs
-	 * a log line while a false permission costs a permanent change to the player's own settings. The two
-	 * are not symmetric, so the union stands until something forces a choice.
-	 *
-	 * ⚠ AND THE DERIVED TABLE CAUGHT A LIVE HOLE THIS LIST HAD. `r.ContactShadows` — the cvar design
-	 * §2.3.6 records as having actually leaked on 2026-08-02 — is ABSENT below, as are `r.Fog.Density`,
-	 * `r.VolumetricCloud`, `r.HZBOcclusion`, `foliage.DitheredLOD` and ~50 more. Meanwhile `r.Gamma` is
-	 * refused here while the real setting-backed cvar, `r.TonemapperGamma`, was not. It guarded a name
-	 * the game does not use and left the one it does open.
-	 *
-	 * NEITHER TABLE IS THE PRIMARY. Both are VANILLA-ONLY snapshots, and mods register their own settings
-	 * — confirmed 2026-08-09: the LightSettings mod's levers are mod-side SessionSettings assets that no
-	 * export of the base game can contain. The runtime read of `GetAllUserSettingsMap()` is the primary
-	 * and it sees those; these two are what remains when it cannot be reached.
-	 *
-	 * ⚠ Name prefixed for the UNITY BUILD (FPMFixContract.h:166-171).
+	/*
+	 * THE US_*-BACKED TABLES USED TO LIVE HERE. They now live behind `FPMUserSettingMap`, together with
+	 * the runtime enumeration, because three callers ask this same question — clause 6 below, the residue
+	 * sentinel when it classifies a held cvar, and `FPM.D0` when it audits — and a second copy of a
+	 * safety list is a drift bug waiting to happen. This file asks; it no longer answers.
 	 */
-	const TCHAR* const GFPMWriterUSLegacyGuesses[] =
-	{
-		TEXT("CSS.Conveyor.MaxDrawDistance"),
-		TEXT("FG.AlwaysShowVehiclePaths"),      TEXT("FG.ArachnophobiaMode"),
-		TEXT("FG.ConveyorItemFrequency"),       TEXT("FG.DisableNarrativeMessages"),
-		TEXT("FG.DismantleCratePlacementMode"), TEXT("FG.DisplayHologramClearance"),
-		TEXT("FG.HoldZipline"),                 TEXT("FG.HologramRotationMode"),
-		TEXT("FG.MergeDismantleCrates"),        TEXT("FG.PauseGameInPauseMenu"),
-		TEXT("FG.SampleCopyCustomization"),     TEXT("FG.SampleCopySettings"),
-		TEXT("FG.SelectCancelSwap"),            TEXT("FG.VehiclePathRenderDistance"),
-		TEXT("TSR.AntiAliasing"),               TEXT("r.Mobile.AntiAliasing"),
-		TEXT("r.AntiAliasingMethod"),
-		TEXT("r.Bloom.ScreenPercentage"),       TEXT("r.ScreenPercentage"),
-		TEXT("r.TSR.History.ScreenPercentage"),
-		TEXT("r.DefaultFeature.MotionBlur"),    TEXT("r.FastVRam.MotionBlur"),
-		TEXT("r.Gamma"),
-		TEXT("r.HairStrands.DeepShadow.Resolution"),
-		TEXT("r.HeterogeneousVolumes.Shadows.Resolution"),
-		TEXT("r.HeterogeneousVolumes.Tessellation.BottomLevelGrid.Resolution"),
-		TEXT("r.HeterogeneousVolumes.CompositeWithTranslucency.Refraction.Tr"),
-		TEXT("r.Mobile.ScreenSpaceReflections"),
-		TEXT("r.ShadowQuality"),
-		TEXT("r.VSync"),                        TEXT("r.Vsync"),
-		TEXT("t.MaxFPS"),
-	};
 
 	/** The one priority FPM writes at. Named once so no call site can quietly choose another. */
 	constexpr EConsoleVariableFlags GFPMWriterPriority = ECVF_SetByPluginHighPriority;
@@ -144,30 +90,11 @@ IConsoleVariable* FPMCVarWriter::Vet(FName Owner, const TCHAR* CVarName) const
 bool FPMCVarWriter::IsUserSettingBacked(const TCHAR* CVarName)
 {
 	/*
-	 * THE UNION OF BOTH TABLES, DERIVED FIRST because it is the one that answers correctly and carries
-	 * the cvars the legacy list missed.
-	 *
-	 * ⚠ Stricmp, NEVER Strcmp, and this is not defensive habit — the assets themselves are inconsistently
-	 * cased. `US_ScreenPercentage` declares its StrId as `r.screenpercentage` while the engine's own cvar
-	 * is registered `r.ScreenPercentage`. A case-sensitive compare would walk straight past the guard on
-	 * the exact cvar most likely to be written.
+	 * Kept as a thin forwarder rather than deleted. It is the name the sentinel and `FPM.D0` already
+	 * call, and the header's promise — that both reach the SAME judgement the writer's refusal uses —
+	 * is now literally true rather than maintained by hand.
 	 */
-	for (const TCHAR* const Derived : FPMUserSettingTable::GDerivedUSBackedCVars)
-	{
-		if (FCString::Stricmp(CVarName, Derived) == 0) { return true; }
-	}
-
-	for (const TCHAR* const Guessed : GFPMWriterUSLegacyGuesses)
-	{
-		if (FCString::Stricmp(CVarName, Guessed) == 0) { return true; }
-	}
-
-	/*
-	 * ⚠ FALSE IS NOT "SAFE", IT IS "NOT IN TWO VANILLA SNAPSHOTS", and the caller must not read it as
-	 * more than that. A mod-registered setting is invisible to both tables by construction, so this
-	 * answer is only as good as its inputs until P1.3's runtime map is consulted ahead of it.
-	 */
-	return false;
+	return FPMUserSettingMap::IsBacked(CVarName);
 }
 
 void FPMCVarWriter::GetHeldCVars(TArray<FString>& Out) const

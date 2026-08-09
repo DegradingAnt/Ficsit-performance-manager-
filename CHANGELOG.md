@@ -62,6 +62,41 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-09 13:42 — CODE — P1.3 part 1: the user-setting map, read from the running game; and D0's cross-check stops crying wolf 188 times
+
+- **What:** new `FPMUserSettingMap` (`Public/Core/FPMUserSettingMap.h`,
+  `Private/Core/FPMUserSettingMap.cpp`) owns clause 6's question — *"would the game's settings save
+  capture this cvar?"* — for all three callers (writer, residue sentinel, `FPM.D0`). It unions a
+  **runtime enumeration** of `UFGGameUserSettings::GetAllUserSettingsMap()` with the two compiled
+  tables. `FPMCVarWriter::IsUserSettingBacked` is now a forwarder; both tables moved out of the writer.
+- **Why runtime is the primary and not a nicety:** the compiled tables are vanilla-only *by
+  construction* — they come from an export of the base game. The settings FPM most needs to see are
+  mod-registered: the LightSettings mod's levers are mod-side SessionSettings assets that no export of
+  FactoryGame can contain. Only the running process knows the full set.
+- **⚠ The predicate that makes it correct, and that `FPM.D0` had wrong.** The map's keys are SETTING
+  IDs, not cvar names. A setting owns a cvar only when `UseCVar` is true, and then the cvar's name is
+  its `StrId` (`FGUserSetting.h:183-189`). D0 treated every key as a cvar name — so with 188 of 254
+  vanilla settings driving no cvar at all, it would have printed **188 `CLAUSE 6 BLIND SPOT` lines that
+  are not blind spots**. A diagnostic that cries wolf 188 times hides the one real finding in its own
+  noise. It now resolves each setting, filters on `ShouldUseCVar()`, and de-duplicates by `StrId`
+  (two settings may drive one cvar — `FGOptionInterfaceImpl.h:30-33`).
+- **Fails safe in the honest direction:** an empty map is REFUSED rather than cached (empty means
+  "asked too early", not "this game has no settings"); `Refresh()` no-ops when there is no settings
+  object; a `false` answer while still on tables-only logs **once** that it means "not in the vanilla
+  snapshot", not "safe to write".
+- **Re-reads, deliberately.** Refreshed at `CONSTRUCTION` **before** `NotifyWorldLoad`, so a fix that
+  holds a cvar in its own load handler is judged against this world's picture, not the previous one.
+  Mods register settings as their game features activate, so a set captured once at the earliest
+  opportunity is a vanilla map wearing a runtime label.
+- **Files:** `Public/Core/FPMUserSettingMap.h` (new), `Private/Core/FPMUserSettingMap.cpp` (new),
+  `Private/Core/FPMCVarWriter.cpp`, `Private/Core/FPMCVarProbe.cpp`,
+  `Private/Module/RootGameWorld_FicsitsPerformanceManager.cpp`. No version bump — ships with P1.3.
+- **Revert:** point `IsUserSettingBacked` back at the tables and drop the `Refresh()` call sites.
+- **Verified:** build-only — `Result: Succeeded`. NOT boot-tested: the runtime enumeration has never
+  run, and until it does, `Source()` reports `TablesOnly` by design.
+
+---
+
 ## 2026-08-09 13:30 — CODE — clause 6's denylist re-derived from the assets; it was missing 56 cvars, including the one the design records as having leaked
 
 - **What:** `IsUserSettingBacked` now checks a GENERATED table of the 66 vanilla cvar-backed user

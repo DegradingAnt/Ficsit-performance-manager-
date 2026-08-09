@@ -35,8 +35,13 @@
 #include "FicsitsPerformanceManager.h"
 
 #include "Core/FPMCVarWriter.h"
+#include "Core/FPMUserSettingMap.h"
 
 #include "FGGameUserSettings.h"
+// Needed to ask a setting whether it owns a cvar at all, and what that cvar is called. Reading the
+// map's keys instead is what made this command's cross-check report 188 false positives.
+#include "Settings/FGUserSetting.h"
+#include "Settings/FGUserSettingApplyType.h"
 
 #include "Containers/Ticker.h"
 #include "Engine/Engine.h"
@@ -256,31 +261,72 @@ static FAutoConsoleCommandWithOutputDevice GFPMD0Cmd(
 		// ---- 1. THE US_* ENUMERATION. P1.3's gate. -------------------------------------------
 		Say(TEXT(""));
 		Say(TEXT("-- user settings the game's own save would capture (P1.3's gate) --"));
+
+		// Re-read before auditing. Otherwise the cross-check below grades clause 6 against whatever
+		// picture the last world load happened to leave behind, which is the wrong thing to grade it on
+		// if the player has since loaded a save with a different mod set.
+		FPMUserSettingMap::Refresh();
+
 		if (UFGGameUserSettings* Settings = Cast<UFGGameUserSettings>(GEngine ? GEngine->GetGameUserSettings() : nullptr))
 		{
 			TMap<FString, TObjectPtr<UFGUserSettingApplyType>> All;
 			Settings->GetAllUserSettingsMap(All);
 
-			TArray<FString> Keys;
-			All.GetKeys(Keys);
-			Keys.Sort();
-			Say(FString::Printf(TEXT("  %d setting(s) enumerated from UFGGameUserSettings"), Keys.Num()));
-
-			// Cross-check against the writer's own judgement. A DISAGREEMENT IS THE FINDING: it means
-			// clause 6's hand-maintained list has drifted from what the game actually persists, and
-			// FPM would be free to write something that ends up in her settings file.
+			/*
+			 * ⚠ CORRECTED 2026-08-09. THIS BLOCK USED TO TREAT EVERY MAP KEY AS A CVAR NAME.
+			 *
+			 * The keys are SETTING IDS. A setting only owns a cvar when it opts in — `UseCVar` — and
+			 * then the cvar's name is its `StrId` (FGUserSetting.h:183-189). In vanilla only 66 of 254
+			 * settings are cvar-backed, so the old loop reported the other 188 as "CLAUSE 6 BLIND SPOT".
+			 * A diagnostic that cries wolf 188 times is worse than no diagnostic: a real blind spot
+			 * becomes unfindable in the noise, and the total reads as catastrophic when almost all of it
+			 * is settings that drive no cvar at all.
+			 */
+			int32 CVarBacked = 0;
+			int32 NoCVar = 0;
+			int32 Unreadable = 0;
 			int32 Divergent = 0;
-			for (const FString& Key : Keys)
+
+			TArray<FString> Backed;
+			Backed.Reserve(All.Num());
+
+			for (const TPair<FString, TObjectPtr<UFGUserSettingApplyType>>& Pair : All)
 			{
-				const bool bWriterThinks = FPMCVarWriter::IsUserSettingBacked(*Key);
-				Say(FString::Printf(TEXT("    %-52s writer says %s"), *Key,
-					bWriterThinks ? TEXT("BACKED") : TEXT("** not backed - CLAUSE 6 BLIND SPOT **")));
-				if (!bWriterThinks) { ++Divergent; }
+				const UFGUserSettingApplyType* Apply = Pair.Value;
+				const UFGUserSetting* Setting = Apply ? Apply->GetUserSetting() : nullptr;
+				if (!Setting) { ++Unreadable; continue; }
+
+				// The predicate the old loop was missing.
+				if (!Setting->ShouldUseCVar()) { ++NoCVar; continue; }
+
+				++CVarBacked;
+				// StrId, not Pair.Key: two settings may drive one cvar (FGOptionInterfaceImpl.h:30-33),
+				// and that duplicate should collapse rather than be reported as two findings.
+				Backed.AddUnique(Setting->StrId);
 			}
+
+			Backed.Sort();
+			Say(FString::Printf(
+				TEXT("  %d setting(s) enumerated: %d cvar-backed, %d drive no cvar, %d unreadable"),
+				All.Num(), CVarBacked, NoCVar, Unreadable));
+
+			for (const FString& CVar : Backed)
+			{
+				const bool bProtected = FPMCVarWriter::IsUserSettingBacked(*CVar);
+				Say(FString::Printf(TEXT("    %-52s clause 6 says %s"), *CVar,
+					bProtected ? TEXT("BACKED") : TEXT("** NOT PROTECTED - CLAUSE 6 BLIND SPOT **")));
+				if (!bProtected) { ++Divergent; }
+			}
+
 			Say(Divergent == 0
-				? FString(TEXT("  clause 6 agrees with the game on every setting."))
-				: FString::Printf(TEXT("  ** %d setting(s) the GAME persists that clause 6 does NOT protect. "
-				                       "Widen IsUserSettingBacked before the ladder writes anything. **"), Divergent));
+				? FString(TEXT("  clause 6 covers every cvar-backed setting the game reported."))
+				: FString::Printf(TEXT("  ** %d cvar(s) the GAME persists that clause 6 does NOT protect. "
+				                       "Regenerate the table (extract_user_settings.ps1) before the ladder "
+				                       "writes anything. **"), Divergent));
+
+			// The map's own state, because "0 blind spots" means something very different when the
+			// runtime read has not landed and the answer came from a vanilla-only table.
+			FPMUserSettingMap::LogState(&Ar);
 		}
 		else
 		{

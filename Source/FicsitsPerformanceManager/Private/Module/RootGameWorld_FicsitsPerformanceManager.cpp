@@ -4,6 +4,7 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMFixContract.h"
+#include "Core/FPMUserSettingMap.h"
 #include "Engine/World.h"
 
 namespace
@@ -60,6 +61,20 @@ void URootGameWorld_FicsitsPerformanceManager::DispatchLifecycleEvent(ELifecycle
 	 */
 	if (Phase == ELifecyclePhase::CONSTRUCTION)
 	{
+		/*
+		 * ★ RE-READ THE USER-SETTING MAP FIRST, BEFORE ANY FIX RUNS.
+		 *
+		 * Ordering is the point: a fix's OnWorldLoad may hold a cvar, and clause 6's answer decides
+		 * whether it may. Refreshing after the dispatch would judge this world's first writes against
+		 * the previous world's picture.
+		 *
+		 * ⚠ AND IT MUST RE-READ, not read once. Mods register their settings as their game features
+		 * activate, so a map captured at the earliest possible moment is a VANILLA map wearing a
+		 * runtime label — and the settings FPM most needs to see are the mod-registered ones. Cheap:
+		 * one map copy and a walk, on a frame where the loading screen is already up.
+		 */
+		FPMUserSettingMap::Refresh();
+
 		FPMFixes::NotifyWorldLoad(GetWorld());
 	}
 }
