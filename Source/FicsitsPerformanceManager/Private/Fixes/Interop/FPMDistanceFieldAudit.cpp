@@ -38,13 +38,18 @@ namespace
 	/*
 	 * When to look. AbstractInstanceManager re-enables distance fields on the one tick where both lazy
 	 * queues drain (AbstractInstanceManager.cpp:482-498), and that is somewhere after the loading screen
-	 * rather than at a fixed moment.
+	 * rather than at a fixed moment. So the audit samples at spreading intervals instead of guessing one,
+	 * and the DIRECTION between samples is the finding: FALLING means the re-enable pass is still
+	 * working, UNCHANGED means these were missed, RISING means the deficit is growing as you play.
 	 *
-	 * So the audit samples at three spreading intervals instead of guessing one. A count that FALLS
-	 * between samples means the re-enable pass is still working through the world and the early reading
-	 * was premature. A count that stays put is the finding.
+	 * ⚠ EXTENDED FROM THREE MARKS TO FIVE ON 2026-08-10, because three could not tell a LAG from a LEAK.
+	 *
+	 * At 10/30/90 s the count was still rising on Ant's save, and a rising count at 90 s has two
+	 * completely different readings: vanilla has not caught up yet (harmless, wait), or the deficit
+	 * grows for as long as you play (needs fixing). Only a much later sample separates them, so the
+	 * schedule now runs out to 15 minutes. The cost is two more audits per session.
 	 */
-	constexpr float GFPMDfSamplesSec[] = { 10.f, 30.f, 90.f };
+	constexpr float GFPMDfSamplesSec[] = { 10.f, 30.f, 90.f, 300.f, 900.f };
 	int32 GFPMDfSampleIndex = 0;
 	float GFPMDfElapsed = 0.f;
 	FTSTicker::FDelegateHandle GFPMDfTicker;
@@ -379,18 +384,47 @@ void FFPMDistanceFieldAudit::OnWorldLoad(UWorld* World)
 				 * samples means the vanilla re-enable pass is still working; a count that holds is the
 				 * bug. Saying which of those happened is the whole reason for sampling three times.
 				 */
-				const TCHAR* When = TEXT("late");
-				if (GFPMDfSampleIndex == 0) { When = TEXT("early"); }
-				else if (GFPMDfSampleIndex == 1) { When = TEXT("mid"); }
+				static const TCHAR* const SampleNames[] = {
+					TEXT("early"), TEXT("mid"), TEXT("late"), TEXT("5-min"), TEXT("15-min") };
+				const TCHAR* When = GFPMDfSampleIndex < UE_ARRAY_COUNT(SampleNames)
+					? SampleNames[GFPMDfSampleIndex] : TEXT("later");
 
 				Report(C, Worst, When);
 
-				if (GFPMDfLastMissing >= 0 && C.Missing != GFPMDfLastMissing)
+				/*
+				 * ★ THE DIRECTION IS THE FINDING, AND THIS TESTED ONLY FOR CHANGE UNTIL 2026-08-10.
+				 *
+				 * The old branch was `C.Missing != GFPMDfLastMissing` and printed "vanilla's re-enable
+				 * pass is still working through the world" for ANY movement. The comment above it already
+				 * knew better — "a count that FALLS between samples means the re-enable pass is still
+				 * working" — and the code did not check which way it went.
+				 *
+				 * Measured on Ant's save that evening: 19769 -> 19996 components, 1028518 -> 1042346
+				 * instances. **It rose.** The old line told her vanilla was fixing it while the deficit
+				 * grew, which is worse than saying nothing: it is a diagnostic arguing against its own
+				 * data.
+				 *
+				 * Three outcomes now, because there are three and they mean opposite things:
+				 *   FELL      - vanilla's one-shot re-enable pass is draining the backlog. Wait.
+				 *   ROSE      - the world is adding un-contributing instances faster than that pass fixes
+				 *               them. This is the one that needs FPM, and it is what she measured.
+				 *   UNCHANGED - the pass has finished and these were missed. Also needs FPM.
+				 */
+				if (GFPMDfLastMissing >= 0 && C.Missing < GFPMDfLastMissing)
 				{
 					UE_LOG(LogFicsitsPerformanceManager, Display,
-						TEXT("[FPM]   missing count moved %d -> %d since the last sample: vanilla's "
-						     "re-enable pass is still working through the world."),
+						TEXT("[FPM]   missing count FELL %d -> %d since the last sample: vanilla's "
+						     "re-enable pass is still working through the world. Not a finding yet."),
 						GFPMDfLastMissing, C.Missing);
+				}
+				else if (GFPMDfLastMissing >= 0 && C.Missing > GFPMDfLastMissing)
+				{
+					UE_LOG(LogFicsitsPerformanceManager, Warning,
+						TEXT("[FPM]   ⚠ missing count ROSE %d -> %d (+%d) since the last sample. The world "
+						     "is producing instances that do not contribute to distance fields FASTER than "
+						     "vanilla's re-enable pass repairs them, so this deficit GROWS as you play. A "
+						     "one-shot repair cannot win that race."),
+						GFPMDfLastMissing, C.Missing, C.Missing - GFPMDfLastMissing);
 				}
 				else if (GFPMDfLastMissing >= 0 && C.Missing > 0)
 				{

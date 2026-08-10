@@ -62,6 +62,47 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 19:40 — CODE — the distance-field trend line was arguing against its own data
+
+- **What:** the audit's between-sample comparison now distinguishes FELL / ROSE / UNCHANGED instead of
+  testing only for change, and the sample schedule runs to 15 minutes instead of 90 seconds.
+- **Why:** the old branch was `C.Missing != GFPMDfLastMissing` and printed *"vanilla's re-enable pass is
+  still working through the world"* for **any** movement. Measured on Ant's save:
+
+```
+distance-field audit (early): 19769 of 53287 components, 1028518 instances
+distance-field audit (mid):   19996 of 53557 components, 1042346 instances
+```
+
+  **It rose.** So the reassuring line fired while the deficit grew. The comment three lines above the
+  branch already had it right — *"a count that FALLS between samples means the re-enable pass is still
+  working"* — and the code never checked which way it went. A diagnostic that contradicts its own
+  data is worse than one that stays quiet, because it actively closes the investigation.
+
+- **Three outcomes, because there are three and they mean opposite things.** FELL: vanilla is draining
+  the backlog, wait. UNCHANGED: the pass finished and these were missed. **ROSE: the world produces
+  non-contributing instances faster than vanilla repairs them, so a one-shot repair cannot win that
+  race** — and that is what she measured. The RISING branch says so in those words.
+
+- **Sample marks 10/30/90 → 10/30/90/300/900 s.** Three marks could not separate a LAG from a LEAK: a
+  count still rising at 90 s reads identically whether vanilla has not caught up yet (harmless) or the
+  deficit grows for as long as you play (not harmless). Only a much later sample tells them apart. Costs
+  two more audits per session.
+
+- **⚠ NOT FIXED, DELIBERATELY: the repair strategy.** If the count genuinely rises forever, the existing
+  one-shot repair is the wrong shape and should become incremental — the pattern mined from Dynamic
+  Train Routes the same evening (`AddNode`/`RemoveEdge` on events, `CompileTrainsToRepath` →
+  `RepathTrains` batching). That is a design change and it is gated on the 15-minute sample, which does
+  not exist yet. Building it now would be guessing at the number this change exists to produce.
+
+- **Files:** `Private/Fixes/Interop/FPMDistanceFieldAudit.cpp`, `FicsitsPerformanceManager.uplugin`
+  (0.11.2 → **0.11.3**, PATCH: a log line telling the truth, invisible with the console closed).
+- **Revert:** `git revert`. The old behaviour is one `!=` comparison.
+- **Verified:** build-only. `Result: Succeeded`; `check_structure.py` 26 fixes / 0 / 0. NOT-YET
+  boot-tested — no Satisfactory boots tonight.
+
+---
+
 ## 2026-08-10 19:05 — CODE — three report commands that printed nothing, a seventh cause bucket, and a guard demoted by its own measurement
 
 - **What:** the fixes the first driven boot found, plus the one idea worth taking from mining two mods.
