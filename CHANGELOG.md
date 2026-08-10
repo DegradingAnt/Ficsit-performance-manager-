@@ -62,6 +62,56 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 16:20 — CODE — the distance-field audit across every core, and a readout that can say it did not
+
+- **What:** `CountAndMaybeRepair` is now three phases — GATHER (serial), ANALYSE
+  (`ParallelForWithTaskContext`, every core), REPAIR (serial). All three are timed and the timings are
+  printed with every result.
+- **Why:** Ant, 2026-08-10: *"do the parallise stuff for everything that CAN be done like that."* This
+  audit walks every instanced mesh component in the world — 10,227 of them on her save — and did the
+  whole walk on the game thread.
+
+- **What CAN be parallel, and what provably cannot.** `TActorIterator` is a stateful cursor over the
+  level's actor arrays with no parallel form, so GATHER cannot move. `MarkRenderStateDirty()` is not
+  thread-safe, so REPAIR cannot move — doing it inside the loop would be a data race on the renderer,
+  which is a worse bug than the one this audit exists to find. Only the read-only middle moves.
+- **Why the UObject reads in the middle are legal.** The game thread BLOCKS inside `ParallelFor`, so GC
+  cannot run and free a component under a worker. The same reads on a background thread would be
+  unsafe. `GetInstanceCount()` allocates nothing, issues no render command and creates no UObject,
+  which is what keeps it inside the safe set.
+- **Offender names are resolved AFTER the loop.** Phase 2 carries component pointers only.
+  `GetStaticMesh()->GetName()` builds an FString per offender, and at most five are ever printed, so
+  the cost is paid once on the game thread for the five that survive the sort.
+
+- **★ THE REPORT CAN FALSIFY THE CLAIM, which is the point.** It prints how many worker contexts
+  `ParallelForWithTaskContext` actually created. **One means the engine ran the loop inline on the
+  calling thread and nothing was parallel that run** — legal engine behaviour for a small `Num`
+  (`ParallelFor.h:738-748`, `OutContexts.AddDefaulted(GetNumberOfThreadTasks(Num, 1, Flags))`), and
+  invisible without this number. It also says so out loud when GATHER cost more than ANALYSE, because
+  then the parallel phase is not where the time goes and parallelising further would buy little.
+  "We parallelised it" is a claim, and this mod does not ship those unmeasured.
+
+- **A bug caught while finishing the stashed draft.** The repair phase walks every component and
+  re-tests the flag, and a comment claimed it walked the offender list instead. The offender list is
+  capped at 64 PER WORKER CONTEXT — a sample for the log lines, never the complete set. Repairing from
+  it would have fixed the first 64-per-worker and left the rest broken while reporting the world
+  repaired. The code was right, the comment was wrong, and the comment is what would have been believed.
+
+- **`MissingInstances` is now `int64`** — the worker contexts accumulate into `int64` and the struct
+  took `int32`, so the two disagreed. Her save measures 87,965 instances, well inside `int32`, so this
+  is a correctness tidy rather than a live overflow.
+
+- **Files:** `Private/Fixes/Interop/FPMDistanceFieldAudit.cpp`,
+  `FicsitsPerformanceManager.uplugin` (0.10.0 → **0.10.1**, PATCH: an internal audit's cost profile,
+  invisible with the console closed).
+- **Revert:** `git revert`. Undo if the parallel phase ever reports a component count that disagrees
+  with the serial version — that would mean the per-context accumulation is losing work.
+- **Verified:** build-only. `Build.bat FactoryEditor Win64 Development -Module=FicsitsPerformanceManager`
+  → `Result: Succeeded`; `check_structure.py` 25 fixes / 0 / 0. NOT-YET boot-tested. The boot question:
+  does the audit still report 3273/10227 and 87965, and how many worker contexts did it get?
+
+---
+
 ## 2026-08-10 15:55 — CODE — better glass, carried from FPM1 with the ini half removed and the poll removed
 
 - **What:** a new fix, `FFPMGlassQuality`, in a new `Fixes/ModFeatures/` folder. It holds

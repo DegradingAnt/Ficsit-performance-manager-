@@ -10,8 +10,11 @@
 #include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Engine/StaticMesh.h"
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
+#include "Async/ParallelFor.h"
 
 /*
  * ★ THE REPAIR IS OFF BY DEFAULT, AND THAT IS A PERFORMANCE DECISION RATHER THAN CAUTION.
@@ -52,9 +55,30 @@ namespace
 	struct FFPMDfCount
 	{
 		int32 Components = 0;
-		int32 Missing = 0;         // bAffectDistanceFieldLighting == false
-		int32 MissingInstances = 0; // instance count carried by those components — the visible weight
+		int32 Missing = 0;          // bAffectDistanceFieldLighting == false
+		int64 MissingInstances = 0; // instance count carried by those components — the visible weight
 		int32 Repaired = 0;
+
+		/*
+		 * ★ THE COST OF EACH PHASE, BECAUSE "WE PARALLELISED IT" IS A CLAIM.
+		 *
+		 * Only ANALYSE runs on the other cores. If GATHER dominates — and it may, since it walks every
+		 * actor in the level — then the parallel phase saved a slice of a small number, and the honest
+		 * report says so. A single total would let a reader assume a win the numbers do not support.
+		 */
+		double GatherMs = 0.0;
+		double AnalyseMs = 0.0;
+		double RepairMs = 0.0;
+
+		/**
+		 * How many worker contexts `ParallelForWithTaskContext` actually created.
+		 *
+		 * ⚠ THIS IS THE LIVENESS PROOF FOR THE PARALLELISM, and it is the only thing in the report that
+		 * can falsify it. One context means the loop ran entirely on the calling thread — which the
+		 * engine is free to do, and which would make every "parallel" claim here false for that run. A
+		 * report that cannot tell "16 workers" from "1" cannot tell you whether the rewrite did anything.
+		 */
+		int32 WorkerContexts = 0;
 	};
 
 	FFPMDfCount CountAndMaybeRepair(UWorld* World, bool bRepair, TArray<FString>& OutWorstNames)
@@ -68,50 +92,159 @@ namespace
 		 * mods — which is the honest scope for a question phrased as "does anything the player built
 		 * fail to contribute".
 		 */
-		TArray<TPair<int32, FString>> Offenders;
+		/*
+		 * ★ THREE PHASES, AND ONLY THE MIDDLE ONE CAN USE THE OTHER CORES. Ant, 2026-08-10: *"do the
+		 * parallise stuff for everything that CAN be done like that"* — the honest reading of CAN is what
+		 * this split encodes, because two thirds of this function must stay serial and saying so is more
+		 * useful than a blanket claim that the audit is now parallel.
+		 *
+		 *  1. GATHER — serial, game thread. `TActorIterator` is a stateful cursor over the level's actor
+		 *     arrays and there is no parallel form of it. This phase cannot move, at all.
+		 *  2. ANALYSE — `ParallelForWithTaskContext`, across every core. READS ONLY. Safe because the game
+		 *     thread blocks inside the loop, so GC cannot run and free a component underneath a worker —
+		 *     that is the whole reason UObject reads are legal here and would NOT be on a background
+		 *     thread (`ue-async-threading`).
+		 *  3. REPAIR — serial, game thread, and only over the offenders phase 2 found.
+		 *     ⚠ `MarkRenderStateDirty()` touches render state and is NOT thread-safe. Repairing inside the
+		 *     parallel loop would be a data race on the renderer, which is a far worse bug than the one
+		 *     this audit exists to find.
+		 *
+		 * ★ AND IT TIMES ALL THREE, because "we parallelised it" is a claim and this project does not ship
+		 * those unmeasured. If GATHER dominates, the parallelism bought nothing and the log will say so
+		 * plainly rather than letting the next reader assume the win.
+		 */
+		const double TGatherStart = FPlatformTime::Seconds();
 
+		TArray<UInstancedStaticMeshComponent*> AllComps;
+		AllComps.Reserve(4096);
 		for (TActorIterator<AActor> It(World); It; ++It)
 		{
 			TArray<UInstancedStaticMeshComponent*> Comps;
 			It->GetComponents<UInstancedStaticMeshComponent>(Comps);
-
-			for (UInstancedStaticMeshComponent* Comp : Comps)
-			{
-				if (Comp == nullptr) { continue; }
-				++C.Components;
-
-				if (Comp->bAffectDistanceFieldLighting) { continue; }
-
-				const int32 Instances = Comp->GetInstanceCount();
-				++C.Missing;
-				C.MissingInstances += Instances;
-
-				if (Offenders.Num() < 64)
-				{
-					Offenders.Emplace(Instances, Comp->GetStaticMesh()
-						? Comp->GetStaticMesh()->GetName()
-						: FString(TEXT("<no mesh>")));
-				}
-
-				if (bRepair)
-				{
-					Comp->bAffectDistanceFieldLighting = true;
-					Comp->MarkRenderStateDirty();
-					++C.Repaired;
-				}
-			}
+			AllComps.Append(Comps);
 		}
 
-		// Name the biggest offenders by INSTANCE count, not by component count — one component holding
-		// 4,000 foundations matters more than forty holding one pipe each.
-		Offenders.Sort([](const TPair<int32, FString>& A, const TPair<int32, FString>& B)
+		const double TAnalyseStart = FPlatformTime::Seconds();
+		C.GatherMs = (TAnalyseStart - TGatherStart) * 1000.0;
+
+		/** Per-worker workspace. Mutated without synchronisation because each task owns one. */
+		struct FDfCtx
+		{
+			int32 Components = 0;
+			int32 Missing = 0;
+			int64 MissingInstances = 0;
+			TArray<TPair<int32, UInstancedStaticMeshComponent*>> Offenders;
+		};
+
+		TArray<FDfCtx> Contexts;
+		ParallelForWithTaskContext(Contexts, AllComps.Num(),
+			[&AllComps](FDfCtx& Ctx, int32 Index)
+			{
+				UInstancedStaticMeshComponent* Comp = AllComps[Index];
+				if (Comp == nullptr) { return; }
+				++Ctx.Components;
+
+				if (Comp->bAffectDistanceFieldLighting) { return; }
+
+				// GetInstanceCount() reads a count off the component. No allocation, no render command,
+				// no UObject creation — the three things that would make this unsafe here.
+				const int32 Instances = Comp->GetInstanceCount();
+				++Ctx.Missing;
+				Ctx.MissingInstances += Instances;
+
+				// ⚠ POINTERS ONLY. Resolving GetStaticMesh()->GetName() would build an FString per
+				// offender on a worker; the names are wanted for at most five log lines, so they are
+				// resolved on the game thread below where that is unambiguously safe.
+				if (Ctx.Offenders.Num() < 64)
+				{
+					Ctx.Offenders.Emplace(Instances, Comp);
+				}
+			});
+
+		TArray<TPair<int32, UInstancedStaticMeshComponent*>> Offenders;
+		for (const FDfCtx& Ctx : Contexts)
+		{
+			C.Components += Ctx.Components;
+			C.Missing += Ctx.Missing;
+			C.MissingInstances += Ctx.MissingInstances;
+			Offenders.Append(Ctx.Offenders);
+		}
+
+		const double TRepairStart = FPlatformTime::Seconds();
+		C.AnalyseMs = (TRepairStart - TAnalyseStart) * 1000.0;
+		C.WorkerContexts = Contexts.Num();
+
+		/*
+		 * Phase 3. Serial by necessity — `MarkRenderStateDirty()` is not thread-safe.
+		 *
+		 * ⚠ AND IT WALKS EVERY COMPONENT, NOT THE OFFENDER LIST, WHICH LOOKS WRONG AND IS NOT. Each
+		 * worker context caps its `Offenders` at 64, so that list is a SAMPLE for the "worst" log lines
+		 * and never the complete set. Repairing from it would silently fix the first 64-per-worker and
+		 * leave the rest broken, while the report claimed the world was repaired. Re-testing the flag
+		 * here is one bool compare per component and it is the only way to be complete.
+		 */
+		if (bRepair)
+		{
+			for (UInstancedStaticMeshComponent* Comp : AllComps)
+			{
+				if (Comp == nullptr || Comp->bAffectDistanceFieldLighting) { continue; }
+				Comp->bAffectDistanceFieldLighting = true;
+				Comp->MarkRenderStateDirty();
+				++C.Repaired;
+			}
+		}
+		C.RepairMs = (FPlatformTime::Seconds() - TRepairStart) * 1000.0;
+
+		/*
+		 * Name the biggest offenders by INSTANCE count, not by component count — one component holding
+		 * 4,000 foundations matters more than forty holding one pipe each.
+		 *
+		 * ⚠ THE NAMES ARE RESOLVED HERE AND NOT IN THE WORKER, on purpose. `GetStaticMesh()->GetName()`
+		 * builds an FString and follows a UObject pointer; doing that per offender inside the parallel
+		 * loop would allocate on every worker to produce strings that at most five of are ever printed.
+		 * Phase 2 carries pointers, this carries the cost, and only for the five that survive the sort.
+		 */
+		Offenders.Sort([](const TPair<int32, UInstancedStaticMeshComponent*>& A,
+		                  const TPair<int32, UInstancedStaticMeshComponent*>& B)
 			{ return A.Key > B.Key; });
+
 		for (int32 i = 0; i < FMath::Min(5, Offenders.Num()); ++i)
 		{
-			OutWorstNames.Add(FString::Printf(TEXT("%s x%d"), *Offenders[i].Value, Offenders[i].Key));
+			UInstancedStaticMeshComponent* Comp = Offenders[i].Value;
+			const UStaticMesh* Mesh = Comp != nullptr ? Comp->GetStaticMesh() : nullptr;
+			OutWorstNames.Add(FString::Printf(TEXT("%s x%d"),
+				Mesh != nullptr ? *Mesh->GetName() : TEXT("<no mesh>"), Offenders[i].Key));
 		}
 
 		return C;
+	}
+
+	/**
+	 * ★ WHAT THE PARALLEL PASS ACTUALLY BOUGHT, printed beside every result.
+	 *
+	 * Ant asked for *"the parallise stuff for everything that CAN be done like that"*, and this is the
+	 * half of that request that is easy to skip: proving it. One worker context means the engine ran the
+	 * loop inline on the calling thread and there was no parallelism at all this run.
+	 */
+	void ReportCost(const FFPMDfCount& C)
+	{
+		const double Total = C.GatherMs + C.AnalyseMs + C.RepairMs;
+
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   cost %.1f ms total - gather %.1f (serial, TActorIterator has no parallel form), "
+			     "analyse %.1f across %d worker context(s), repair %.1f (serial, MarkRenderStateDirty is "
+			     "not thread-safe)."),
+			Total, C.GatherMs, C.AnalyseMs, C.WorkerContexts, C.RepairMs);
+
+		UE_CLOG(C.WorkerContexts <= 1, LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   ⚠ %d worker context(s) - the analyse phase ran INLINE on the calling thread, so "
+			     "nothing was parallel this run. Expected when the component count is small."),
+			C.WorkerContexts);
+
+		UE_CLOG(C.WorkerContexts > 1 && C.GatherMs > C.AnalyseMs, LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   ⚠ gather (%.1f ms) cost more than analyse (%.1f ms), so the parallel phase is "
+			     "NOT where this audit spends its time. Parallelising further here would buy little."),
+			C.GatherMs, C.AnalyseMs);
 	}
 
 	void Report(const FFPMDfCount& C, const TArray<FString>& Worst, const TCHAR* When)
@@ -132,21 +265,24 @@ namespace
 				     "distance fields. THE THEORY IS DEAD for this world - rain passing through walls and "
 				     "light leaking on low settings are NOT missing distance fields, and both need a "
 				     "different explanation."), When, C.Components);
+			ReportCost(C);
 			return;
 		}
 
 		UE_LOG(LogFicsitsPerformanceManager, Warning,
 			TEXT("[FPM] distance-field audit (%s): %d of %d instanced mesh component(s) do NOT contribute "
-			     "to distance fields, carrying %d instance(s) between them. AbstractInstance switches this "
-			     "off during lazy load (AbstractInstanceManager.cpp:305) and re-enables it in a one-shot "
-			     "pass when the queues drain (:482-498). Anything still off has missed that pass and is "
-			     "invisible to every distance-field consumer in the renderer."),
+			     "to distance fields, carrying %lld instance(s) between them. AbstractInstance switches "
+			     "this off during lazy load (AbstractInstanceManager.cpp:305) and re-enables it in a "
+			     "one-shot pass when the queues drain (:482-498). Anything still off has missed that pass "
+			     "and is invisible to every distance-field consumer in the renderer."),
 			When, C.Missing, C.Components, C.MissingInstances);
 
 		for (const FString& S : Worst)
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Warning, TEXT("[FPM]   worst: %s"), *S);
 		}
+
+		ReportCost(C);
 
 		if (C.Repaired > 0)
 		{
@@ -162,7 +298,7 @@ namespace
 		}
 
 		FPMOverlay::Post(TEXT("distance-field"),
-			FString::Printf(TEXT("%d/%d components missing DF (%d instances)"),
+			FString::Printf(TEXT("%d/%d components missing DF (%lld instances)"),
 				C.Missing, C.Components, C.MissingInstances));
 	}
 }
