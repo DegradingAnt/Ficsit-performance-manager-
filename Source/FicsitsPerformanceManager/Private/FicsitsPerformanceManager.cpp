@@ -21,6 +21,7 @@
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 #include "Fixes/Interop/FPMTexturePoolGuard.h"
 #include "Fixes/Interop/FPMZiplineVolume.h"
+#include "Core/FPMCrashStamp.h"
 #include "Fixes/Interop/FPMWwiseServerGate.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
@@ -166,6 +167,18 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 		FPMOverlay::Post(TEXT("startup"), FString::Printf(TEXT("FPM %s loaded, %d hook(s) armed"),
 			*VersionName, FPMHookLedger::Records().Num()));
 	}
+
+	/*
+	 * ★ LAST, DELIBERATELY. The crash stamp records the ARMED-FIX ROSTER, so it has to run after every
+	 * Arm() above — stamping earlier would write an empty roster and look like it worked.
+	 *
+	 * P1.1's remaining deliverable (§7.2, the R4-M2a slot). It registers version, side, roster and hook
+	 * counts into the crash context NOW, so a dump identifies FPM without needing FactoryGame.log —
+	 * which after a server crash is usually already rotated away. Its predecessor wrote at crash time
+	 * and went 0-for-3 on access violations in Shipping, because OnHandleSystemError never fires for
+	 * one; this writes ahead of the crash instead.
+	 */
+	FPMCrashStamp::Register(VersionName);
 }
 
 void FFicsitsPerformanceManagerModule::ShutdownModule()
