@@ -39,10 +39,21 @@ namespace
 	 */
 	constexpr double GFPMGCForcedFraction = 0.9;
 
-	/** Live UObject count. Cheap: one array size read. */
+	/**
+	 * ★ CLAIMED object count -- NOT `GetObjectArrayNum()`, and the difference is the whole measurement.
+	 *
+	 * Caught by verifying the API instead of trusting the compile. `GetObjectArrayNum()` says of itself
+	 * *"Returns the size of the global UObject array, some of these might be unused"* (UObjectArray.h:1174)
+	 * -- it is `ObjObjects.Num()`, the ARRAY SIZE, which includes freed slots. A before/after delta taken
+	 * from it can read ZERO across a pass that collected thousands of objects, because the array does not
+	 * shrink. That is a dead instrument: a confident number that cannot move.
+	 *
+	 * `GetObjectArrayNumMinusAvailable()` (:1209) is `ObjObjects.Num() - ObjAvailableList.Num()` --
+	 * "the number of objects claimed". That is what a collection actually changes.
+	 */
 	int32 LiveObjects()
 	{
-		return GUObjectArray.GetObjectArrayNum();
+		return GUObjectArray.GetObjectArrayNumMinusAvailable();
 	}
 
 	float TargetInterval()
@@ -96,11 +107,11 @@ namespace
 		if (FPMDiag::IsOn(FPMDiag::EChannel::GCMeter))
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,
-				TEXT("[FPM] GC #%d: pause %.1f ms | %.1f s since last (target %.1f, %s) | objects %d -> %d "
-				     "| asyncloading=%d"),
+				TEXT("[FPM] GC #%d: pause %.1f ms | %.1f s since last (target %.1f, %s) | claimed objects "
+				     "%d -> %d (%+d) | asyncloading=%d"),
 				GFPMGCPasses, PauseMs, SinceLast, Target,
 				SinceLast < 0.0 ? TEXT("FIRST") : (bForced ? TEXT("FORCED") : TEXT("timer")),
-				GFPMGCObjectsBefore, ObjectsAfter, bAsync ? 1 : 0);
+				GFPMGCObjectsBefore, ObjectsAfter, ObjectsAfter - GFPMGCObjectsBefore, bAsync ? 1 : 0);
 		}
 
 		// A pause this long is a visible stutter, so it is worth the overlay even at low verbosity.
@@ -117,6 +128,22 @@ FFPMGCMeter& FFPMGCMeter::Get()
 	return Instance;
 }
 
+/*
+ * ★ THE DELEGATES DEMONSTRABLY FIRE IN A SHIPPING BUILD, verified from engine bytes rather than assumed:
+ *
+ *     GarbageCollection.cpp:5531   GetPreGarbageCollectDelegate().Broadcast();
+ *     GarbageCollection.cpp:5733   GetPostGarbageCollect().Broadcast();
+ *
+ * Neither sits behind `#if WITH_EDITOR`. The pre-side broadcast is unconditional.
+ *
+ * ⚠ THE POST SIDE HAS ONE GUARD, AND IT IS THE ONE THING THAT COULD KILL THIS INSTRUMENT:
+ *     GarbageCollection.cpp:5729   if (!GIsIncrementalReachabilityPending)
+ * With incremental reachability enabled, a pass can end without broadcasting -- the meter would then
+ * count a pre with no post and silently under-report. It is BANNED on this build (setting
+ * gc.AllowIncrementalReachability 1 crashed Ant's save in 34 s, and FPM2 ships no switch for it), so
+ * the guard is satisfied today. Recorded because it is a dependency, not a certainty: if that ban is
+ * ever lifted, this meter needs a pre-without-post counter before it can be trusted again.
+ */
 void FFPMGCMeter::Arm()
 {
 	GFPMGCPreHandle = FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddStatic(&OnPreGC);
@@ -169,7 +196,7 @@ void FFPMGCMeter::ReportNow()
 	}
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] gc-meter: %d pass(es) - mean %.1f ms, worst %.1f ms, %.1f ms total. %d live object(s)."),
+		TEXT("[FPM] gc-meter: %d pass(es) - mean %.1f ms, worst %.1f ms, %.1f ms total. %d claimed object(s)."),
 		GFPMGCPasses, GFPMGCTotalMs / GFPMGCPasses, GFPMGCWorstMs, GFPMGCTotalMs, LiveObjects());
 
 	/*
