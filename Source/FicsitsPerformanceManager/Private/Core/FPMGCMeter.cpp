@@ -21,7 +21,20 @@ namespace
 	int32 GFPMGCPasses = 0;
 	int32 GFPMGCForced = 0;          // arrived well before the timer was due
 	int32 GFPMGCTimer = 0;           // arrived at or after the timer
-	int32 GFPMGCDuringAsyncLoad = 0; // the engine normally skips GC while async loading
+	/**
+	 * ★ PASSES THAT RAN DURING ASYNC LOADING -- and this looks like a dead counter until you read WHICH
+	 * path carries the gate.
+	 *
+	 * `UnrealEngine.cpp:2017` gates the TIMER-driven pass on
+	 * `if (GPerformGCWhileAsyncLoading || !IsAsyncLoading())`, and that flag defaults to 0 (`:1664`). So
+	 * a timer pass can never land during a stream, and this would be structurally zero if timer passes
+	 * were the only kind.
+	 *
+	 * They are not. A FORCED `CollectGarbage()` does not go through that gate. So a non-zero here means
+	 * a forced stop-the-world pause landed ON TOP OF a streaming stall -- which is exactly the shape of
+	 * Ant's "hitches moving fast through the world", and is worth far more than the count suggests.
+	 */
+	int32 GFPMGCDuringAsyncLoad = 0;
 	double GFPMGCTotalMs = 0.0;
 	double GFPMGCWorstMs = 0.0;
 	double GFPMGCWorstAtSeconds = 0.0;
@@ -196,8 +209,11 @@ void FFPMGCMeter::ReportNow()
 	}
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] gc-meter: %d pass(es) - mean %.1f ms, worst %.1f ms, %.1f ms total. %d claimed object(s)."),
-		GFPMGCPasses, GFPMGCTotalMs / GFPMGCPasses, GFPMGCWorstMs, GFPMGCTotalMs, LiveObjects());
+		TEXT("[FPM] gc-meter: %d pass(es) - mean %.1f ms, worst %.1f ms (%.0f s ago), %.1f ms total. "
+		     "%d claimed object(s)."),
+		GFPMGCPasses, GFPMGCTotalMs / GFPMGCPasses, GFPMGCWorstMs,
+		GFPMGCWorstAtSeconds > 0.0 ? FPlatformTime::Seconds() - GFPMGCWorstAtSeconds : -1.0,
+		GFPMGCTotalMs, LiveObjects());
 
 	/*
 	 * ★ THE LINE THAT DECIDES THE NEXT FIX. Raising the purge interval only stretches TIMER passes. If
@@ -216,9 +232,10 @@ void FFPMGCMeter::ReportNow()
 	}
 
 	UE_CLOG(GFPMGCDuringAsyncLoad > 0, LogFicsitsPerformanceManager, Warning,
-		TEXT("[FPM]   %d pass(es) ran DURING async loading. The engine normally skips GC while async "
-		     "loading, so this is unexpected and worth chasing - it would put a stop-the-world pause on "
-		     "top of a streaming stall, which is exactly the 'hitches moving fast' shape."),
+		TEXT("[FPM]   %d pass(es) ran DURING async loading. The TIMER path cannot do this - it is gated on "
+		     "!IsAsyncLoading() (UnrealEngine.cpp:2017, GPerformGCWhileAsyncLoading defaults 0 at :1664) - "
+		     "so every one of these was a FORCED collection landing on top of a streaming stall. That is "
+		     "the 'hitches moving fast through the world' shape, and it is the highest-value lead here."),
 		GFPMGCDuringAsyncLoad);
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
