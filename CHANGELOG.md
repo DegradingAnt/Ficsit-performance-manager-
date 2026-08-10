@@ -62,6 +62,40 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 08:40 — VERSION — 0.7.0 → 0.8.0
+
+- **What:** MINOR bump. `VersionName` / `SemVersion` / `RemoteVersionRange` in the `.uplugin`, and the
+  `Description` rewritten to the real roster — **20 armed fixes**, up from the eighteen 0.7.0 claimed.
+- **Why MINOR and not PATCH.** The house test is *"would a player notice this while just playing, with
+  the console closed?"* Most of this wave fails that test on its own: the crash stamp, the power probe
+  and the distance-field audit are console- and log-only, and `FPMEnclosure` currently has no consumers
+  so it does not run at all. **One item passes it and carries the bump alone: the schematic null-guard.**
+  It changes a vanilla answer and prevents the largest crash-to-desktop class in the dump corpus — a
+  player notices not crashing.
+- **What the wave carries** (15 commits since `829d226`):
+  - `schematic-null-guard` — **the only player-visible one.** Refuses schematic access when the game is
+    about to read a null event subsystem. Blast radius measured at 18 FICSMAS schematics of 1,455, so it
+    is structurally incapable of touching a HUB tier or a MAM node.
+  - `power-warning-probe` — reads circuit state to answer whether the "Fuse Blown" popup is lying.
+    Deliberately no hook: the emitter is a `BlueprintNativeEvent` with an empty native body.
+  - `distance-field-audit` — counts instanced meshes the renderer cannot see. Audit only; the repair is
+    behind `FPM.DistanceField.Repair`, default 0, because it adds renderer work.
+  - `FPMCrashStamp` — a dump now names FPM's version, side, roster and hook count without the log.
+  - `FPMEnclosure` — the one shared "am I inside" check. **No consumers yet, so it never runs.**
+  - Repo structure: README, LICENSE, CONTRIBUTING, `tools/check_structure.py`, the real NOX art, and
+    four `.uplugin` defects fixed including a `GameVersion` that had been stale since July.
+  - A `vox-review` pass over all of it: one blocker, one high, three medium, all fixed.
+- **Files:** `FicsitsPerformanceManager.uplugin` (4 fields).
+- **Revert:** restore the four fields to `0.7.0`. Only while 0.8.0 is unpackaged — once a build ships
+  under this number it is spent.
+- **Verified:** `check_structure.py` — 20 fixes, 0 errors, 0 warnings. Module builds clean. **NOT
+  packaged, NOT deployed, NOT boot-tested.**
+- **⚠ SML enforces exact-equality parity on `RequiredOnRemote` mods.** `RemoteVersionRange` is now
+  `=0.8.0`, so client and server must be deployed TOGETHER or the join is refused. The deployed pair is
+  still the 04:53 packages, which predate every commit in this wave.
+
+---
+
 ## 2026-08-10 07:10 — SPEC — repository structure brought to the community standard, and a checker so it stays there
 
 - **What:** Added `README.md`, `LICENSE` (GPL-3.0 text) and `CONTRIBUTING.md`. Fixed four `.uplugin`
