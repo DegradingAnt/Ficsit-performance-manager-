@@ -70,6 +70,25 @@
  * passed through untouched. In the case where it DOES refuse, vanilla's alternative was not a different
  * answer — it was the access violation.
  *
+ * ★ THE BLAST RADIUS IS FOURTEEN SCHEMATICS, AND THEY ARE ALL FICSMAS. MEASURED, NOT ARGUED.
+ *
+ * Ant asked the right question of this fix: *"that milestone guard needs to not break anything like it
+ * did last time."* Counted from the game export on 2026-08-10
+ * (`20-SOURCES/satisfactory/fmodel-exports/.../Content/FactoryGame/Schematics`): **1,455 schematic
+ * assets exist, and exactly 14 declare a non-empty `mRelevantEvents`.** All fourteen are the
+ * `Research/XMas_RS` tree, and all fourteen name the same event, `EV_Christmas`. The modded schematic
+ * trees present in the export (CatwalkLadders, ContentLib) declare **zero**.
+ *
+ * The refusal condition requires a non-empty event list, so this guard is STRUCTURALLY INCAPABLE of
+ * touching a HUB tier, a MAM research node, or any ordinary milestone — they declare no events, so the
+ * branch cannot be reached for them however broken the world is. The 0.58.51 lockout
+ * (*"i cant input stuff into the HUB for milestones"*) came from a guard that refused on a null world
+ * context, which every caller can legitimately pass. This one cannot reproduce that shape.
+ *
+ * And for the fourteen it CAN refuse: a FICSMAS schematic is event-gated by vanilla anyway, and the
+ * guard only fires when the event subsystem does not exist — which is precisely the state where vanilla
+ * cannot answer the question either, and was about to crash trying.
+ *
  * ⚠ AND THE EXCLUDED CASE IS COUNTED, SO THE REASONING ABOVE IS FALSIFIABLE. If a schematic has a null
  * event subsystem and NO relevant events, this guard passes it through and increments
  * `PassedEventlessWithNullSubsystem`. Should a `0x2c0` crash ever land while that counter is non-zero,
