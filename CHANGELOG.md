@@ -43,6 +43,7 @@ By the player-notice test:
 | change | bump | why |
 |---|---|---|
 | a fix that stops a crash or a stutter | MINOR | she feels it |
+
 | a governor that moves her settings | MINOR | she sees it |
 | debug console commands, diagnostics, probes | **PATCH** | invisible unless you open the console |
 | repairs to an existing surface | **PATCH** | it already existed, it just works now |
@@ -61,6 +62,58 @@ descriptor, so there is no second place to bump and no way for the log line to d
 Entries since the last `VERSION` line are the draft release notes for the next ficsit.app upload.
 
 ---
+
+## 2026-08-10 20:45 — CODE — the distance-field audit was blaming dead code, and its repair was unsound
+
+- **What:** `0.11.4` → `0.11.5`. The audit read `AAbstractInstanceManager::InstanceMap` (new access
+  transformer) and now splits the missing set four ways instead of reporting one number:
+  AUTHORED-OFF · LAZY-POISONED · SHOULD-CONTRIBUTE · FOREIGN. Only SHOULD-CONTRIBUTE is a defect, and
+  `FPM.DistanceField.Repair` now touches only that bucket — and refuses outright when no manager was
+  found, because repairing what you cannot classify is guessing. Headline demoted `Warning` → `Display`.
+  The trend follows the defect count rather than the raw count. The overlay shows the defect count. The
+  `Arm()` schedule string is built from the array instead of hardcoded.
+
+- **Why:** every claim the audit printed about causation was false on this build. It blamed
+  AbstractInstance's lazy-load path (`:305`, `:827`, one-shot re-enable at `:488-499`) — but that path
+  is gated on `lightweightinstances.AllowLazySpawn`, which ships **0** with CSS's own comment
+  `"(Temp disabled.)"` and is not overridden anywhere in the cooked config. With the cvar at 0, a
+  cleared flag means `InstanceData.bCastDistanceFieldShadows == false`, which is a
+  `UPROPERTY(EditDefaultsOnly)` **content decision** (`InstanceData.h:67`).
+
+  ⚠ **The repair would have overridden about a million instances of that decision.** It set the flag on
+  every component it found clear — ~20,000 components / ~1,042,346 instances on Ant's save, against a
+  GPU measured at 98% — and reported `REPAIRED n` either way. It shipped off by default, so it never
+  ran. That is luck, not design.
+
+  The "RISING" trend was also a numerator without a denominator: measured 3444/10771 → 3273/10227
+  (31.97% → 32.00%) in one session and 19769/53287 → 19996/53557 (37.10% → 37.34%) in another. One fell,
+  one rose, both ratios sat still. It was tracking the player walking toward their factory.
+
+  A genuine bug does exist in the dead path and is now DETECTED rather than assumed: the re-enable at
+  `:489` gates on `entryPair.Value.bCastDistanceFieldShadows`, the very field lazy loading clears, so it
+  can only skip what it exists to repair. Unreachable while the cvar is 0; the LAZY-POISONED bucket is
+  non-zero if that ever changes.
+
+- **Files:** `Public/Fixes/Interop/FPMDistanceFieldAudit.h`,
+  `Private/Fixes/Interop/FPMDistanceFieldAudit.cpp`, `Config/AccessTransformers.ini`,
+  `FicsitsPerformanceManager.uplugin` (0.11.4 → 0.11.5, Description). Reasoning:
+  `10-DOCS/satisfactory/DESIGN-P3.9-DISTANCE-FIELD-RESOLVED-2026-08-10.md`.
+
+- **Revert:** `git revert` this commit. Undo it only if the four-way split proves wrong about which
+  bucket a component belongs in — reverting restores one conflated number AND the unsound repair path.
+
+- **Verified:** build-only. `Build.bat FactoryEditor Win64 Development` → `Result: Succeeded`, zero
+  warnings. The access transformer is receipted from bytes:
+  `Plugins/AbstractInstance/Intermediate/Build/Win64/UnrealEditor/Inc/AbstractInstance/UHT/AbstractInstanceManager.generated.h:82`
+  now reads `friend class FFPMDistanceFieldAudit;`, regenerated 2026-08-10 20:31:49. **NOT BOOTED** —
+  the buckets are unmeasured in game. Expect AUTHORED-OFF to dominate and SHOULD-CONTRIBUTE to be 0; if
+  it is 0, the distance-field explanation dies for all three symptoms it was covering.
+
+- **⚠ Note for `AccessTransformers.ini`:** this is the first entry there targeting a non-FactoryGame
+  class, and it proves the file's stated rule was a proxy for a narrower one. A `Friend=` works wherever
+  **this project's UHT regenerates** the target's generated header. AbstractInstance's is dated
+  2026-08-03/2026-08-10; the engine's are dated 2026-06-02 and ship with the install, which is why the
+  two engine entries removed earlier today were inert from the day they were written.
 
 ## 2026-08-10 20:15 — CODE — name the caller behind 431 rejected SetMeshes calls
 

@@ -5,6 +5,24 @@
 #include "CoreMinimal.h"
 #include "Core/FPMFixContract.h"
 
+class UInstancedStaticMeshComponent;
+
+/**
+ * Where a component's distance-field state CAME FROM, which is the difference between a content
+ * decision and a defect. See the class comment for why one number could not tell them apart.
+ */
+enum class EFPMDfProvenance : uint8
+{
+	/** Not owned by any AAbstractInstanceManager. Not judged, never repaired. */
+	Foreign = 0,
+	/** `InstanceData.bCastDistanceFieldShadows == false`. Authored off on purpose. Leave it. */
+	AuthoredOff,
+	/** Authored true, stored false — lazy loading poisoned it. Expected to be 0 on this build. */
+	LazyPoisoned,
+	/** Authored true, stored true. If the renderer flag is still clear, that is the real defect. */
+	ShouldContribute,
+};
+
 /**
  * DO THE PLAYER'S BUILDINGS HAVE DISTANCE FIELDS? COUNT THEM, DO NOT ASSUME.
  *
@@ -21,33 +39,69 @@
  * A single mechanism would explain all three, and it is cheap to test. That convergence is the argument
  * for looking here first rather than building three fixes.
  *
- * ★ THE MECHANISM, READ FROM ABSTRACTINSTANCE'S OWN SOURCE.
+ * ⚠⚠ THE LAZY-LOAD MECHANISM THIS FILE ORIGINALLY BLAMED IS SWITCHED OFF, AND EVERY VERSION BEFORE
+ * 2026-08-10 ASSERTED IT ANYWAY — IN THE LOG, TO ANT, ONCE PER SAMPLE.
  *
- * Lightweight buildables — every ordinary foundation and wall since 1.0 — are instanced meshes owned by
- * `AAbstractInstanceManager`, and their distance-field contribution is switched OFF while the world
- * lazy-loads:
+ * The story was: lightweight buildables get distance fields disabled during lazy load
+ * (`AbstractInstanceManager.cpp:305`, `:827`) and re-enabled by a one-shot pass when the queues drain
+ * (`:488-499`), so anything still `false` afterwards MISSED that pass. It is coherent, the line numbers
+ * are real, and there is even a genuine self-defeating bug inside it — the re-enable at `:489` is gated
+ * on `entryPair.Value.bCastDistanceFieldShadows`, the very field lazy loading forces to false, so that
+ * pass provably cannot repair what it exists to repair.
  *
- *     AbstractInstanceManager.cpp:827   bEnableDistanceFieldShadows = !bIsLazyLoading
- *                                                                     && InstanceData.bCastDistanceFieldShadows
- *     AbstractInstanceManager.cpp:305   newMeshComp->bAffectDistanceFieldLighting = bCastDistanceFieldShadows;
- *                                       // "distance fields are enabled after lazy loading."
+ * **None of it executes.** The gate is a console variable that ships OFF:
  *
- * and switched back on by a ONE-SHOT pass inside `AAbstractInstanceManager::Tick` (`:433`), which fires
- * on the single tick where both lazy queues happen to be empty:
+ *     AbstractInstanceManager.cpp        TAutoConsoleVariable<int32> CVarAllowLazySpawning(
+ *                                            TEXT("lightweightinstances.AllowLazySpawn"), 0,
+ *                                            TEXT("... (Temp disabled.)"), ECVF_Default );
+ *     AbstractInstanceManager.cpp:792    bAllowLazySpawn = CVarAllowLazySpawning.GetValueOnGameThread() == 1;
  *
- *     AbstractInstanceManager.cpp:482   if ( PriorityLazyLoadTasks.IsEmpty() && LazyLoadTasks.IsEmpty() )
- *     AbstractInstanceManager.cpp:493       MeshComp->bAffectDistanceFieldLighting = true;
- *                                           MeshComp->MarkRenderStateDirty();
- *     AbstractInstanceManager.cpp:498       bAllowLazySpawn = false;
+ * Verified not overridden anywhere in the cooked config, searched with `r.Nanite.Streaming.
+ * StreamingPoolSize=50` (`DefaultEngine.ini:47`) as the known-positive liveness test — so that zero is
+ * a measurement and not a broken grep. With the cvar at 0, `bIsLazyLoading` is always false and `:827`
+ * reduces to `bEnableDistanceFieldShadows = InstanceData.bCastDistanceFieldShadows`.
  *
- * The default intent is ON — `InstanceData.h:67` has `bCastDistanceFieldShadows = true`. So any
- * component still sitting at `false` after loading has MISSED that pass, and is invisible to every
- * distance-field consumer in the renderer for the rest of the session.
+ * ★ SO A COMPONENT SITTING AT `false` IS ALMOST CERTAINLY AUTHORED THAT WAY.
+ * `InstanceData.h:63-67` — `UPROPERTY( EditDefaultsOnly ) bool bCastDistanceFieldShadows = true;` — is
+ * a per-mesh CONTENT setting. `true` is only the default, and CSS turning it off on a decorative mesh
+ * is a deliberate cost decision rather than a bug. Ant's save measures 32-37% of components at `false`;
+ * "repairing" a million authored-off instances would have overridden that decision wholesale, against a
+ * GPU already reading 98%.
  *
- * ⚠ WHETHER THAT ACTUALLY HAPPENS IN ANT'S WORLD IS EXACTLY WHAT IS UNKNOWN, and reading more of
- * vanilla's code cannot settle it — the answer depends on streaming order in a specific save. So this
- * counts. A count of zero kills the theory outright and is a good result; a count above zero names the
- * bug and the meshes it affects.
+ * ★ WHICH IS WHY THIS AUDIT SEPARATES FOUR POPULATIONS INSTEAD OF COUNTING ONE.
+ * A single "N missing" number conflates content authoring with a defect and cannot be acted on either
+ * way. Reading `AAbstractInstanceManager::InstanceMap` supplies the authored intent per component:
+ *
+ *   AUTHORED-OFF       authored false. Correct, expected, left alone. Also the LIVENESS PROOF for the
+ *                      map read — a non-zero here is what shows the provenance lookup worked at all.
+ *   LAZY-POISONED      authored true, but AbstractInstance stored false. The bug above, directly
+ *                      observed. Expected to be 0 while the cvar is 0; non-zero means it got turned on.
+ *   SHOULD-CONTRIBUTE  authored true, stored true, renderer flag still false. A genuine defect, and the
+ *                      only bucket this will ever repair. **STRUCTURALLY ZERO ON THIS BUILD — see below.**
+ *   FOREIGN            not owned by any `AAbstractInstanceManager`. Another mod's or the engine's
+ *                      instanced meshes. Provenance unknown, so NOT judged and NOT repaired.
+ *
+ * ★ AND THE DEFECT BUCKET CANNOT FIRE AS THE CODE STANDS, WHICH IS A PROOF RATHER THAN A DISAPPOINTMENT.
+ *
+ * Every writer of `bAffectDistanceFieldLighting` reachable on this build, enumerated 2026-08-10:
+ *
+ *     AbstractInstanceManager.cpp:305                 = bCastDistanceFieldShadows  (at creation)
+ *     AbstractInstanceManager.cpp:493                 = true                       (the dead lazy pass)
+ *     FGBuildable.cpp:2314, :2350                     = false   USplineMeshComponent
+ *     FGBuildable.cpp:2372, :2391, :2410              = false   UStaticMeshComponent
+ *     FGProductionIndicatorInstanceComponent.cpp:14   = false   UFGColoredInstanceMeshProxy
+ *                                                               (: UStaticMeshComponent)
+ *
+ * The bottom six are on types that are **not** `UInstancedStaticMeshComponent`, so this audit — which
+ * gathers `GetComponents<UInstancedStaticMeshComponent>` — cannot see them. On a component it CAN see,
+ * only the top two apply, and both set `true` for an authored-true mesh. Nothing clears it afterwards.
+ *
+ * ⚠ SO A ZERO HERE IS EXPECTED AND MEANS NOTHING ABOUT ANT'S WORLD. The report says exactly that rather
+ * than printing "the theory is dead", which would read as evidence gathered in her save when it is a
+ * fact about the source. **The distance-field explanation for rain-through-walls, light-through-terrain
+ * and DF shadow pop-in is dead BY CONSTRUCTION; no boot was ever going to settle it.**
+ *
+ * The bucket stays because it is what would notice a THIRD writer appearing in a future game patch.
  *
  * ★ IT AUDITS. IT DOES NOT REPAIR UNLESS ASKED, AND THAT IS A PERFORMANCE DECISION.
  *
@@ -58,6 +112,12 @@
  *
  * So the repair is behind `FPM.DistanceField.Repair`, default **0**, and when it does run it reports
  * how many components it touched so the cost has a number attached rather than a shrug.
+ *
+ * ⚠ AND UNTIL 2026-08-10 THAT REPAIR WAS UNSOUND, NOT MERELY EXPENSIVE. It walked every component with
+ * the flag clear and set it — which on Ant's save is about a million instances that CSS authored off on
+ * purpose. Turning the cvar on would not have "fixed" anything; it would have silently overridden the
+ * game's own content decisions. It is now restricted to SHOULD-CONTRIBUTE, and it refuses to run at all
+ * when provenance could not be established, because repairing what you cannot classify is guessing.
  *
  * VIEWER BY DEFAULT: it reads component flags and prints. No hook, no console-variable write, no ini.
  */
@@ -88,4 +148,28 @@ public:
 
 	/** `FPM.DistanceField.Audit` — count now and report. */
 	static void AuditNow();
+
+	/**
+	 * ★ THE ONLY PLACE THAT TOUCHES `AAbstractInstanceManager`'s PROTECTED `InstanceMap`, AND IT HAS TO
+	 * BE A MEMBER OF THIS CLASS.
+	 *
+	 * `AccessTransformers.ini` friends a CLASS. A free function in an anonymous namespace is a member of
+	 * nothing and inherits no access — `FFPMPowerWarningProbe` learned this the same way, and the
+	 * compiler names the field rather than the reason (`error C2248: cannot access protected member`).
+	 *
+	 * GAME THREAD ONLY. It walks actors, so it cannot run beside the parallel analyse phase; it is
+	 * called during GATHER and the resulting map is then read-only for the rest of the audit.
+	 *
+	 * ⚠ NO COMPONENT POINTER IS DEREFERENCED HERE — they go in as keys and nothing else. The map is a
+	 * lookup table, so a stale key can only ever fail to match, never crash.
+	 *
+	 * @param OutProvenance  filled with one entry per component AbstractInstance owns. Components absent
+	 *                       from it are `Foreign` by definition, so nothing writes that value.
+	 * @return how many `AAbstractInstanceManager` actors were found. **Zero means provenance is UNKNOWN
+	 *         for the whole world**, which is not the same as "everything is foreign" — the report and
+	 *         the repair both have to treat it as not-measured, or an absent manager reads as a clean
+	 *         bill of health.
+	 */
+	static int32 BuildProvenance(UWorld* World,
+	                             TMap<const UInstancedStaticMeshComponent*, EFPMDfProvenance>& OutProvenance);
 };
