@@ -62,6 +62,51 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 06:30 — CODE — P3.10(a) schematic null-guard, built against the corpus and NOT against the design line
+
+- **What:** New `FFPMSchematicNullGuard` (`Fixes/Interop/FPMSchematicNullGuard.{h,cpp}`) on
+  `UFGSchematic::CanGiveAccessToSchematic`. Refuses (`Scope.Override(false)`) when the schematic
+  declares relevant events **and** `AFGEventSubsystem::GetEventSubsystem(worldContext)` is null. Keeps
+  the design's null-class / null-CDO checks beside it. New `SchematicGuard` diag channel, a BEHAVIOUR
+  cvar `FPM.SchematicGuard`, and `FPM.SchematicGuard.Status`.
+- **Why:** ⚠ **THE DESIGN'S SPEC FOR THIS FIX IS REFUTED BY OUR OWN CRASH DUMPS.** P3.10(a) asks for
+  "a null/CDO check on the TSubclassOf argument" with "6/6 dump coverage". Re-derived from the 57 dumps
+  on disk 2026-08-10: **19** carry `UFGSchematic::CanGiveAccessToSchematic` as **frame 0** under
+  `EXCEPTION_ACCESS_VIOLATION reading 0x2c0` — and FPM1 **0.58.52 already shipped exactly that check**
+  (`Scope.Override(false)` on `!InClass || GetDefaultObject(false)==nullptr`), with **14** of the 19
+  dumps landing on builds after it (.53 .55 .61×2 .62×2 .66 .68 .71×6). The stacks show FPM's
+  pass-through frames BELOW vanilla's frame 0 — the guard tested the arguments, found them sound, and
+  handed off. FPM1's own file already recorded the conclusion: *"Every argument was sound. The null
+  lives INSIDE vanilla's body."* Shipping the specified check verbatim would have shipped a fix already
+  proven inert, carrying a receipt for a class it has never caught.
+  **The real condition, from three witnesses:** `FGSchematic.h:158` says the function "checks for
+  events"; `FGEventSubsystem.h:127-136` shows `Get()` returning null and `IsEventActive` reading
+  `mCurrentEvents` off `this` (a member read off null = `0x2c0`); and **12 of the 19 dumps record
+  `GameStateName = FGMainMenuState`** — the main-menu world, which has no event subsystem. The other
+  seven are in-world with uptimes clustering at 32-103 s, i.e. the join transition.
+- **Files:** `Fixes/Interop/FPMSchematicNullGuard.{h,cpp}` (new), `Core/FPMDiag.{h,cpp}` (channel +
+  cvar + array + name switch), `FicsitsPerformanceManager.cpp` (include + Arm).
+- **Revert:** `FPM.SchematicGuard 0` disables the refusal at runtime with no rebuild; to remove
+  entirely, drop the `FPMFixes::Arm(FFPMSchematicNullGuard::Get())` line.
+- **Verified:** build-only (`Build.bat FactoryEditor -Module=FicsitsPerformanceManager`, Succeeded,
+  23.69 s). NOT boot-tested.
+- **⚠ ARM ORDER IS CORRECTNESS, NOT STYLE.** It arms AFTER `FFPMSchematicProbe`, because
+  `TCallScope::Override` sets `bForwardCall = false` and thereby skips every handler registered later
+  (`NativeHookManager.h:216-228`). Guard-first would silence the probe on exactly the calls worth
+  observing.
+- **⚠ WHY IT REFUSES SO NARROWLY.** A blanket "refuse whenever the subsystem is null" can refuse a
+  grant vanilla would have answered fine — the milestone-lockout Ant hit on FPM1 0.58.51 (*"i cant
+  input stuff into the HUB for milestones"*). That file's own ruling stands: *"the crash was survivable
+  by rebooting, an unusable HUB is not."* So it refuses only the combination that must dereference.
+- **★ THE NARROWING IS FALSIFIABLE ON PURPOSE.** A null subsystem on a schematic with NO relevant
+  events is passed through and counted as `PassedEventless`. If a `0x2c0` crash lands while that
+  counter is non-zero, the reasoning here is dead by measurement and the guard must widen to refuse on
+  a null subsystem alone. `FPM.SchematicGuard.Status` prints it and says so in the log.
+- **Origin status is `Guard`, deliberately NOT `OriginNamed`** despite three converging witnesses:
+  vanilla's body has not been read, so this is a strong lead, not a receipt.
+
+---
+
 ## 2026-08-10 00:40 — CODE — Wwise server audio gate: re-port of a fix the rewrite orphaned
 
 - **What:** New `FFPMWwiseServerGate` (`Fixes/Interop/FPMWwiseServerGate.{h,cpp}`). On a DEDICATED

@@ -17,6 +17,7 @@
 #include "Fixes/Interop/FPMNavMeshCeiling.h"
 #include "Fixes/Interop/FPMRailConnectionGuard.h"
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
+#include "Fixes/Interop/FPMSchematicNullGuard.h"
 #include "Fixes/Interop/FPMSchematicProbe.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 #include "Fixes/Interop/FPMTexturePoolGuard.h"
@@ -125,6 +126,22 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// breaks and why". It overrides nothing - the crash dumps show this is a VANILLA crash (one has
 	// neither FPM nor KPrivateCodeLib on the stack), so there is nothing here for us to guard yet.
 	FPMFixes::Arm(FFPMSchematicProbe::Get());
+
+	/*
+	 * ★ P3.10(a), AND IT MUST ARM AFTER THE PROBE ABOVE. NOT A STYLE PREFERENCE — A CORRECTNESS ONE.
+	 *
+	 * SML chains handlers on a target in registration order, and `TCallScope::Override` sets
+	 * `bForwardCall = false`, which stops the chain: every handler registered LATER is skipped
+	 * (NativeHookManager.h:216-228). Both of these sit on UFGSchematic::CanGiveAccessToSchematic. Arm
+	 * the guard first and it would silence the probe on precisely the calls worth observing — the
+	 * refusals. The probe never overrides, so probe-then-guard preserves both instruments.
+	 *
+	 * ⚠ IT IS NOT THE FIX THE DESIGN SPECIFIES, AND THE HEADER SAYS WHY AT LENGTH. The design's
+	 * argument-only check shipped as FPM1 0.58.52 and fourteen crashes of this class followed it. This
+	 * refuses on the condition all nineteen dumps actually share: relevant events declared with no event
+	 * subsystem to evaluate them against.
+	 */
+	FPMFixes::Arm(FFPMSchematicNullGuard::Get());
 
 	// MEASUREMENT ONLY, AND IT INSTALLS NO HOOKS - it subscribes to two engine delegates and a ticker, so it
 	// will not appear in the hook ledger below. Armed here because Ant's hitches (2026-08-09) had no

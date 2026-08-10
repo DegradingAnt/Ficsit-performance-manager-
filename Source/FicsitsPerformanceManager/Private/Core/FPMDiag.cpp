@@ -140,6 +140,15 @@ static TAutoConsoleVariable<int32> CVarDiagWwiseGate(
 	     "sparse - the entire point of this gate is to stop writing a line per call."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagSchematicGuard(
+	TEXT("FPM.Diag.SchematicGuard"), 1,
+	TEXT("Schematic access refused because vanilla was about to dereference a null event subsystem. "
+	     "0 = silent, 1 = first sighting of each schematic plus a throttled sample of the rest, AND every "
+	     "eventless pass-through - that last one is the line that can falsify the guard's narrowing, so it "
+	     "is not held back for level 2. ⚠ This changes what is PRINTED. FPM.SchematicGuard changes what "
+	     "the guard DOES - different things, deliberately different names."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -161,6 +170,7 @@ namespace
 		&CVarDiagTexturePool,
 		&CVarDiagWireGuard,
 		&CVarDiagWwiseGate,
+		&CVarDiagSchematicGuard,
 	};
 
 	/*
@@ -196,6 +206,7 @@ namespace
 		case FPMDiag::EChannel::TexturePool:    return TEXT("FPM.Diag.TexturePool");
 		case FPMDiag::EChannel::WireGuard:      return TEXT("FPM.Diag.WireGuard");
 		case FPMDiag::EChannel::WwiseGate:      return TEXT("FPM.Diag.WwiseGate");
+		case FPMDiag::EChannel::SchematicGuard: return TEXT("FPM.Diag.SchematicGuard");
 		default:                                return TEXT("<unknown>");
 		}
 	}

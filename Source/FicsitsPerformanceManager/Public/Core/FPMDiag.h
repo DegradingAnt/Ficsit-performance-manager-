@@ -74,6 +74,7 @@ public:
 		TexturePool,      // FPM.Diag.TexturePool — the card-sized streaming pool
 		WireGuard,        // FPM.Diag.WireGuard — null mWires entries, found before the save walks them
 		WwiseGate,        // FPM.Diag.WwiseGate — StopActor no-ops suppressed on a dedicated server
+		SchematicGuard,   // FPM.Diag.SchematicGuard — schematic access refused when the event subsystem is null
 		Count
 	};
 
