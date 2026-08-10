@@ -222,6 +222,14 @@ static TAutoConsoleVariable<int32> CVarDiagMaterialEffect(
 	     "reads as complete coverage. FPM.MaterialEffect.Report prints the ranking."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagSettings(
+	TEXT("FPM.Diag.Settings"), 1,
+	TEXT("FPM's own UFGUserSetting rows. 0 = silent, 1 = the boot row audit. It prints FPM's row count "
+	     "AND the game-wide FGUserSetting count separately, because those answer different questions: a "
+	     "zero for ours with a healthy game-wide total means we shipped none, while zero for BOTH means "
+	     "the asset scan is broken and no count from it means anything."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -254,6 +262,7 @@ namespace
 		&CVarDiagGlassQuality,
 		&CVarDiagNaniteStreaming,
 		&CVarDiagMaterialEffect,
+		&CVarDiagSettings,
 	};
 
 	/*
@@ -300,6 +309,7 @@ namespace
 		case FPMDiag::EChannel::GlassQuality:   return TEXT("FPM.Diag.GlassQuality");
 		case FPMDiag::EChannel::NaniteStreaming: return TEXT("FPM.Diag.NaniteStreaming");
 		case FPMDiag::EChannel::MaterialEffect: return TEXT("FPM.Diag.MaterialEffect");
+		case FPMDiag::EChannel::Settings:       return TEXT("FPM.Diag.Settings");
 		default:                                return TEXT("<unknown>");
 		}
 	}

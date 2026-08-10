@@ -63,6 +63,49 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 21:45 — CODE — P4 opens with its instrument, before the thing it measures exists
+
+- **What:** `0.11.6` → `0.11.7`. `FFPMSettingsAudit` (`Core/`), a new `FPMDiag::EChannel::Settings`
+  + `FPM.Diag.Settings`, and `FPM.Settings.Report`. Armed from `StartupModule`; audits 10 s after each
+  world load. **PATCH, not minor** — by this file's own test, Ant would notice nothing while playing
+  with the console closed.
+
+- **Why:** P4 (`_DESIGN-R2:1566-1575`) needs `UFGUserSetting` rows, which are `.uasset` content and
+  therefore editor work — Ant's, not mine. The failure this guards is the one `sf-scaffold` records as
+  **unbounded**: if the asset registry lacks the scan path at `StartupModule` the scan yields nothing
+  FOREVER, the rescan path is `#if WITH_EDITOR` only (`AssetManager.cpp:1046-1060`), and in a cooked
+  build the options menu is simply, silently empty. Shipping the meter first means her first authored
+  row is verified on the next boot, instead of a dozen rows written against an enumeration nobody
+  checked.
+
+  ★ **It prints TWO counts, and that is the whole design.** A single "0 rows" cannot tell *we shipped
+  none* from *the scan is broken*. So: FPM's count AND the game-wide `FGUserSetting` count. Vanilla
+  ships many rows, so a game-wide zero is a statement about the instrument — the report calls that
+  **NOT MEASURED** rather than a pass. Same liveness-proof shape as `FPMCVarWriter` proving its release
+  path on a probe cvar every boot.
+
+  **The plumbing was verified from bytes first and is already correct.**
+  `Content/FicsitsPerformanceManager.uasset` carries `PrimaryAssetTypesToScan` pairing `FGUserSetting`
+  with `/FicsitsPerformanceManager/Settings`. Nothing needed adding; `Content/Settings/` just does not
+  exist yet.
+
+- **Files:** `Public/Core/FPMSettingsAudit.h`, `Private/Core/FPMSettingsAudit.cpp`,
+  `Public/Core/FPMDiag.h`, `Private/Core/FPMDiag.cpp` (channel + cvar + `ChannelName` case),
+  `Private/FicsitsPerformanceManager.cpp` (armed), `.uplugin`. Design:
+  `10-DOCS/satisfactory/DESIGN-P4-SETTINGS-SURFACE-2026-08-10.md`.
+
+- **Revert:** `git revert`. Nothing depends on it — it is a viewer.
+
+- **Verified:** `check_structure.py` **28 fixes, 0 errors, 0 warnings**, exit 0 — and the gate EARNED
+  its keep here, refusing the first attempt with `ChannelName() has no case for: Settings — they will
+  print as <unknown>`. Builds: FactoryEditor Win64 Development, FactoryGameSteam Win64 Shipping,
+  FactoryServer **Linux** Shipping — all `Result: Succeeded`. **NOT BOOTED**; with zero rows authored
+  the expected output is `0 FPM row(s) of N game-wide`.
+
+- **⚠ Needs Ant at the editor to be verified against a known positive:** one throwaway
+  `UFGUserSetting` row in `Content/Settings/`. An audit only ever exercised against an empty set has
+  not been exercised.
+
 ## 2026-08-10 21:20 — CODE — the LINUX SERVER target has not built since 0.11.4, and nothing said so
 
 - **What:** `0.11.5` → `0.11.6`. One character class in a comment, plus a new gate in

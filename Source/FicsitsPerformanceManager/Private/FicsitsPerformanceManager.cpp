@@ -9,6 +9,7 @@
 #include "Core/FPMStallSampler.h"
 #include "Fixes/Vanilla/FPMBlueprintSweepGate.h"
 #include "Core/FPMHitchMeter.h"
+#include "Core/FPMSettingsAudit.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
 #include "Core/FPMSaveSettingsInterceptor.h"
@@ -233,6 +234,20 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * It suspends the game thread to read it, so it is capped, gapped, and reports its own budget usage.
 	 */
 	FPMFixes::Arm(FFPMStallSampler::Get());
+
+	/*
+	 * ★ P4's FIRST INCREMENT, AND IT SHIPS BEFORE THE THING IT MEASURES EXISTS.
+	 *
+	 * FPM has no UFGUserSetting rows yet - those are .uasset content and only the editor can author
+	 * them. What this guards is the failure `sf-scaffold` records as UNBOUNDED: if the asset registry
+	 * lacks the scan path at StartupModule the scan yields nothing FOREVER, the rescan path is
+	 * `#if WITH_EDITOR` only, and in a cooked build the options menu is just silently empty.
+	 *
+	 * Shipping the meter first means the first row Ant authors is verified on the next boot instead of
+	 * a dozen rows being written against an enumeration nobody checked. Same ordering that killed the
+	 * Nanite guard, the GC lever and the Slate lever this week: instrument, then decide, then build.
+	 */
+	FPMFixes::Arm(FFPMSettingsAudit::Get());
 
 	/*
 	 * ★ THE BLUEPRINT LIBRARY'S OWN STUTTER, and the first fix in this mod whose design Ant wrote.

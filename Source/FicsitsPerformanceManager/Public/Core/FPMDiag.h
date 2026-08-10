@@ -85,6 +85,7 @@ public:
 		GlassQuality,     // FPM.Diag.GlassQuality — Lumen front-layer translucency, held on for glass
 		NaniteStreaming,  // FPM.Diag.NaniteStreaming — geometry dropping detail when the pool overcommits
 		MaterialEffect,   // FPM.Diag.MaterialEffect — who calls SetMeshes after PreStarted
+		Settings,         // FPM.Diag.Settings — are FPM's own UFGUserSetting rows reachable at all?
 		Count
 	};
 
