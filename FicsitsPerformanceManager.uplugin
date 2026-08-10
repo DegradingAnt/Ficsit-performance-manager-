@@ -3,13 +3,13 @@
 	"Version": 0,
 	"VersionName": "0.7.0",
 	"FriendlyName": "FICSIT's performance manager",
-	"Description": "Nine targeted repairs and diagnostics for standing multiplayer, rendering and stutter bugs. No performance governing yet. REPAIRS: static-base movement (stops rubber-banding on foundations) | rain occlusion (LogRainSystem errors measured 35-37 per session typical and 4,000+ in the worst session seen, to 0) | inventory init (sizes an uninitialised inventory instead of refusing items into it) | hologram net (rebuilds a replicated build preview's attachment points instead of skipping its BeginPlay) | asset residency (keeps four platform icons loaded so the player list stops blocking the game thread to load them on every bind). GUARD: no-owner RPC gate. DIAGNOSTICS, log-only, overriding nothing: hitch meter (frame time, which this build otherwise never measures) | clone sensor (join-time player-state candidate matching) | schematic probe. The debug overlay toggles on F8 (rebindable via FPM.Diag.OverlayKey). FPM never destroys player items, drives no renderer settings, makes no network requests, and leaves nothing behind when uninstalled - `FPM.Residue` audits that claim in-game and this build also removes the cache older versions wrote outside the plugin.",
+	"Description": "Eighteen repairs, guards and diagnostics for known multiplayer, rendering and stutter bugs. This build has no performance governor yet. REPAIRS, where we named the cause: static-base movement, so you stop rubber-banding on foundations. Rain occlusion, which builds the missing bounding box from real mesh geometry instead of muting the log. A Wwise gate for dedicated servers, which have no audio device for that call to reach. Asset residency, so the player list stops blocking the game thread to load an icon. A zipline volume lever. GUARDS, where the cause belongs to somebody else: an owner-less RPC gate. Unwired rail connections, about 2,000 averted asserts per server start. A HUD hook strip. A texture pool sized to your card. Null power-wire entries, removed before the autosave walks them, because that state crashed a dedicated server inside its own autosave. Schematic access, refused when the game is about to read a null event subsystem. A save-settings guard. CHOKE-POINT REPAIRS: inventory init, hologram net, and a navmesh tile ceiling that reads its own write back. DIAGNOSTICS that change no behavior: a hitch meter, because this game build compiles the engine one out. A clone sensor. A schematic probe. Press F8 for the debug overlay. FPM never destroys your items or your character. It makes no network requests of any kind. It leaves nothing behind when you uninstall it, and FPM.Residue audits that claim from inside the game. AI-assisted, human-reviewed. GPL-3.0.",
 	"Category": "Modding",
 	"CreatedBy": "DegradingAnt",
-	"CreatedByURL": "",
-	"DocsURL": "",
+	"CreatedByURL": "https://github.com/DegradingAnt",
+	"DocsURL": "https://github.com/DegradingAnt/Ficsit-performance-manager-#readme",
 	"MarketplaceURL": "",
-	"SupportURL": "",
+	"SupportURL": "https://github.com/DegradingAnt/Ficsit-performance-manager-/issues",
 	"CanContainContent": true,
 	"IsBetaVersion": true,
 	"IsExperimentalVersion": false,
@@ -30,11 +30,24 @@
 		},
 		{
 			"Name": "AbstractInstance",
-			"Enabled": true
+			"Enabled": true,
+			"BasePlugin": true
+		},
+		{
+			"Name": "Wwise",
+			"Enabled": true,
+			"Optional": true,
+			"BasePlugin": true
+		},
+		{
+			"Name": "Cartograph",
+			"Enabled": true,
+			"Optional": true,
+			"SemVersion": ">=1.3.0"
 		}
 	],
 	"SemVersion": "0.7.0",
 	"RemoteVersionRange": "=0.7.0",
 	"RequiredOnRemote": true,
-	"GameVersion": ">=491125"
+	"GameVersion": ">=495413"
 }

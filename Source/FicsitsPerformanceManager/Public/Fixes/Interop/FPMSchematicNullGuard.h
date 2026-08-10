@@ -43,6 +43,20 @@
  * That condition is decidable from OUR side of the hook, before vanilla runs, which the argument check
  * never was.
  *
+ * ★ THE RIVAL EXPLANATION, AND WHAT KILLS IT. An earlier draft of this fix (parked 2026-08-09) argued
+ * that `0x2c0` is `mDependenciesBlocksSchematicAccess` (`FGSchematic.h:267`) read off a **null CDO** —
+ * the function is static and takes a `TSubclassOf`, so the only way it reaches an instance member is
+ * through the default object. That reasoning is sound and the offset fits: `UFGSchematic` has ample
+ * properties to put a member at 0x2c0, and so does an `AActor`-derived subsystem. **The offset alone
+ * cannot tell the two apart.**
+ *
+ * What tells them apart is that the CDO theory has already been TESTED. FPM1 0.58.52 refused on exactly
+ * `GetDefaultObject(false) == nullptr`, and fourteen crashes of this class followed it with FPM's
+ * pass-through frames sitting in the stack — i.e. the CDO was non-null every time. A theory that
+ * predicts a guard will catch the crash, tested against a guard that did not, is refuted. The event
+ * subsystem is the surviving candidate, and it additionally explains the `FGMainMenuState` correlation,
+ * which the CDO theory does not touch.
+ *
  * ★ WHY IT REFUSES SO NARROWLY: BECAUSE THE HOUSE ALREADY RULED THAT BREAKING THE HUB IS WORSE.
  *
  * The obvious guard — refuse whenever the event subsystem is null — can refuse a grant vanilla would

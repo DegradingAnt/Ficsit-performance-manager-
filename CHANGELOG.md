@@ -62,6 +62,49 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 07:10 — SPEC — repository structure brought to the community standard, and a checker so it stays there
+
+- **What:** Added `README.md`, `LICENSE` (GPL-3.0 text) and `CONTRIBUTING.md`. Fixed four `.uplugin`
+  defects. Added `tools/check_structure.py`. Extended `.gitignore`. Rewrote the reader-facing prose in
+  Simplified Technical English.
+- **Why:** Ant asked whether the repo follows the community structure. It did not. FPM1 shipped a
+  README, a LICENSE and a CONTRIBUTING file. **The rewrite dropped all three and nobody noticed for two
+  days.** The missing LICENSE is a real compliance defect, not an omission of courtesy: every source
+  file claims GPL-3.0 and the license text was not in the repo.
+  Four `.uplugin` defects, each verified against Alpakit or the crash-free build:
+  1. `GameVersion` read `>=491125`. The tested build is CL **495413**. A written audit flagged this on
+     2026-07-17 and the rewrite carried the stale value through unfixed.
+  2. `AbstractInstance` had no `"BasePlugin": true`. Alpakit treats a dependency without that flag as a
+     ficsit.app mod and tries to version-resolve it (`ModMetadataObject.cpp:170-180`).
+  3. `Wwise` was not declared at all, although two shipped fixes call `UAkGameplayStatics`.
+  4. `Cartograph` was not declared, although `FPMTexturePoolGuard.cpp:83` detects it to size the pool.
+  The `Description` also still said "Nine targeted repairs" while eighteen fixes were armed.
+- **Files:** `README.md`, `LICENSE`, `CONTRIBUTING.md`, `tools/check_structure.py` (all new),
+  `FicsitsPerformanceManager.uplugin`, `.gitignore`.
+- **Revert:** delete the new files and restore the `.uplugin` fields. Do not revert `GameVersion`.
+- **Verified:** `python tools/check_structure.py` reports **18 fixes, 0 errors, 0 warnings**. The
+  `.uplugin` re-parses as valid JSON. Module builds clean.
+- **★ THE CHECKER IS THE POINT, NOT THE THREE FILES.** A written checklist already covered every one of
+  these defects. It sat in `10-DOCS` and nobody ran it. So the checklist is now code that runs in the
+  repo it checks. It verifies the required files, the `.uplugin` fields against each other and against
+  the tested build, all four contract members on every fix header, that every fix is actually armed, the
+  diagnostics table (whose own `static_assert` checks count only, by its own admission), the no-network
+  hard rule, the license headers, and that no hook skips the ledger.
+- **★ AND IT CHECKS PREDECESSOR COVERAGE, WHICH IS THE MISTAKE THAT KEEPS HAPPENING.** It reads FPM1's
+  registration list and fails when a fix there has no recorded disposition in FPM2 — carried, or dropped
+  by ruling. That turns "we forgot" and "we decided" into two visibly different states. The Wwise gate
+  was orphaned for two days; the pattern match it uses is deliberately `Register<Anything>()` and not
+  `Register<Anything>Fix()`, because the narrower grep is the one that once reported "FPM1 has only 4
+  fixes" and hid the orphan.
+- **Prose:** README, CONTRIBUTING and the `.uplugin` description are now written in ASD-STE100
+  Simplified Technical English. Active voice, one instruction per sentence, no semicolons, no
+  contractions, short common words. Ant: *"we also need to make the texts human readable."*
+- **URLs:** `CreatedByURL`, `DocsURL` and `SupportURL` now point at
+  `github.com/DegradingAnt/Ficsit-performance-manager-`, per Ant's ruling that FPM2 is the same mod
+  remade and goes where FPM1 went. There is no project Discord yet, so the README names none.
+
+---
+
 ## 2026-08-10 06:30 — CODE — P3.10(a) schematic null-guard, built against the corpus and NOT against the design line
 
 - **What:** New `FFPMSchematicNullGuard` (`Fixes/Interop/FPMSchematicNullGuard.{h,cpp}`) on
