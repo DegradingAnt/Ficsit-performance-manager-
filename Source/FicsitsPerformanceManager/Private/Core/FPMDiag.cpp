@@ -185,6 +185,14 @@ static TAutoConsoleVariable<int32> CVarDiagGCMeter(
 	     "back for level 2 - the per-pass detail IS the measurement."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagBlueprintSweep(
+	TEXT("FPM.Diag.BlueprintSweep"), 1,
+	TEXT("Blueprint recipe-sweep gate. 0 = silent, 1 = one line each time a FULL sweep is ALLOWED and why. "
+	     "The cancelled ones are deliberately NOT logged - they are the common case and a line every two "
+	     "seconds would be the noisiest thing in the log. The counts live in FPM.Blueprint.Report, and an "
+	     "audit DISAGREEMENT is a Warning that this switch does not gate."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarDiagStallSampler(
 	TEXT("FPM.Diag.StallSampler"), 1,
 	TEXT("Which MODULE the game thread was inside during a measured stall. 0 = silent, 1 = the overlay row "
@@ -220,6 +228,7 @@ namespace
 		&CVarDiagWeatherGate,
 		&CVarDiagGCMeter,
 		&CVarDiagStallSampler,
+		&CVarDiagBlueprintSweep,
 	};
 
 	/*
@@ -262,6 +271,7 @@ namespace
 		case FPMDiag::EChannel::WeatherGate:    return TEXT("FPM.Diag.WeatherGate");
 		case FPMDiag::EChannel::GCMeter:        return TEXT("FPM.Diag.GCMeter");
 		case FPMDiag::EChannel::StallSampler:   return TEXT("FPM.Diag.StallSampler");
+		case FPMDiag::EChannel::BlueprintSweep: return TEXT("FPM.Diag.BlueprintSweep");
 		default:                                return TEXT("<unknown>");
 		}
 	}

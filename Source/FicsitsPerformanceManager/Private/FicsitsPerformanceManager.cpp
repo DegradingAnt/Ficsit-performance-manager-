@@ -7,6 +7,7 @@
 #include "Core/FPMFixContract.h"
 #include "Core/FPMGCMeter.h"
 #include "Core/FPMStallSampler.h"
+#include "Fixes/Vanilla/FPMBlueprintSweepGate.h"
 #include "Core/FPMHitchMeter.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
@@ -221,6 +222,23 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * It suspends the game thread to read it, so it is capped, gapped, and reports its own budget usage.
 	 */
 	FPMFixes::Arm(FFPMStallSampler::Get());
+
+	/*
+	 * ★ THE BLUEPRINT LIBRARY'S OWN STUTTER, and the first fix in this mod whose design Ant wrote.
+	 *
+	 * Vanilla re-verifies EVERY saved blueprint's recipe requirements about every two seconds
+	 * (FGBlueprintSubsystem.h:201, paced by mTimeSinceLastRecipeCheck :691) - O(library) on the game
+	 * thread, forever. A community mod removes that stutter by DISABLING the loop, and pays for it with
+	 * blueprints that do not update until you relog, which is exactly the bug Ant reported on 2026-08-10.
+	 *
+	 * She asked the better question: "can we force an update when the game wants to and keep the loop
+	 * otherwise?" The answer holds because the check has only two inputs - recipe availability and the
+	 * blueprint set - so every sweep between changes is provably incapable of moving an answer. Those
+	 * sweeps are cancelled; every sweep the game actually wants runs untouched.
+	 *
+	 * It audits itself on a timer and says so out loud if a cancelled sweep would ever have mattered.
+	 */
+	FPMFixes::Arm(FFPMBlueprintSweepGate::Get());
 
 	// And the thing the meter is pointed AT. Root-caused 2026-08-02, recovered unbuilt by the 2026-08-09
 	// scratchpad audit: vanilla's own player-list widget blocking-loads a platform icon nobody holds a hard
