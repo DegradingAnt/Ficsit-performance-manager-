@@ -4,6 +4,7 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMBoxCache.h"
+#include "Core/FPMEnclosure.h"   // InvalidateNear - a new buildable can seal a standing player in
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
 
@@ -598,6 +599,23 @@ void FFPMRainOcclusionFix::Arm()
 	 */
 	auto OnBuildableBeginPlay = [](auto& Scope, AFGBuildable* Buildable)
 	{
+		/*
+		 * ★ TELL THE ENCLOSURE PROBE THE WORLD CHANGED. Ant, 2026-08-10: *"what if another player builds
+		 * something around the first player without the first moving? that would break the system."*
+		 *
+		 * The probe skips re-tracing while the camera has not moved, so a wall raised around a stationary
+		 * player was invisible to it. This hook already fires for every buildable, so the fast path costs
+		 * one squared-distance compare and no new subscription. InvalidateNear does the range test itself,
+		 * because only the probe knows where it last sampled from.
+		 *
+		 * 6000 cm matches the probe's own ray reach (GFPMTraceCm) — a buildable further away than the rays
+		 * travel cannot change the answer, so invalidating on it would be pure churn during a big paste.
+		 */
+		if (Buildable != nullptr)
+		{
+			FPMEnclosure::InvalidateNear(Buildable->GetActorLocation(), 6000.f);
+		}
+
 		if (!Buildable) { return; }
 
 		AFGBuildable* CDO = Cast<AFGBuildable>(Buildable->GetClass()->GetDefaultObject());

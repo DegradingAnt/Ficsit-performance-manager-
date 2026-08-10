@@ -133,6 +133,32 @@ public:
 	/** Seconds since the last completed reading. Large means the sampler is idle or the player is still. */
 	static double SecondsSinceReading();
 
+	/**
+	 * ★ THE WORLD CHANGED NEAR THE PLAYER — force the next tick to re-probe.
+	 *
+	 * Ant, 2026-08-10: *"what if another player builds something around the first player without the
+	 * first moving? that would break the system."* It did. The movement skip watches the CAMERA, and a
+	 * wall appearing around a stationary player is an input change no amount of position-watching sees.
+	 * The two failures are not symmetric: being walled in leaves weather playing indoors, and being
+	 * un-roofed leaves weather suppressed while you stand in the rain. The second reads as a broken mod.
+	 *
+	 * `GFPMMaxCacheAgeSec` is the floor that bounds staleness at two seconds. This is the fast path: a
+	 * buildable finishing `BeginPlay` within `RadiusCm` of the last probe origin invalidates immediately,
+	 * so being walled in registers next tick rather than up to two seconds later.
+	 *
+	 * ⚠ IT TAKES A LOCATION ON PURPOSE. `AFGBuildable::BeginPlay` fires for EVERY buildable, and a
+	 * blueprint paste or a world load is thousands of them. Invalidating unconditionally would force a
+	 * re-probe every tick for the whole of a build session. The distance test lives HERE rather than at
+	 * the call site, because only this module knows where it last probed from.
+	 *
+	 * ⚠ AND IT DOES NOT CLEAR THE LAST READING. Consumers keep the previous answer until the new probe
+	 * lands. Blanking it would flicker every downstream effect for one probe interval — a visible
+	 * regression traded for no correctness gain, since the reading is stale rather than wrong-shaped.
+	 *
+	 * Cheap enough to call per buildable: one squared-distance compare against a cached vector.
+	 */
+	static void InvalidateNear(const FVector& WorldLocation, float RadiusCm);
+
 	/** `FPM.Enclosure.Report` — the reading, both verdicts, and what it cost. */
 	static void LogNow();
 

@@ -49,6 +49,35 @@ namespace
 	/** Re-probe only after the camera has moved this far. See the header — this is the big saving. */
 	constexpr float GFPMMoveThresholdCm = 150.f;
 
+	/**
+	 * ★ THE MOVEMENT SKIP IS A RATE REDUCER, NOT A CACHE. This is what stops it becoming one.
+	 *
+	 * Ant, 2026-08-10: *"what if another player builds something around the first player without the
+	 * first moving? that would break the system."* It did. The skip below tested only whether the CAMERA
+	 * had moved, and `GLast.bValid` never expires — so a player who stands still keeps the same answer
+	 * forever, and the world is the one input that skip cannot see.
+	 *
+	 * Two ways to be wrong, and the second is worse than the first:
+	 *   - SunFry walls you in while you stand still  -> the gate still believes you are outdoors, and
+	 *     weather keeps playing indoors. The bug this whole fix exists to prevent.
+	 *   - Someone DISMANTLES your shelter while you stand still -> the gate keeps suppressing weather and
+	 *     you stand in the rain with no rain. Silently wrong, and it reads as the mod being broken.
+	 *
+	 * The comment on the skip said the answer "depends on POSITION and not on facing". True in a static
+	 * world. Satisfactory is a game about building, so a static world is the one assumption never
+	 * available here — and the claim was written as though it were unconditional.
+	 *
+	 * A maximum age bounds it with one constant and no new dependency. A stationary player re-probes at
+	 * 0.5 Hz instead of 4 Hz, which is still an eightfold saving over the moving case, and the answer can
+	 * now be stale for at most this long instead of for the rest of the session.
+	 *
+	 * ⚠ This is the FLOOR, not the whole answer. A build event can invalidate immediately and should —
+	 * FPM already receives every `AFGBuildable::BeginPlay` (`FPMRainOcclusionFix.cpp:658`), so that path
+	 * costs nothing to add. Dismantles have no such hook, which is exactly why the age cap has to exist
+	 * underneath rather than being replaced by the event.
+	 */
+	constexpr double GFPMMaxCacheAgeSec = 2.0;
+
 	/** Cadence cap while moving. The effects downstream fade over ~0.5 s, so 4 Hz is already generous. */
 	constexpr double GFPMMinIntervalSec = 0.25;
 
@@ -129,6 +158,13 @@ namespace
 
 	FFPMEnclosureReading GLast;
 	FVector GLastProbeOrigin = FVector(FLT_MAX);
+
+	/**
+	 * How many times a nearby build forced an early re-probe. Reported beside the skip counter so the
+	 * fast path can be seen working — a zero here with a busy build session means the wiring is dead,
+	 * which is the shape this project keeps paying for.
+	 */
+	int32 GInvalidationsByBuild = 0;
 	double GLastProbeTime = 0.0;
 	double GLastCompleteTime = 0.0;
 
@@ -333,6 +369,24 @@ bool FPMEnclosure::IsUnderBuiltRoof() { return GbUnderRoof; }
 bool FPMEnclosure::IsInSealedRoom() { return GbSealed; }
 const FFPMEnclosureReading& FPMEnclosure::Last() { return GLast; }
 
+void FPMEnclosure::InvalidateNear(const FVector& WorldLocation, float RadiusCm)
+{
+	// Never probed yet: GLastProbeOrigin is FLT_MAX (:160) and the distance test below would overflow
+	// into nonsense. Nothing to invalidate either way — the first probe has not happened.
+	if (!GLast.bValid) { return; }
+
+	if (FVector::DistSquared(WorldLocation, GLastProbeOrigin) > RadiusCm * RadiusCm) { return; }
+
+	/*
+	 * Expire the AGE, not the reading. Zeroing GLastProbeTime makes the max-age test in the tick fail on
+	 * the next pass, which forces a re-probe. `GLast` itself is left intact so consumers keep answering
+	 * with the previous verdict until the new one lands — see the header for why blanking it would
+	 * flicker every downstream effect for no correctness gain.
+	 */
+	GLastProbeTime = 0.0;
+	++GInvalidationsByBuild;
+}
+
 double FPMEnclosure::SecondsSinceReading()
 {
 	return GLastCompleteTime > 0.0 ? FPlatformTime::Seconds() - GLastCompleteTime : TNumericLimits<double>::Max();
@@ -386,8 +440,32 @@ bool TickInternal(float /*DeltaSeconds*/)
 	 * machine, turning on the spot, reading a sign — all reuse the last reading. That is the common
 	 * case by a wide margin, which is why this is measure number one rather than a nicety.
 	 */
-	if (GLast.bValid && FVector::DistSquared(Origin, GLastProbeOrigin)
-		< GFPMMoveThresholdCm * GFPMMoveThresholdCm)
+	/*
+	 * ⚠ AND THE ANSWER EXPIRES — but only when it CAN have changed. Ant, 2026-08-10, on the first
+	 * version of this: *"but if it loops every 2 s then wont it lag the main thread?"*
+	 *
+	 * The age cap has exactly one job left, because builds are already event-driven through
+	 * `InvalidateNear`: catching a DISMANTLE, which has no hook to ride. And a dismantle can only change
+	 * the verdict for a player who is currently ENCLOSED — if the last reading said "outdoors", there is
+	 * no roof and no wall to take away, and re-probing cannot produce a different answer.
+	 *
+	 * So the cap applies only to a POSITIVE cached verdict. A player standing in open terrain re-probes
+	 * never. A player standing inside re-probes at 0.5 Hz. The cost lands exactly where a change is
+	 * physically possible and nowhere else.
+	 *
+	 * On the cost itself, since that was the question: the traces are ASYNC onto the physics scene's own
+	 * workers (see :474 and the AsyncLineTraceByChannel call below), nothing traces at all while no
+	 * consumer is registered (:400), and the mod already runs at 4 Hz whenever the player is MOVING
+	 * (`GFPMMinIntervalSec`). This is one eighth of that rate, in the one case it applies to.
+	 */
+	const bool bCachedVerdictPositive = GbUnderRoof || GbSealed;
+	const bool bCacheStillFresh = !bCachedVerdictPositive
+		|| (Now - GLastProbeTime) < GFPMMaxCacheAgeSec;
+
+	if (GLast.bValid
+		&& bCacheStillFresh
+		&& FVector::DistSquared(Origin, GLastProbeOrigin)
+			< GFPMMoveThresholdCm * GFPMMoveThresholdCm)
 	{
 		++GBatchesSkippedStill;
 		return true;
@@ -472,6 +550,14 @@ void FPMEnclosure::LogNow()
 		     "moved (%.0f%% of %d opportunities). Nothing traces while no consumer is registered."),
 		GBatchesIssued, GDirections.Num(), GBatchesSkippedStill,
 		Total > 0 ? 100.0 * GBatchesSkippedStill / Total : 0.0, Total);
+
+	// The fast path's own liveness. A busy build session with zero here means the AFGBuildable::BeginPlay
+	// wiring is dead and the max-age cap is silently carrying the whole correctness burden.
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   %d early re-probe(s) forced by a build within reach of the player. Zero during a "
+		     "building session would mean the build-event wiring is dead and only the %.0fs age cap is "
+		     "protecting against being walled in while standing still."),
+		GInvalidationsByBuild, GFPMMaxCacheAgeSec);
 
 	UE_CLOG(GBatchesAbandoned > 0, LogFicsitsPerformanceManager, Warning,
 		TEXT("[FPM]   %d batch(es) ABANDONED on timeout - callbacks never arrived, almost always a "
