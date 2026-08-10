@@ -62,6 +62,84 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 15:10 — CODE — review fixes: a disarm that disarms, two inert friends, three honest readouts
+
+- **What:** the seven findings from the full-mod `vox-review` that were still open. No new capability.
+- **Why:** every one is the same shape — the code was close to right and a comment claimed more than the
+  code did. In a codebase where the comments ARE the design record, a false comment costs the next
+  reader an hour and can cost a wrong fix.
+
+- **1. `FFPMBlueprintSweepGate::Disarm` did not disarm.** It cleared the delegate handle and left the
+  handler installed, under a comment reading *"the ledger owns the removal"*. `FPMHookLedger` exposes
+  `Install` / `Records` / `LogInventory` and nothing else, and its own header states it does not own
+  lifetimes. So the gate kept CANCELLING SWEEPS after Disarm reported it stopped. It now calls
+  `UNSUBSCRIBE_METHOD`, guarded on `SweepHookHandle.IsValid()` — in the editor the ledger refuses the
+  install and hands back an invalid handle, and `RemoveHandler` would then find both handler arrays
+  empty and uninstall a hook that was never installed (`NativeHookManager.h:358-375`). This is the only
+  fix in the mod that removes its hook, because it is the only one that can do harm by continuing.
+  `FPM.Hooks.Dump` lists what INSTALLED, not what is live, and the comment now says so.
+
+- **2. ⚠ TWO ACCESS TRANSFORMER ENTRIES WERE INERT, AND THE REASON GENERALISES.** Removed
+  `Friend=(Class="AGameMode", FriendClass="FFPMCloneSensor")` and
+  `Friend=(Class="ARecastNavMesh", FriendClass="FFPMNavMeshCeiling")`. Both members are PUBLIC:
+  `InactivePlayerArray` sits at `GameMode.h:138` inside the `public:` at `:106`, and the `protected:`
+  the old comment cited is at `:140`, AFTER it. `TileNumberHardLimit` sits at `RecastNavMesh.h:752`,
+  and `ARecastNavMesh` opens with `GENERATED_UCLASS_BODY()` at `:571`, a macro that ends in `public:`
+  (`RecastNavMesh.generated.h:74-81`), with no specifier between. The `protected:` that comment cited at
+  `:490` belongs to the nested `FNavMeshTileData::FNavData`, which closes at `:493`.
+  **The larger finding: a `Friend=` on an ENGINE class cannot work here at all.** The transformer is a
+  UBT plugin that injects into the UHT-GENERATED header. FactoryGame targets get one —
+  `FGCircuitConnectionComponent.generated.h:58`, `FGInventoryComponent.generated.h:153`. The engine's
+  own generated headers carry zero and are dated 2026-06-02, because they ship with the installed
+  engine and this project's UHT never rebuilds them. Both entries were inert from the day they were
+  written. All six remaining entries target FactoryGame classes and all six were verified present in
+  the generated headers. The rule is now written at the top of the ini.
+
+- **3. `FFPMNoOwnerRpcGate` was swallowing an engine assertion.** Cancelling `ProcessRemoteFunction`
+  skips its whole body, and the first thing in that body under `#if !UE_BUILD_SHIPPING` is
+  `checkf(IsInGameThread(), ...)` at `NetDriver.cpp:7821`. The gate now logs an Error once per session,
+  naming the actor class and the function, whenever it cancels off the game thread. It logs rather than
+  asserts on purpose: reproducing the check would mean FPM owning a crash, and Ant plays Shipping where
+  the engine check is compiled out and a log line is the only diagnostic that can exist.
+
+- **4. `FFPMStallSampler::Disarm` ran its four steps in the wrong order.** The comment described
+  "unbind first, then join", the code set `bStopping` AFTER the unbind, and unbinding freezes the
+  heartbeat. A frozen heartbeat is indistinguishable from a stalled game thread, which is exactly what
+  this thread hunts — so the watchdog could wake during teardown and SUSPEND THE GAME THREAD to walk its
+  stack. Order is now stop, unbind, join, report. Reporting after the join also means nothing else can
+  be inside `Results` while it is read.
+
+- **5. `LastAllowedSweepSeconds` was written twice and read nowhere.** The same dead shape as a counter
+  nobody prints. `LogReport` now prints its age, because a 95% cancel rate reads identically whether the
+  last real sweep was four seconds or forty minutes ago, and only the second says the library has gone
+  quiet. Zero prints as "none allowed yet", not as "0.0 s ago".
+
+- **6. The power probe called a frozen number "peak this session".** Only the 60 s window after load fed
+  it, so past that the value stopped moving, and a frozen zero reads exactly like a measured zero. Worse,
+  `ReportNow` computed `Max(peak, sample)` for the printout and threw the result away, so a tripped fuse
+  caught on demand vanished from the next report. It now stores the maximum and labels its real
+  coverage: the window after load plus every `FPM.Power.Report` since, and not the time in between.
+
+- **7. NOT A DEFECT — the reviewer's fix-class count was wrong, `check_structure.py` was right.** 24
+  classes derive from `IFPMFix`, and the review counted 21 by listing `Fixes/` and missing the four in
+  `Core/` (`FPMGCMeter`, `FPMHitchMeter`, `FPMSaveSettingsInterceptor`, `FPMStallSampler`) while wrongly
+  counting `FPMChatRelay`, which is not one. All 24 are armed in `FicsitsPerformanceManager.cpp` — 24
+  classes, 24 `FPMFixes::Arm` calls, nothing unwired.
+
+- **Files:** `Config/AccessTransformers.ini`, `Private/Fixes/Vanilla/FPMBlueprintSweepGate.cpp`,
+  `Public/Fixes/Vanilla/FPMBlueprintSweepGate.h`, `Private/Fixes/Vanilla/FPMCloneSensor.cpp`,
+  `Private/Fixes/Vanilla/FPMPowerWarningProbe.cpp`, `Private/Fixes/Interop/FPMNavMeshCeiling.cpp`,
+  `Private/Fixes/Interop/FPMNoOwnerRpcGate.cpp`, `Private/Core/FPMStallSampler.cpp`,
+  `FicsitsPerformanceManager.uplugin` (0.9.1 → **0.9.2**, PATCH: repairs to existing surfaces, and
+  nothing here is visible with the console closed).
+- **Revert:** `git revert` the commit. Undo it if the unsubscribe in (1) turns out to destabilise
+  teardown, which would show as a shutdown hang or a crash inside SML's hook arrays.
+- **Verified:** build-only. `Build.bat FactoryEditor Win64 Development -Module=FicsitsPerformanceManager`
+  → `Result: Succeeded`, and that clean compile is itself the receipt for (2), because removing a friend
+  a member genuinely needed cannot link. NOT-YET boot-tested.
+
+---
+
 ## 2026-08-10 13:45 — CODE — stall sampler: name the game thread's missing 400 ms
 
 - **What:** A new fix, `FFPMStallSampler`. A low-priority watchdog thread reads a per-frame heartbeat

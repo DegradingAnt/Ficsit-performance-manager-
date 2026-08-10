@@ -79,6 +79,11 @@ void FFPMNavMeshCeiling::OnWorldLoad(UWorld* World)
 
 		++GFPMNavSeen;
 
+		// PUBLIC, both read and write — RecastNavMesh.h:752. ARecastNavMesh opens with
+		// GENERATED_UCLASS_BODY() at :571, and that macro ends in `public:`
+		// (RecastNavMesh.generated.h:74-81), with no specifier between it and :752. No access
+		// transformer is needed; an entry claiming the field was protected was removed on 2026-08-10,
+		// where the `protected:` it cited at :490 belongs to the nested FNavMeshTileData::FNavData.
 		const int32 Before = Nav->TileNumberHardLimit;
 		if (Before >= GFPMNavTileCeiling)
 		{

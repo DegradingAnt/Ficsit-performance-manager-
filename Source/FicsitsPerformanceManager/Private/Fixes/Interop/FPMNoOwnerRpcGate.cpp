@@ -34,6 +34,28 @@ namespace
 	 * offender, not enumerating every one.
 	 */
 	constexpr int32 GCensusLimit = 16;
+
+	/**
+	 * ★ THE ENGINE ASSERTION THIS GATE STANDS IN FRONT OF, reported instead of swallowed.
+	 *
+	 * Cancelling ProcessRemoteFunction skips its whole body, and the first thing in that body — inside
+	 * `#if !UE_BUILD_SHIPPING` — is
+	 *   NetDriver.cpp:7821  checkf(IsInGameThread(), TEXT("Attempted to call ProcessRemoteFunction from
+	 *                       a thread other than the game thread, which is not supported. ..."))
+	 * So in Development and Test builds this gate silently absorbs a hard engine check on every
+	 * buildable RPC it suppresses. That is the exact shape Ant ruled out: "all errors and warnings need
+	 * fixing at the source so we actually fix issues and not just quiet logs."
+	 *
+	 * ⚠ IT IS AN ERROR LOG AND NOT A check(), DELIBERATELY. Reproducing the engine's checkf would mean
+	 * FPM crashing a build that vanilla would have crashed anyway — a crash FPM then owns, in a mod
+	 * whose whole job is reading other people's crash reports. Ant plays Shipping, where the engine's
+	 * own check is compiled out entirely and a log line is the only diagnostic that can exist at all.
+	 * The line is UNGATED by the diag channel: a suppressed engine assertion must not be silenceable by
+	 * a verbosity setting.
+	 *
+	 * Latched, not counted, and read-modify-write with exchange so two racing workers cannot both print.
+	 */
+	std::atomic<bool> bGOffThreadReported{false};
 }
 
 FFPMNoOwnerRpcGate& FFPMNoOwnerRpcGate::Get()
@@ -59,6 +81,18 @@ void FFPMNoOwnerRpcGate::Arm()
 
 		// Buildables only. Everything else keeps vanilla behaviour, warning included.
 		if (!Actor->IsA<AFGBuildable>()) { return; }
+
+		// Say what the engine would have said before we take away its chance to. See bGOffThreadReported.
+		if (!IsInGameThread() && !bGOffThreadReported.exchange(true, std::memory_order_relaxed))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] no-owner RPC gate: ProcessRemoteFunction was called from a NON-GAME THREAD "
+				     "for %s (function %s). The engine asserts on this in non-Shipping builds "
+				     "(NetDriver.cpp:7821) and this gate cancels before that assert can fire, so this "
+				     "line is the only report you will get. It is a real bug in whoever dispatched the "
+				     "RPC, not in the gate. Reported once per session."),
+				*Actor->GetClass()->GetName(), *Function->GetName());
+		}
 
 		// The vanilla outcome — dropped — without the cost of getting there.
 		Scope.Cancel();

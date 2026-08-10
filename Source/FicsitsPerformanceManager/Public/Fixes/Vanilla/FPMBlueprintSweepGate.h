@@ -122,6 +122,13 @@ private:
 	std::atomic<bool> bDirty{true};   // starts dirty: the first sweep after load must always run
 
 	double LastAuditSeconds = 0.0;
+
+	/**
+	 * When the last sweep was ALLOWED through. LogReport prints its age — a 95% cancel rate reads the
+	 * same whether the last real sweep was four seconds or forty minutes ago, and only the second says
+	 * the library has genuinely gone quiet. Zero means none has been allowed yet, which the report
+	 * states in words rather than printing as "0.0 s ago".
+	 */
 	double LastAllowedSweepSeconds = 0.0;
 
 	/**

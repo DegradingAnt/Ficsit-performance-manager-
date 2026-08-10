@@ -150,17 +150,29 @@ void FFPMStallSampler::Stop()
 
 void FFPMStallSampler::Disarm()
 {
-	LogReport();
+	/*
+	 * ★ THE ORDER IS THE WHOLE FUNCTION. Four steps, and every adjacent pair is wrong the other way
+	 * round.
+	 *
+	 * 1. bStopping BEFORE the unbind. Unbinding freezes the heartbeat, and a frozen heartbeat is
+	 *    indistinguishable from a stalled game thread — which is precisely what this thread hunts. The
+	 *    previous order set the flag after the unbind and left a window where the watchdog would wake,
+	 *    read a heartbeat that had stopped moving, and SUSPEND THE GAME THREAD to walk its stack during
+	 *    shutdown. The old comment above these lines described this order and the code did not do it.
+	 * 2. Unbind BEFORE the join. Otherwise a delegate fires into a half-torn-down sampler.
+	 * 3. Join BEFORE the report. After Kill(true) returns, Run() has returned and nothing else can be
+	 *    inside Results — the report reads it with no contention at all, rather than relying on
+	 *    ResultsLock to hold while the sampler is still live.
+	 * 4. Report LAST, so it includes anything the watchdog captured on its way out.
+	 */
+	bStopping.store(true, std::memory_order_relaxed);
 
-	// Unbind FIRST so the heartbeat stops moving, then join. A watchdog that wakes during teardown finds
-	// bStopping set and exits without touching anything.
 	if (FrameBeginHandle.IsValid())
 	{
 		FCoreDelegates::OnBeginFrame.Remove(FrameBeginHandle);
 		FrameBeginHandle.Reset();
 	}
 
-	bStopping.store(true, std::memory_order_relaxed);
 	if (Thread != nullptr)
 	{
 		// Kill(true) waits for Run() to return. Required, not optional: a sampler thread outliving this
@@ -169,6 +181,8 @@ void FFPMStallSampler::Disarm()
 		delete Thread;
 		Thread = nullptr;
 	}
+
+	LogReport();
 }
 
 uint32 FFPMStallSampler::Run()

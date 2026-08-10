@@ -250,9 +250,26 @@ void FFPMPowerWarningProbe::ReportNow()
 	}
 
 	const FFPMPowerSample S = Sample(World);
+
+	/*
+	 * ★ FOLD THE ON-DEMAND SAMPLE INTO THE PEAK, and say what the peak actually covers.
+	 *
+	 * The old line took FMath::Max(peak, this sample) for the printout and threw the result away, so a
+	 * tripped fuse caught by an on-demand report vanished from the next one. And it called the number
+	 * "this session" while the only thing feeding it was the %.0f s window after load — past that the
+	 * value froze, and a frozen zero reads exactly like a measured zero.
+	 *
+	 * Storing it fixes both: every sample this probe ever takes now raises the peak, and the label names
+	 * its real coverage instead of implying continuous watching. It is deliberately NOT a continuous
+	 * poll — that would cost a circuit walk forever to answer a question that only matters when Ant is
+	 * looking at the popup.
+	 */
+	GFPMPowerPeakTriggered = FMath::Max(GFPMPowerPeakTriggered, S.FuseTriggered);
+
 	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] power probe (on demand): %s. Peak triggered this session: %d."),
-		*Describe(S), FMath::Max(GFPMPowerPeakTriggered, S.FuseTriggered));
+		TEXT("[FPM] power probe (on demand): %s. Highest seen so far: %d - that covers the %.0f s after "
+		     "load plus every FPM.Power.Report since, NOT the time in between."),
+		*Describe(S), GFPMPowerPeakTriggered, GFPMPowerWindowSeconds);
 	FPMOverlay::Post(TEXT("power-probe"), Describe(S));
 }
 

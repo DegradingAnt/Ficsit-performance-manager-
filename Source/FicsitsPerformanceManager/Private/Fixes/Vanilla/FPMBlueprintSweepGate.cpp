@@ -113,8 +113,35 @@ void FFPMBlueprintSweepGate::Disarm()
 {
 	LogReport();
 
-	// The ledger owns the removal; the handle is ours to clear.
-	SweepHookHandle.Reset();
+	/*
+	 * ★ THE HANDLER IS ACTUALLY REMOVED HERE, and it has to be.
+	 *
+	 * An earlier comment on this spot said "the ledger owns the removal". It does not, and never did:
+	 * FPMHookLedger exposes Install / Records / LogInventory and nothing else, and it says so itself —
+	 * "it does not own lifetimes". Clearing the handle alone would have left this gate CANCELLING
+	 * SWEEPS after Disarm claimed to have stopped it, which is the one thing a disarm must not do.
+	 *
+	 * This is the only fix in the mod that removes its hook, because it is the only one that can do
+	 * harm by continuing: everything else either observes or repairs, and running one extra time is
+	 * free. Cancelling a sweep the game wanted is not.
+	 *
+	 * ⚠ IT BYPASSES THE LEDGER WRAPPER ON PURPOSE, rather than the ledger growing an uninstall API. The
+	 * ledger's own header states its scope — a record of what installed and in what order, not a
+	 * framework — and widening it for one caller would be exactly the speculative generality it warns
+	 * against. The consequence is stated instead of hidden: FPM.Hooks.Dump lists what was INSTALLED,
+	 * not what is currently live, and after a disarm those differ by this one row.
+	 *
+	 * ⚠ THE IsValid() GUARD IS LOAD-BEARING, not defensive habit. In the editor the ledger refuses the
+	 * install and hands back an invalid handle, so SML's handler arrays were never allocated;
+	 * RemoveHandler would then dereference them and, finding both empty, uninstall a hook that was
+	 * never installed (NativeHookManager.h:358-375).
+	 */
+	if (SweepHookHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(AFGBlueprintSubsystem::RefreshBlueprintRecipeRequirements, SweepHookHandle);
+		SweepHookHandle.Reset();
+	}
+
 	BoundRecipeManager.Reset();
 }
 
@@ -312,6 +339,28 @@ void FFPMBlueprintSweepGate::LogReport()
 		     "game thread did not make."),
 		SweepsCancelled, Total, Total > 0 ? 100.0 * SweepsCancelled / Total : 0.0,
 		SweepsAllowed, LastLibrarySize, AuditsRun, AuditDisagreements);
+
+	/*
+	 * ★ HOW LONG THE GATE HAS BEEN HOLDING. LastAllowedSweepSeconds was stamped on every real sweep and
+	 * read by nothing until 2026-08-10 — a written-but-never-read field, which is the same dead shape as
+	 * a counter nobody prints. It answers the question the percentage cannot: a 95% cancel rate reads
+	 * the same whether the last real sweep was four seconds ago or forty minutes ago, and only the
+	 * second one says the library has genuinely gone quiet.
+	 *
+	 * Zero means NOT ONE sweep has been allowed yet, which is a different statement from "it has been
+	 * 0.0 s" and must not print as one.
+	 */
+	if (LastAllowedSweepSeconds > 0.0)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   last real sweep ran %.1f s ago."),
+			FPlatformTime::Seconds() - LastAllowedSweepSeconds);
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   no sweep has been allowed through yet this session."));
+	}
 
 	// ⚠ The liveness statement. A gate that never cancels is not a bug, but it is not a fix either, and
 	// the difference must be visible without reading the source.

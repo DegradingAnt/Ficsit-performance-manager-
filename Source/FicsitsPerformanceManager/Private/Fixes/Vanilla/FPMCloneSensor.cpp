@@ -192,6 +192,11 @@ void FFPMCloneSensor::Arm()
 		int32 Considered = 0;
 		int32 PlausibleMatches = 0;
 
+		// The field is PUBLIC — GameMode.h:138, inside the `public:` at :106; the `protected:` at :140
+		// comes after it. No access transformer is needed and there is not one; an entry claiming
+		// otherwise was removed on 2026-08-10. What is genuinely absent is a public ENUMERATOR, which
+		// is why this iterates the array directly. READ-ONLY: scored and printed, never written, and
+		// no AFGCharacterPlayer is touched. FPM NEVER DESTROYS PLAYER CHARACTERS.
 		for (APlayerState* Candidate : Self->InactivePlayerArray)
 		{
 			const AFGPlayerState* FGCandidate = Cast<AFGPlayerState>(Candidate);
