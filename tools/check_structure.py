@@ -1,9 +1,9 @@
+#!/usr/bin/env python3
 # WHY NOT RUST: this ships INSIDE the public GPL-3.0 mod repo, not in the brain's 40-TOOLS. A
 # contributor cloning it has UE 5.6 and VS 2022, not a cargo toolchain; adding a Rust workspace to a
 # game-mod repo so it can lint its own metadata is a heavier dependency than the lint, and committing a
 # prebuilt binary would contradict this repo's own "ships no binaries" rule. Stdlib Python 3 runs
 # everywhere the modding toolchain already does.
-#!/usr/bin/env python3
 """Structure and metadata gate for FICSIT's Performance Manager.
 
 WHY THIS EXISTS. The rewrite from FPM1 to FPM2 silently dropped things, repeatedly, and each one was

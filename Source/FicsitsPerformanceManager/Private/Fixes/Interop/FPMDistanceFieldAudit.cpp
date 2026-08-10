@@ -48,7 +48,6 @@ namespace
 	TWeakObjectPtr<UWorld> GFPMDfWorld;
 
 	int32 GFPMDfLastMissing = -1;
-	int32 GFPMDfRepaired = 0;
 
 	struct FFPMDfCount
 	{

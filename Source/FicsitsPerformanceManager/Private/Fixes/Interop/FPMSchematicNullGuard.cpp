@@ -214,13 +214,26 @@ void FFPMSchematicNullGuard::Arm()
 		if (IsInGameThread())
 		{
 			const FName ClassName = InClass->GetFName();
-			const bool bFirstSighting = !GFPMSchGuardSeen.Contains(ClassName);
 
-			if (bFirstSighting && GFPMSchGuardSeen.Num() < GFPMSchGuardCensusLimit)
+			/*
+			 * ⚠ bNamed, NOT bFirstSighting, AND THE DIFFERENCE WAS A REVIEW FINDING.
+			 *
+			 * The first version asked "have I seen this class before" and used that to bypass the
+			 * throttle. Once the census filled at the cap, a further class could never be ADDED, so the
+			 * answer stayed "no" on every single fire and the line logged UNTHROTTLED forever -- the
+			 * exact log spam this mod exists to remove, inside a guard whose header promises throttling.
+			 *
+			 * The question that survives a full census is "did I just name it", which is false once the
+			 * cap is reached, so the throttle takes over instead of being defeated by it.
+			 */
+			const bool bCensusHasRoom = GFPMSchGuardSeen.Num() < GFPMSchGuardCensusLimit;
+			const bool bNamed = bCensusHasRoom && !GFPMSchGuardSeen.Contains(ClassName);
+
+			if (bNamed)
 			{
 				GFPMSchGuardSeen.Add(ClassName);
 			}
-			else if (GFPMSchGuardSeen.Num() >= GFPMSchGuardCensusLimit && !bGFPMSchGuardCensusFull)
+			else if (!bCensusHasRoom && !bGFPMSchGuardCensusFull)
 			{
 				bGFPMSchGuardCensusFull = true;
 				UE_LOG(LogFicsitsPerformanceManager, Warning,
@@ -239,7 +252,7 @@ void FFPMSchematicNullGuard::Arm()
 			 * per-session volume is unbounded a priori. The first sighting of each schematic is the datum
 			 * that names an origin; the rest is rate, and rate belongs in a counter.
 			 */
-			if ((bFirstSighting || (N % FPMLog::ThrottleNotable) == 0)
+			if ((bNamed || (N % FPMLog::ThrottleNotable) == 0)
 				&& FPMDiag::IsOn(FPMDiag::EChannel::SchematicGuard))
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Warning,

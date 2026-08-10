@@ -62,6 +62,23 @@ namespace
 	/** At least this many distinct rays, so one big nearby surface cannot carry a fraction alone. */
 	constexpr int32 GFPMMinHits = 3;
 
+	/**
+	 * ⚠ HOW LONG A BATCH MAY BE IN FLIGHT BEFORE IT IS ABANDONED.
+	 *
+	 * Found by review, and it was a BLOCKER rather than a tidy-up. `bInFlight` was cleared only when all
+	 * 24 callbacks returned. Tear the world down mid-batch and the queued async traces are discarded, the
+	 * callbacks never arrive, and the flag stays set -- so Tick early-returns FOREVER and the check that
+	 * fog, particles and the visor gate all depend on is silently dead for the rest of the session, with
+	 * nothing reporting it.
+	 *
+	 * Async traces are documented to complete on the NEXT frame (World.h:2377), so seconds is already
+	 * enormously generous; anything past this did not merely run late, it is never coming.
+	 */
+	constexpr double GFPMBatchTimeoutSec = 5.0;
+
+	/** Batches abandoned by that timeout. Non-zero means level transitions are interrupting the probe. */
+	int32 GBatchesAbandoned = 0;
+
 	struct FFPMConsumer
 	{
 		const TCHAR* Name = nullptr;
@@ -72,6 +89,26 @@ namespace
 	TArray<FFPMConsumer> GConsumers;
 	int32 GActiveConsumers = 0;
 
+	/**
+	 * ★ DOES ANY LIVE CONSUMER ACTUALLY NEED THE WALLS?
+	 *
+	 * Review finding: EFPMEnclosureNeed was stored, logged, and never read -- decorative surface, which is
+	 * speculative generality. It earns its place here instead. Wall rays are only traced when something
+	 * asks about a sealed room; a roof-only consumer (the visor gate) traces the upward rays alone, which
+	 * is roughly half the set. In a performance mod, a parameter that does not change what runs should
+	 * either start doing so or stop existing.
+	 */
+	bool GNeedSealed = false;
+
+	void RecomputeNeeds()
+	{
+		GNeedSealed = false;
+		for (const FFPMConsumer& C : GConsumers)
+		{
+			if (C.bActive && C.Need == EFPMEnclosureNeed::SealedRoom) { GNeedSealed = true; break; }
+		}
+	}
+
 	/** The unit directions, built once. */
 	TArray<FVector> GDirections;
 
@@ -81,6 +118,7 @@ namespace
 		TArray<uint8> RayResult;   // 0 = miss, 1 = world hit, 2 = built hit
 		TArray<float> RayDistance;
 		int32 Returned = 0;
+		int32 Expected = 0;
 		bool bInFlight = false;
 		FVector Origin = FVector::ZeroVector;
 	};
@@ -196,7 +234,9 @@ namespace
 		if (!GbUnderRoof && GRoofStreak >= GFPMStreakToFlip) { GbUnderRoof = true; }
 		else if (GbUnderRoof && GNoRoofStreak >= GFPMStreakToFlip) { GbUnderRoof = false; }
 
-		const bool bSealRaw = (R.BuiltHits >= GFPMMinHits) && (R.BuiltSealed >= GFPMSealedMin);
+		// Only meaningful when the wall band was actually traced. Without it the sealed fraction is
+		// computed over the roof alone and would read as sealed inside any covered but open-sided area.
+		const bool bSealRaw = GNeedSealed && (R.BuiltHits >= GFPMMinHits) && (R.BuiltSealed >= GFPMSealedMin);
 		if (bSealRaw) { ++GSealStreak; GNoSealStreak = 0; } else { ++GNoSealStreak; GSealStreak = 0; }
 		if (!GbSealed && GSealStreak >= GFPMStreakToFlip) { GbSealed = true; }
 		else if (GbSealed && GNoSealStreak >= GFPMStreakToFlip) { GbSealed = false; }
@@ -232,7 +272,7 @@ namespace
 			}
 		}
 
-		if (++GBatch.Returned >= GDirections.Num())
+		if (++GBatch.Returned >= GBatch.Expected)
 		{
 			Finalise();
 		}
@@ -254,6 +294,7 @@ int32 FPMEnclosure::Register(const TCHAR* ConsumerName, EFPMEnclosureNeed Need)
 	}
 
 	const int32 Token = GConsumers.Add(C);
+	RecomputeNeeds();
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] enclosure: '%s' registered (%s). %d consumer(s) active - the sampler runs only while "
 		     "at least one is."),
@@ -268,6 +309,7 @@ void FPMEnclosure::Unregister(int32 Token)
 	{
 		GConsumers[Token].bActive = false;
 		--GActiveConsumers;
+		RecomputeNeeds();
 	}
 
 	if (GActiveConsumers <= 0 && GTicker.IsValid())
@@ -282,6 +324,7 @@ void FPMEnclosure::Shutdown()
 	if (GTicker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(GTicker); GTicker.Reset(); }
 	GConsumers.Reset();
 	GActiveConsumers = 0;
+	RecomputeNeeds();
 	GBatch.bInFlight = false;
 	GbUnderRoof = GbSealed = false;
 }
@@ -300,7 +343,20 @@ namespace
 bool TickInternal(float /*DeltaSeconds*/)
 {
 	// 1. NOTHING LISTENING, NOTHING RUNS. Zero cost, not merely low cost.
-	if (GActiveConsumers <= 0 || GBatch.bInFlight) { return true; }
+	if (GActiveConsumers <= 0) { return true; }
+
+	if (GBatch.bInFlight)
+	{
+		// A batch whose callbacks are never coming must not wedge the sampler shut. See the timeout.
+		if (FPlatformTime::Seconds() - GLastProbeTime < GFPMBatchTimeoutSec) { return true; }
+
+		GBatch.bInFlight = false;
+		++GBatchesAbandoned;
+		UE_CLOG(FPMDiag::IsOn(FPMDiag::EChannel::Enclosure), LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] enclosure: abandoned a batch after %.0f s with %d of %d rays returned (%d total "
+			     "abandoned). Usually a world teardown mid-batch. The sampler continues."),
+			GFPMBatchTimeoutSec, GBatch.Returned, GBatch.Expected, GBatchesAbandoned);
+	}
 
 	UWorld* World = GEngine ? GEngine->GetCurrentPlayWorld() : nullptr;
 	if (World == nullptr || !World->IsGameWorld()) { return true; }
@@ -362,8 +418,16 @@ bool TickInternal(float /*DeltaSeconds*/)
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FPMEnclosure), /*bTraceComplex*/ false, Pawn);
 	Params.bReturnPhysicalMaterial = false;
 
+	/*
+	 * Only the rays a live consumer needs. With no sealed-room consumer the wall band is skipped
+	 * entirely, which is about half the set -- and the batch's expected return count is adjusted to
+	 * match, or Finalise would never fire.
+	 */
+	GBatch.Expected = 0;
 	for (int32 i = 0; i < GDirections.Num(); ++i)
 	{
+		if (!GNeedSealed && GDirections[i].Z < GFPMOverheadZ) { continue; }
+		++GBatch.Expected;
 		World->AsyncLineTraceByChannel(EAsyncTraceType::Single, Origin,
 			Origin + GDirections[i] * GFPMTraceCm, ECC_Visibility, Params,
 			FCollisionResponseParams::DefaultResponseParam, &GTraceDelegate, static_cast<uint32>(i));
@@ -408,6 +472,10 @@ void FPMEnclosure::LogNow()
 		     "moved (%.0f%% of %d opportunities). Nothing traces while no consumer is registered."),
 		GBatchesIssued, GDirections.Num(), GBatchesSkippedStill,
 		Total > 0 ? 100.0 * GBatchesSkippedStill / Total : 0.0, Total);
+
+	UE_CLOG(GBatchesAbandoned > 0, LogFicsitsPerformanceManager, Warning,
+		TEXT("[FPM]   %d batch(es) ABANDONED on timeout - callbacks never arrived, almost always a "
+		     "world teardown mid-batch. Not fatal; the sampler recovers."), GBatchesAbandoned);
 }
 
 static FAutoConsoleCommand GFPMEnclosureReportCmd(
