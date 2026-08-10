@@ -17,23 +17,41 @@ FICSIT check knockout, orange framing brackets, "NOTICE OF EXCESS" serial rule).
 Resources/Icon128.png is the UE plugin icon and is byte-identical to NOX_Mod_Logo_128.png.
 
 ## Page art
-| File | Size | Use |
+
+⚠ **Neither page-art file is in this folder, and neither may be used yet.** Both are placeholders
+built over a screen capture of the running game. See below.
+
+| File | Size | Status |
 |---|---|---|
-| NOX_Store_Banner_2400x536.png | 2400×536 | store page header — ⚠ **HOLD, see below** |
-| NOX_Card_Thumbnail_640x360.png | 640×360 | mod card / social preview / README header. Clean, makes no claims. |
+| NOX_Store_Banner_2400x536.png | 2400×536 | **REMOVED** — game capture backdrop, plus two wrong strings |
+| NOX_Card_Thumbnail_640x360.png | 640×360 | **REMOVED** — game capture backdrop |
 
-### ⚠ The 2400×536 banner carries two strings that describe FPM1, not this build
+Use `NOX_Mod_Logo_1024.png` for the listing and `NOX_Mod_Logo_512.png` or the Dark variant for a
+README header. Those are the tile mark on a drawn panel, with no capture behind them.
 
-Found 2026-08-10 while adding it to the README. Both need a designer fix before the banner is used
-anywhere public. The art itself is correct — only the text is wrong.
+### Why both were removed
 
-| Element on the banner | Problem | Correct for this build |
+The manifest in this folder already states the rule. Under *"Provenance — what may ship"*, the
+**screen capture** class reads:
+
+> frames grabbed from the running game (`game-scene.png`, `scene-a/b.png`, `ref-menu.png`) — mock
+> backdrop only. **Not an asset** — never ship in any form.
+
+Both page-art files are that backdrop with the lockup composited on top. Ant, 2026-08-10, on the card
+thumbnail: *"you cant use that. it has a fucking screenshot of the game behind the art, its a
+placeholder."*
+
+⚠ They were committed to the public repo before this was caught, so they remain reachable in git
+history even though they are gone from the working tree.
+
+### And the banner also carries two strings that describe FPM1
+
+Separate from the capture problem, and still true when the art is redone:
+
+| Element | Problem | Correct for this build |
 |---|---|---|
-| The chip reading **"Client-side"** | Wrong, and it is the kind of wrong that costs a support thread. FPM sets `RequiredOnRemote: true`, arms on a dedicated server, and most of its fixes are server-authoritative. A player reading "client-side" will install it on the client alone and be refused the join. | **"Client + server"** |
+| The chip reading **"Client-side"** | The reverse of true, and the kind of wrong that costs a support thread. FPM sets `RequiredOnRemote: true`, arms on a dedicated server, and most of its fixes are server-authoritative. A player who reads "client-side" installs it on the client alone and is refused the join. | **"Client + server"** |
 | The tagline **"> Your settings are the floor. Everything above it is paid for out of frames you were throwing away."** | Describes the performance **governor**. This build has no governor. | Something that matches what ships: repairs, guards and diagnostics. |
-
-Until both are corrected, use `NOX_Card_Thumbnail_640x360.png` for headers. It carries the mark, the
-serial and the mod name, and it makes no claim that can go stale.
 
 ## Vector + geometry (in-game)
 Under ../assets/logo-export/:

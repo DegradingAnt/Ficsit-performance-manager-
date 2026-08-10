@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/branding/NOX_Card_Thumbnail_640x360.png" alt="FICSIT Performance Manager" width="640">
+<img src="docs/branding/NOX_Mod_Logo_1024.png" alt="NOX — FICSIT Performance Manager" width="320">
 
-<br>
+# FICSIT Performance Manager
 
 ![Satisfactory 1.2.3.1 CL 495413](https://img.shields.io/badge/Satisfactory-1.2.3.1%20%C2%B7%20CL%20495413-E59344?style=flat-square)
 [![SML ^3.12.0](https://img.shields.io/badge/SML-%5E3.12.0-E59344?style=flat-square)](https://ficsit.app/mod/SML)
