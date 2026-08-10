@@ -11,6 +11,7 @@
 #include "HAL/PlatformStackWalk.h"
 #include "HAL/RunnableThread.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/ScopeLock.h"
 
 /*
@@ -187,6 +188,11 @@ uint32 FFPMStallSampler::Run()
 		const double StalledMs = (Now - FrameStart) * 1000.0;
 		if (StalledMs < CVarStallSampleMs.GetValueOnAnyThread()) { continue; }
 
+		// ⚠ NEVER SAMPLE THE REPORT. LogReport emits two dozen log lines from the GAME THREAD, which can
+		// itself pass the threshold — and a capture taken then would attribute the stall to this module.
+		// An instrument must not appear in its own results.
+		if (bReportInProgress.load(std::memory_order_acquire)) { continue; }
+
 		// One sample per stall. Cleared when the game thread starts a new frame, below.
 		if (bSampleInFlight.exchange(true, std::memory_order_acq_rel)) { continue; }
 
@@ -269,6 +275,11 @@ void FFPMStallSampler::SampleGameThread(double StalledMs)
 
 void FFPMStallSampler::LogReport()
 {
+	// Held for the whole report. See the header note: without it, the report's own logging can overrun
+	// the sample threshold and the sampler captures itself.
+	bReportInProgress.store(true, std::memory_order_release);
+	ON_SCOPE_EXIT { bReportInProgress.store(false, std::memory_order_release); };
+
 	TArray<TPair<FString, int32>> Top;
 	TArray<TPair<FString, int32>> Any;
 	int32 Taken = 0;

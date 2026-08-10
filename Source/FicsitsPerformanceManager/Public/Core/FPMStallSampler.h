@@ -121,10 +121,25 @@ private:
 	FDelegateHandle FrameBeginHandle;
 
 	/**
-	 * Results. Guarded by a lock the GAME THREAD never takes while suspended — only the watchdog writes,
-	 * and only the report reads, so the lock can never be held by the thread we are about to suspend.
+	 * ⚠ THE FIRST VERSION OF THIS COMMENT WAS FALSE, and `ue-async-threading` is what caught it.
+	 *
+	 * It claimed the lock is "only ever taken by this thread and the report, never by the game thread".
+	 * `LogReport()` RUNS ON the game thread — it is a console command and it is called from `Disarm()`.
+	 * So the game thread does take this lock, and a safety argument built on it not doing so was wrong.
+	 *
+	 * The correct argument, which happens to hold: `CaptureThreadStackBackTrace` suspends the game thread,
+	 * walks, and RESUMES it before returning, and `SampleGameThread` only takes this lock AFTER that call
+	 * returns. So the watchdog never waits on a lock held by a thread it has suspended. That is the whole
+	 * deadlock-freedom argument and it depends on the ordering inside `SampleGameThread`, not on who
+	 * touches the lock.
+	 *
+	 * `bReportInProgress` closes the remaining interaction rather than reasoning about it: a report can
+	 * emit two dozen log lines, which can itself overrun the sample threshold, and sampling the game
+	 * thread mid-report would capture this instrument instead of the game. An instrument must not appear
+	 * in its own results.
 	 */
 	mutable FCriticalSection ResultsLock;
+	std::atomic<bool> bReportInProgress{false};
 	TMap<FString, int32> ModuleHits;      // top-of-stack attribution
 	TMap<FString, int32> ModuleAnywhere;  // anywhere-in-stack attribution
 	int32 SamplesTaken = 0;
