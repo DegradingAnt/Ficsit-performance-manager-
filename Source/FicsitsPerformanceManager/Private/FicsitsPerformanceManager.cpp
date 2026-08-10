@@ -5,6 +5,7 @@
 #include "Core/FPMBoxCache.h"
 #include "Core/FPMCVarWriter.h"
 #include "Core/FPMFixContract.h"
+#include "Core/FPMGCMeter.h"
 #include "Core/FPMHitchMeter.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
@@ -191,6 +192,18 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// proves from the build's preprocessor definitions rather than from reputation. It arms on the dedicated
 	// server too - the 560 ms save stall is a server-side hitch and a client-only readout could never see it.
 	FPMFixes::Arm(FFPMHitchMeter::Get());
+
+	/*
+	 * The OTHER hitch class, and it is genuinely separate from the async-load one the residency fix took.
+	 * Measured 2026-08-02 on Ant's save: 27 GC pauses in ~22 min, mean 27.2 ms, worst 148.6 ms, every one
+	 * stop-the-world.
+	 *
+	 * L1 of a design that was written then orphaned by the rewrite. Measurement ships before any lever
+	 * because the only pacing lever available stretches TIMER passes and leaves FORCED ones untouched --
+	 * so the split this meter produces decides whether that lever is worth writing at all. It steers
+	 * nothing: no quality lever shortens a mark that scales with the live object graph.
+	 */
+	FPMFixes::Arm(FFPMGCMeter::Get());
 
 	// And the thing the meter is pointed AT. Root-caused 2026-08-02, recovered unbuilt by the 2026-08-09
 	// scratchpad audit: vanilla's own player-list widget blocking-loads a platform icon nobody holds a hard

@@ -178,6 +178,13 @@ static TAutoConsoleVariable<int32> CVarDiagWeatherGate(
 	     "and it must say so rather than take credit."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagGCMeter(
+	TEXT("FPM.Diag.GCMeter"), 1,
+	TEXT("Garbage-collection pauses. 0 = silent, 1 = one line per pass with the pause, the gap, the "
+	     "timer-vs-forced call and the object delta. About one line a minute, which is why it is not held "
+	     "back for level 2 - the per-pass detail IS the measurement."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -204,6 +211,7 @@ namespace
 		&CVarDiagEnclosure,
 		&CVarDiagDistanceField,
 		&CVarDiagWeatherGate,
+		&CVarDiagGCMeter,
 	};
 
 	/*
@@ -244,6 +252,7 @@ namespace
 		case FPMDiag::EChannel::Enclosure:      return TEXT("FPM.Diag.Enclosure");
 		case FPMDiag::EChannel::DistanceField:  return TEXT("FPM.Diag.DistanceField");
 		case FPMDiag::EChannel::WeatherGate:    return TEXT("FPM.Diag.WeatherGate");
+		case FPMDiag::EChannel::GCMeter:        return TEXT("FPM.Diag.GCMeter");
 		default:                                return TEXT("<unknown>");
 		}
 	}
