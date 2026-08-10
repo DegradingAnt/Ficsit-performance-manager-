@@ -62,6 +62,50 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 11:40 — CODE — the engine's own per-PSO timing switched on, because it was compiled in and merely silent
+
+- **What:** `Arm()` raises the engine log category `LogPSOHitching` to Verbose, and `Disarm()` puts it back
+  to its declared `Log` default. Guarded by `FPM.Pso.EngineHitchLog` (default 1) and never armed on a
+  dedicated server. The game then prints one line per runtime pipeline build over
+  `r.PSO.RuntimeCreationHitchThreshold` ms, carrying the duration, the pipeline name and the precache
+  status:
+  `Runtime graphics PSO creation hitch (%.2f msec) for %s (precache status: %s)`.
+- **Why:** Ant, 2026-08-10: *"Fpm should hook whatever it needs. We need all the control we can get"*.
+  The intended target was a hook on `FDynamicRHI::RHICreateGraphicsPipelineState`, which is pure virtual
+  (`DynamicRHI.h:414`) and reachable through `GDynamicRHI` — SML's virtual hook resolves the vtable from a
+  member-pointer thunk and needs no UObject, so it was viable. Checking the engine first found something
+  better. `PipelineStateCache.cpp:238-279` already times every runtime creation and already logs duration,
+  name and precache status. That is strictly more than the hook would have produced, for no hook.
+- **The fact that had to be checked, not assumed:** the Verbose line is COMPILED INTO the shipped binary.
+  `USE_LOGGING_IN_SHIPPING` is 1 in this build's own SharedDefinitions header, so `NO_LOGGING` is 0
+  (`Misc/Build.h:320`), and `COMPILED_IN_MINIMUM_VERBOSITY` defaults to `VeryVerbose`
+  (`LogMacros.h:81-82`) with no override anywhere in this project's shipping definitions. The line exists
+  and was suppressed only at runtime by the category's `Log` default.
+- **By name, not by symbol:** the category is `DEFINE_LOG_CATEGORY_STATIC` in another translation unit, so
+  there is no symbol for `UE_SET_LOG_VERBOSITY`. `FSelfRegisteringExec::StaticExec` is CORE_API and `LOG`
+  is handled by `FLogSuppressionImplementation::Exec_Runtime` (`LogSuppressionInterface.cpp:589-591`) —
+  `Exec_Runtime`, so it is present in Shipping. Categories self-register by name, so static linkage does
+  not block it.
+- **Why not the hook, and when it should become one:** the hook would add millisecond attribution on the
+  in-game overlay, which this does not. The in-game half is already served by the cold-creation counter
+  added in the previous entry, so the hook buys only overlay precision — at the price of sitting on the
+  render thread inside the renderer's pipeline creation path. Worth doing when a boot shows the log half
+  is not enough. Not before.
+- **Zero residue:** a category's runtime verbosity is in-memory only. No ini is written. `Disarm()`
+  restores unconditionally rather than re-reading the cvar, so flipping the cvar off mid-session cannot
+  strand the category at Verbose.
+- **Files:** `Private/Core/FPMHitchMeter.cpp`, `FicsitsPerformanceManager.uplugin`
+  (0.8.1 → 0.8.2, `VersionName` / `SemVersion` / `RemoteVersionRange`).
+- **Bump rationale:** PATCH. Diagnostics, invisible with the console closed, no behavior change.
+- **Revert:** Set `FPM.Pso.EngineHitchLog 0`, or remove the two `FPMSetEnginePsoHitchLogging` calls. Undo
+  if the line proves too noisy in a real session — measured expectation is about nine lines per minute,
+  from the 100 hitches in eleven minutes in her 03:27 log.
+- **Verified:** build-only (`FactoryEditor Win64 Development`, `Result: Succeeded`, 26.47 s) · NOT-YET
+  boot-tested. ⚠ The boot test for this one is trivial and worth doing first: grep the client log for
+  `LogPSOHitching`. If the Verbose lines appear, the whole PSO question becomes readable offline.
+
+---
+
 ## 2026-08-10 09:50 — CODE — PSO attribution widened from one mechanism to three, and the old bucket shown to be a tautology
 
 - **What:** The hitch meter watched one of the three ways a pipeline state object costs time in UE 5.6.

@@ -19,6 +19,9 @@
 #include "PipelineFileCache.h"
 #include "PipelineStateCache.h"
 
+// FSelfRegisteringExec::StaticExec, for the engine PSO-hitch log switch below.
+#include "Misc/CoreMisc.h"
+
 /*
  * THE THRESHOLD IS A CVAR AND ITS HELP TEXT CARRIES THE TRAP, because the trap is not obvious and it turns
  * the instrument into a liar rather than merely mis-tuning it.
@@ -47,6 +50,71 @@ static TAutoConsoleVariable<float> CVarHitchSummarySeconds(
 	TEXT("Seconds between running summaries. Every summary carries the frame count it was measured over, so "
 	     "a dead meter reads as 0-in-0 rather than as a calm session. Default 60."),
 	ECVF_Default);
+
+/*
+ * ★ THE ENGINE ALREADY MEASURES EXACTLY WHAT WE WANT AND SIMPLY DOES NOT PRINT IT.
+ *
+ * Ant, 2026-08-10: *"Fpm should hook whatever it needs. We need all the control we can get"*. Taking that
+ * as permission rather than as an instruction to hook first, because a cheaper route turned out to carry
+ * MORE data than the hook would have.
+ *
+ * `PipelineStateCache.cpp:238-279` times every runtime pipeline creation and, past
+ * `r.PSO.RuntimeCreationHitchThreshold` (20 ms), logs:
+ *
+ *     UE_LOG(LogPSOHitching, Verbose, TEXT("Runtime graphics PSO creation hitch (%.2f msec) for %s "
+ *            "(precache status: %s)"), ...)
+ *
+ * Duration, the pipeline's name, and whether it had been precached — per hitch. That is strictly more
+ * than a hook on `FDynamicRHI::RHICreateGraphicsPipelineState` could produce, and it costs no hook at all.
+ *
+ * ★ AND IT IS COMPILED INTO THE SHIPPED BINARY, which is the fact that had to be checked rather than
+ * hoped for. Verbose survives here for two reasons together:
+ *   - `USE_LOGGING_IN_SHIPPING 1` in this build's own SharedDefinitions header, so `NO_LOGGING` is 0
+ *     (`Misc/Build.h:320`).
+ *   - `COMPILED_IN_MINIMUM_VERBOSITY` defaults to `VeryVerbose` (`LogMacros.h:81-82`) and may only be
+ *     overridden in a monolithic build. Nothing in this project's shipping definitions overrides it.
+ * So the line exists in the binary and is suppressed only at RUNTIME, by the category's declared default
+ * of `Log`. One runtime switch reveals it.
+ *
+ * ⚠ WHY THIS IS NOT THE HOOK, and when it should become one. A hook would give per-creation timing that
+ * FPM owns and can attribute in-game on the overlay. This gives a richer line in the log and nothing on
+ * screen. The in-game half is already covered by the cold-creation counter, so the hook buys only
+ * millisecond attribution on the overlay — and it would sit on the render thread inside the renderer's
+ * pipeline creation path. That is worth doing when a boot shows the log half is not enough, and not
+ * before. Evidence first is this file's whole argument.
+ *
+ * ZERO RESIDUE: a log category's runtime verbosity is in-memory only. Nothing is written to any ini, and
+ * `Disarm()` puts the category back to its declared `Log` default.
+ */
+static TAutoConsoleVariable<int32> CVarPsoEngineHitchLog(
+	TEXT("FPM.Pso.EngineHitchLog"), 1,
+	TEXT("1 raises the engine's own LogPSOHitching category to Verbose, which prints one line per runtime "
+	     "pipeline creation over r.PSO.RuntimeCreationHitchThreshold ms with its duration, name and "
+	     "precache status. 0 leaves the category alone. Restored on unload either way. Default 1."),
+	ECVF_Default);
+
+/**
+ * Flip the engine's PSO-hitch category. `FSelfRegisteringExec::StaticExec` is CORE_API and the `LOG`
+ * command is handled by `FLogSuppressionImplementation::Exec_Runtime` (`LogSuppressionInterface.cpp:589`,
+ * `:591`) — `Exec_Runtime` rather than `Exec_Dev`, so it is present in Shipping.
+ *
+ * By name, not by symbol, and that is forced rather than chosen: the category is
+ * `DEFINE_LOG_CATEGORY_STATIC` inside `PipelineStateCache.cpp`, so there is no linkable symbol to hand to
+ * `UE_SET_LOG_VERBOSITY`. Categories register themselves by name at construction, so the name route
+ * reaches it regardless of static linkage.
+ */
+static void FPMSetEnginePsoHitchLogging(bool bVerbose)
+{
+	if (GLog == nullptr) { return; }
+
+	// `Log` is LogPSOHitching's own declared default (`PipelineStateCache.cpp:45`), so this restores
+	// rather than guesses. `Log Reset` would have reset EVERY category, which is not ours to do.
+	const TCHAR* Cmd = bVerbose
+		? TEXT("Log LogPSOHitching Verbose")
+		: TEXT("Log LogPSOHitching Log");
+
+	FSelfRegisteringExec::StaticExec(nullptr, Cmd, *GLog);
+}
 
 FFPMHitchMeter& FFPMHitchMeter::Get()
 {
@@ -90,6 +158,18 @@ void FFPMHitchMeter::Arm()
 	PsoLoggedHandle = FPipelineFileCacheManager::OnPipelineStateLogged().AddLambda(
 		[this](const FPipelineCacheFileFormatPSO& PSO)
 		{ OnPsoCreated(static_cast<int32>(PSO.Type)); });
+
+	// Reveal the engine's own per-creation timing line. See the long note above the cvar.
+	// ⚠ Never on a dedicated server: NullRHI builds no pipelines, so this would raise a category that
+	// cannot emit and put a misleading switch in the server log for nothing.
+	if (!IsRunningDedicatedServer() && CVarPsoEngineHitchLog.GetValueOnAnyThread() != 0)
+	{
+		FPMSetEnginePsoHitchLogging(true);
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] engine PSO-hitch logging raised to Verbose. The game will now print one "
+			     "'Runtime graphics/compute PSO creation hitch (N msec)' line per pipeline built above "
+			     "r.PSO.RuntimeCreationHitchThreshold. Set FPM.Pso.EngineHitchLog 0 to leave it alone."));
+	}
 
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
 	// that distinguishes "measured nothing" from "never measured".
@@ -145,6 +225,15 @@ void FFPMHitchMeter::Disarm()
 	{
 		FPipelineFileCacheManager::OnPipelineStateLogged().Remove(PsoLoggedHandle);
 		PsoLoggedHandle.Reset();
+	}
+
+	// ZERO RESIDUE. Restored unconditionally rather than behind the same cvar the arm path checked:
+	// someone can set FPM.Pso.EngineHitchLog to 0 mid-session, and a restore that reads the CURRENT value
+	// would then leave the category raised forever. Putting it back to its declared default is correct
+	// whether or not we were the ones who moved it.
+	if (!IsRunningDedicatedServer())
+	{
+		FPMSetEnginePsoHitchLogging(false);
 	}
 }
 
