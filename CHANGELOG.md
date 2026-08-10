@@ -63,6 +63,57 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 22:55 — CODE — P4.2: the master switch, where OFF means RELEASED
+
+- **What:** `0.11.9` → `0.11.10`. `FPMMasterSwitch` + the `FPM.Enabled` cvar (default 1), and
+  `FPMFixes::RearmAll()` with a registry split in `FPMFixContract`. **PATCH** — a cvar is invisible to
+  someone playing with the console closed, which is this file's own test.
+
+- **Why:** P4.2 (`_DESIGN-R2` §PHASE 4). Shipped as a **cvar, not a settings row**, because
+  `UFGUserSetting` assets are editor work and none exist yet; the row will drive this cvar when it
+  arrives. Building the consumption layer first would be unwired infrastructure — the old mod's most
+  repeated fault.
+
+  ★ **OFF releases; it does not merely stop writing.** Stopping new writes would leave every value FPM
+  already pushed still applied, against a Description that tells players it *"leaves nothing behind"*.
+  So OFF routes through `FPMCVarWriter::ReleaseAll`, restoring each cvar's prior value **and** prior
+  SetBy priority.
+
+  ★ **Order is disarm-then-release, and it is load-bearing.** A fix that re-asserts a cvar from a hook —
+  `FFPMGlassQuality` does exactly that on a settings apply — would write its value straight back in the
+  window between a release and its own teardown. Releasing first would silently accomplish nothing on
+  precisely the levers that fight hardest to stay set.
+
+  ⚠ **This could not have shipped before 0.11.9.** `DisarmAll()` was a no-op for 13 of 28 fixes, so the
+  switch would have reported FPM disabled while seventeen hooks stayed installed.
+
+  **Reversibility needed a registry change.** `DisarmAll` empties the armed list and the arm sequence
+  lives in `StartupModule`, so OFF would have been permanent for the session. `FPMFixContract` now keeps
+  `GRegisteredFixes` beside `GArmedFixes`. ⚠ **The armed state lives in the registry, not in each fix,
+  deliberately**: most `Arm()` bodies subscribe unconditionally, so `RearmAll` arming something already
+  armed would install a SECOND handler — a cancelling fix would cancel twice, a counting one would
+  double every number. No fix had to be rewritten to be idempotent.
+
+  ⚠ **What ON does NOT restore, said out loud:** a fix whose real work happens in `OnWorldLoad` — the
+  rain sweep, the distance-field sampler, the power probe — comes back **armed but INERT** until the
+  next world load. Re-arming does not replay one. Both the log line and the cvar help text say so.
+
+  The transition is also guarded against a `set` that writes the value it already had, which would
+  otherwise call `DisarmAll` twice and log a disarm that disarmed nothing.
+
+- **Files:** `Public|Private/Core/FPMMasterSwitch.{h,cpp}` (new), `Public/Core/FPMFixContract.h`,
+  `Private/Core/FPMFixContract.cpp`, `Private/FicsitsPerformanceManager.cpp` (installed last, after
+  every `Arm()`), `.uplugin`.
+
+- **Revert:** `git revert`. Nothing depends on the switch; the registry split is inert without it.
+
+- **Verified:** `FactoryEditor Win64 Development`, `FactoryServer **Linux** Shipping`,
+  `FactoryGameSteam Win64 Shipping` — all `Result: Succeeded`, zero warnings. `check_structure.py`:
+  28 fixes, 0 errors, 0 warnings, exit 0.
+  ⚠ **NOT BOOTED, and this one needs it more than most.** `FPM.Enabled 0` then `1` has never run in
+  game. Disarm-then-release ordering, the re-arm path, and whether the released cvars actually revert
+  visibly are all unverified against a running world.
+
 ## 2026-08-10 22:30 — CODE — every fix can now be turned off, and the gate is an error
 
 - **What:** `0.11.8` → `0.11.9`. `Disarm()` + stored `FDelegateHandle`s added to the remaining **11**

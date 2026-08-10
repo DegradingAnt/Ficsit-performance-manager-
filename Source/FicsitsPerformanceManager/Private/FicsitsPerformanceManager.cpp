@@ -10,6 +10,7 @@
 #include "Fixes/Vanilla/FPMBlueprintSweepGate.h"
 #include "Core/FPMHitchMeter.h"
 #include "Core/FPMSettingsAudit.h"
+#include "Core/FPMMasterSwitch.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
 #include "Core/FPMSaveSettingsInterceptor.h"
@@ -330,6 +331,17 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 		FPMOverlay::Post(TEXT("startup"), FString::Printf(TEXT("FPM %s loaded, %d hook(s) armed"),
 			*VersionName, FPMHookLedger::Records().Num()));
 	}
+
+	/*
+	 * ★ P4.2's master switch, installed after every Arm() above for the same reason the crash stamp
+	 * below is: it seeds its state from what is actually armed, and seeding earlier would record an
+	 * empty set and look like it worked.
+	 *
+	 * It is a cvar rather than a settings row because UFGUserSetting assets are editor work and none
+	 * exist yet. The row, when it arrives, drives this cvar — building the consumption layer first
+	 * would be unwired infrastructure.
+	 */
+	FPMMasterSwitch::Install();
 
 	/*
 	 * ★ LAST, DELIBERATELY. The crash stamp records the ARMED-FIX ROSTER, so it has to run after every

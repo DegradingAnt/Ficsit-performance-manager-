@@ -13,6 +13,23 @@ namespace
 	 * the life of the process — see the Get() accessors. Nothing here manages a lifetime.
 	 */
 	TArray<IFPMFix*> GArmedFixes;
+
+	/**
+	 * Everything that PASSED the side gate, whether it is armed right now or not.
+	 *
+	 * ★ THIS IS WHAT MAKES THE MASTER SWITCH REVERSIBLE. `DisarmAll` empties `GArmedFixes`, so without a
+	 * second list an OFF would be permanent for the session — the arm sequence lives in `StartupModule`
+	 * and there would be nothing to replay.
+	 *
+	 * ⚠ AND THE ARMED STATE LIVES HERE RATHER THAN INSIDE EACH FIX, deliberately. Most `Arm()` bodies are
+	 * NOT idempotent: of the 28 fixes only a few open with an `if (Handle.IsValid()) return;`, so calling
+	 * `Arm()` twice would install a SECOND handler on the same method. Keeping "is it armed" in the
+	 * registry means `RearmAll` can never double-subscribe, and no fix has to be rewritten to be safe.
+	 *
+	 * A fix the side gate refused is in NEITHER list, so a dedicated server can never re-arm a
+	 * client-only fix through the back door.
+	 */
+	TArray<IFPMFix*> GRegisteredFixes;
 }
 
 const TCHAR* LexToString(EFPMOriginStatus Status)
@@ -45,6 +62,7 @@ void FPMFixes::Arm(IFPMFix& Fix)
 
 	Fix.Arm();
 	GArmedFixes.Add(&Fix);
+	GRegisteredFixes.AddUnique(&Fix);
 
 	// The armed line now carries the CLAIM, per §2.2. A reader skimming a boot log can see at a glance
 	// which fixes rest on a named cause and which are holding a symptom down while the cause is still open.
@@ -120,4 +138,37 @@ void FPMFixes::DisarmAll()
 		GArmedFixes[Index]->Disarm();
 	}
 	GArmedFixes.Reset();
+
+	// GRegisteredFixes is deliberately untouched — see its comment. This is what lets RearmAll replay.
+}
+
+void FPMFixes::RearmAll()
+{
+	/*
+	 * ⚠ THIS ARMS ONLY WHAT IS NOT ALREADY ARMED, and that guard is load-bearing rather than defensive.
+	 *
+	 * Most `Arm()` bodies subscribe unconditionally. Calling one twice installs a second handler on the
+	 * same method, which for a CANCELLING fix means the cancel runs twice and for a counting one means
+	 * every number doubles. The registry knowing the state is what makes that impossible.
+	 */
+	int32 Rearmed = 0;
+	for (IFPMFix* Fix : GRegisteredFixes)
+	{
+		if (GArmedFixes.Contains(Fix)) { continue; }
+
+		Fix->Arm();
+		GArmedFixes.Add(Fix);
+		++Rearmed;
+	}
+
+	/*
+	 * ⚠ SAY WHAT RE-ARMING DOES NOT RESTORE. A fix that does its real work in OnWorldLoad — the rain
+	 * sweep, the distance-field sampler, the power probe — has just been armed with no world load to
+	 * follow, so it sits inert until the next one. Reporting "N re-armed" without that would overstate
+	 * what just happened, and this project has paid for exactly that shape of half-true report.
+	 */
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] re-armed %d of %d registered fix(es). ⚠ Fixes whose work happens in OnWorldLoad are "
+		     "armed but INERT until the next world load - re-arming does not replay one."),
+		Rearmed, GRegisteredFixes.Num());
 }

@@ -236,8 +236,27 @@ namespace FPMFixes
 	/** Applies the side gate, calls Arm(), logs one line, and remembers the fix so DisarmAll can reach it. */
 	FICSITSPERFORMANCEMANAGER_API void Arm(IFPMFix& Fix);
 
-	/** Disarms in reverse arm order, from ShutdownModule. */
+	/**
+	 * Disarms in reverse arm order. Called from ShutdownModule, and from the P4.2 master switch.
+	 *
+	 * It empties the ARMED list but keeps the REGISTRY, which is what lets `RearmAll` put everything
+	 * back. Before 0.11.9 this was effectively a no-op for 13 of 28 fixes — they never overrode
+	 * `Disarm()` — so it reported them disarmed while their hooks stayed live.
+	 */
 	FICSITSPERFORMANCEMANAGER_API void DisarmAll();
+
+	/**
+	 * Re-arms every registered fix that is not currently armed. The other half of the master switch.
+	 *
+	 * ⚠ It arms only what is NOT already armed, and that guard is load-bearing rather than defensive:
+	 * most `Arm()` bodies subscribe unconditionally, so calling one twice installs a SECOND handler on
+	 * the same method — a cancelling fix would cancel twice, a counting one would double every number.
+	 * The armed state lives in the registry precisely so no fix has to be rewritten to be idempotent.
+	 *
+	 * ⚠ A fix whose real work happens in `OnWorldLoad` comes back armed but INERT until the next world
+	 * load, because re-arming does not replay one. The log line says so rather than implying otherwise.
+	 */
+	FICSITSPERFORMANCEMANAGER_API void RearmAll();
 
 	/**
 	 * Dispatches OnWorldLoad to every armed fix, in arm order.
