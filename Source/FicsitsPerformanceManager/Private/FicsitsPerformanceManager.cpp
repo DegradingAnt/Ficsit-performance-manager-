@@ -10,6 +10,7 @@
 #include "Core/FPMOverlay.h"
 #include "Core/FPMSaveSettingsInterceptor.h"
 #include "Core/FPMUserSettingMap.h"
+#include "Fixes/Interop/FPMDistanceFieldAudit.h"
 #include "Fixes/Interop/FPMHologramNetGuard.h"
 #include "Fixes/Interop/FPMHudHookGuard.h"
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
@@ -113,6 +114,19 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * STATE instead, over a window, because mIsFuseTriggered is replicated and arrives after a join.
 	 */
 	FPMFixes::Arm(FFPMPowerWarningProbe::Get());
+
+	/*
+	 * ONE SUSPECTED CAUSE UNDER THREE OF ANT'S SYMPTOMS: rain through built walls, light through terrain
+	 * on low settings, and the parked distance-field shadow pop-in. AbstractInstance switches distance
+	 * fields OFF on instanced meshes during lazy load and re-enables them in a ONE-SHOT pass when the
+	 * queues drain (AbstractInstanceManager.cpp:305, :482-498). Anything that missed that pass is
+	 * invisible to every distance-field consumer in the renderer, permanently.
+	 *
+	 * Reading more vanilla source cannot settle whether it happens in HER world -- it depends on
+	 * streaming order in a specific save. So this counts. Audit only by default: the repair adds renderer
+	 * work, and Ant's constraint is "keep the performance good".
+	 */
+	FPMFixes::Arm(FFPMDistanceFieldAudit::Get());
 
 	// Re-port of a fix the rewrite orphaned (FPM1 RegisterWwiseServerAudioGate). Installs a hook ONLY
 	// on a dedicated server, where UAkGameplayStatics::StopActor cannot reach an audio device and so

@@ -163,6 +163,13 @@ static TAutoConsoleVariable<int32> CVarDiagEnclosure(
 	     "chatty than it sounds. FPM.Enclosure.Report prints the reading and what it has cost."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagDistanceField(
+	TEXT("FPM.Diag.DistanceField"), 1,
+	TEXT("Instanced meshes not contributing to distance fields. 0 = silent, 1 = the audit at each sample "
+	     "mark plus the worst offenders by instance count. ⚠ This changes what is PRINTED. "
+	     "FPM.DistanceField.Repair changes what is DONE, and it adds renderer work."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -187,6 +194,7 @@ namespace
 		&CVarDiagSchematicGuard,
 		&CVarDiagPowerWarning,
 		&CVarDiagEnclosure,
+		&CVarDiagDistanceField,
 	};
 
 	/*
@@ -225,6 +233,7 @@ namespace
 		case FPMDiag::EChannel::SchematicGuard: return TEXT("FPM.Diag.SchematicGuard");
 		case FPMDiag::EChannel::PowerWarning:   return TEXT("FPM.Diag.PowerWarning");
 		case FPMDiag::EChannel::Enclosure:      return TEXT("FPM.Diag.Enclosure");
+		case FPMDiag::EChannel::DistanceField:  return TEXT("FPM.Diag.DistanceField");
 		default:                                return TEXT("<unknown>");
 		}
 	}

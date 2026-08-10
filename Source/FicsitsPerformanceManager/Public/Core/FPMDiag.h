@@ -77,6 +77,7 @@ public:
 		SchematicGuard,   // FPM.Diag.SchematicGuard — schematic access refused when the event subsystem is null
 		PowerWarning,     // FPM.Diag.PowerWarning — is the "Fuse Blown" popup telling the truth?
 		Enclosure,        // FPM.Diag.Enclosure — the shared "am I inside" probe
+		DistanceField,    // FPM.Diag.DistanceField — buildables missing distance-field contribution
 		Count
 	};
 
