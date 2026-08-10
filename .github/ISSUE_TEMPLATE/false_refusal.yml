@@ -1,0 +1,62 @@
+name: A guard refused something it should have allowed
+description: A milestone, a build, an item or a sound stopped working, and you think FPM caused it.
+labels: ["false-refusal", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template exists because it has happened before. An earlier version of this mod refused
+        schematic access too widely and locked HUB milestones for some mods and some vanilla ones.
+        That class of bug is the most damaging one here, so it gets its own route.
+
+        **First, try turning the guard off.** Every guard has a switch, and none of them need a
+        rebuild. If turning one off fixes your problem, that names the culprit in one step.
+
+  - type: textarea
+    id: what-stopped-working
+    attributes:
+      label: What stopped working
+      description: Name the exact milestone, recipe, building or sound.
+      placeholder: |
+        I cannot submit the "Coal Power" milestone at the HUB. The submit button does nothing.
+        Other milestones work.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: guard-off
+    attributes:
+      label: Does it work again with the guard turned off?
+      description: |
+        Try `FPM.SchematicGuard 0` for milestone and unlock problems.
+        Run `FPM.Fixes` to list every armed guard if you are not sure which one to try.
+      options:
+        - "Yes — turning a guard off fixed it"
+        - "No — it is still broken with the guard off"
+        - "I have not tried yet"
+    validations:
+      required: true
+
+  - type: input
+    id: which-guard
+    attributes:
+      label: Which guard did you turn off?
+      placeholder: "FPM.SchematicGuard"
+
+  - type: textarea
+    id: counters
+    attributes:
+      label: Guard counters
+      description: |
+        Run `FPM.Fixes`, then the status command for the guard you suspect.
+        For the schematic guard that is `FPM.SchematicGuard.Status`.
+      render: text
+
+  - type: textarea
+    id: log
+    attributes:
+      label: The `[FPM]` log lines
+      description: A guard names what it refused, and it names it on the first refusal.
+      render: text
+    validations:
+      required: true

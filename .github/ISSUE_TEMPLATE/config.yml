@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Read the hard rules first
+    url: https://github.com/DegradingAnt/Ficsit-performance-manager-#hard-rules
+    about: Some behaviour is deliberate. Zero residue, no network activity, and no fix that destroys your items.
+  - name: How to run the diagnostics
+    url: https://github.com/DegradingAnt/Ficsit-performance-manager-#diagnostics
+    about: Every diagnostic is a console command. FPM.Support collects what a bug report needs.
+  - name: Satisfactory Modding documentation
+    url: https://docs.ficsit.app/
+    about: For questions about SML, mod installation, or the modding toolchain in general.

@@ -1,6 +1,23 @@
-# FICSIT's Performance Manager (FPM)
+<div align="center">
 
-A C++ mod for **Satisfactory 1.2.3.1 (CL 495413)**. It runs on [SML](https://ficsit.app/mod/SML) `^3.12.0`.
+<img src="docs/branding/NOX_Card_Thumbnail_640x360.png" alt="FICSIT Performance Manager" width="640">
+
+<br>
+
+![Satisfactory 1.2.3.1 CL 495413](https://img.shields.io/badge/Satisfactory-1.2.3.1%20%C2%B7%20CL%20495413-E59344?style=flat-square)
+[![SML ^3.12.0](https://img.shields.io/badge/SML-%5E3.12.0-E59344?style=flat-square)](https://ficsit.app/mod/SML)
+[![License GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-E59344?style=flat-square)](LICENSE)
+![Status: alpha](https://img.shields.io/badge/status-ALPHA-D6473A?style=flat-square)
+![Network activity: none](https://img.shields.io/badge/network%20activity-none-3A3C40?style=flat-square)
+
+**Repairs, guards and diagnostics for known Satisfactory bugs.**
+
+[Hard rules](#hard-rules) · [Diagnostics](#diagnostics) · [Build from source](#build-from-source) ·
+[Report a bug](https://github.com/DegradingAnt/Ficsit-performance-manager-/issues)
+
+</div>
+
+---
 
 FPM repairs known multiplayer, rendering and stutter bugs. Each repair is a narrow native hook. When a
 bug cannot be repaired yet, FPM measures it instead, so the cause can be named later.

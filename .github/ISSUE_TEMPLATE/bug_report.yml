@@ -1,0 +1,95 @@
+name: Bug report
+description: Something in the mod behaves wrongly, crashes, or costs performance.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. This mod is an alpha build, so reports are useful.
+
+        Please fill in the log and the support output. Most reports cannot be acted on without them,
+        because a fix here is a native hook and the log is what proves which hook ran.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Say what you saw, and what you expected instead.
+      placeholder: |
+        The game froze for about two seconds every time I opened the HUB.
+        I expected it to open without a pause.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did just before it happened
+      description: One action per line. A reader must be able to repeat it.
+      placeholder: |
+        1. Joined the dedicated server.
+        2. Walked to the main base.
+        3. Opened the HUB.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: session
+    attributes:
+      label: Session type
+      description: Server-authoritative fixes behave differently on each of these.
+      options:
+        - Single-player
+        - Listen host (I hosted from my own game)
+        - Dedicated server (I joined)
+        - Dedicated server (I run it)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: FPM version
+      description: Run `FPM.Version` in the console, or read it in the mod manager.
+      placeholder: "0.7.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: support
+    attributes:
+      label: FPM.Support output
+      description: Open the console and run `FPM.Support`. Paste the whole block.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: The `[FPM]` log lines around the problem
+      description: |
+        From `FactoryGame.log`. On a dedicated server, use the server log.
+        Include the arm lines from startup as well as the lines near the fault.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: crash
+    attributes:
+      label: Crash callstack, if the game crashed
+      description: From the crash reporter window, or from `Saved/Crashes/`.
+      render: text
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      placeholder: "RTX 5080, 581.42"
+
+  - type: textarea
+    id: mods
+    attributes:
+      label: Other mods you run
+      description: A conflict with another mod is a common cause. List them, or attach your profile.

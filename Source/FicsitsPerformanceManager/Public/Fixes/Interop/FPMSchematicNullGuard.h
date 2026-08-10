@@ -70,14 +70,20 @@
  * passed through untouched. In the case where it DOES refuse, vanilla's alternative was not a different
  * answer — it was the access violation.
  *
- * ★ THE BLAST RADIUS IS FOURTEEN SCHEMATICS, AND THEY ARE ALL FICSMAS. MEASURED, NOT ARGUED.
+ * ★ THE BLAST RADIUS IS EIGHTEEN SCHEMATICS, AND EVERY ONE IS FICSMAS. MEASURED, NOT ARGUED.
  *
  * Ant asked the right question of this fix: *"that milestone guard needs to not break anything like it
- * did last time."* Counted from the game export on 2026-08-10
- * (`20-SOURCES/satisfactory/fmodel-exports/.../Content/FactoryGame/Schematics`): **1,455 schematic
- * assets exist, and exactly 14 declare a non-empty `mRelevantEvents`.** All fourteen are the
- * `Research/XMas_RS` tree, and all fourteen name the same event, `EV_Christmas`. The modded schematic
- * trees present in the export (CatwalkLadders, ContentLib) declare **zero**.
+ * did last time."* Counted from the game export on 2026-08-10 over the WHOLE tree
+ * (`20-SOURCES/satisfactory/fmodel-exports`): **43 assets declare a non-empty `mRelevantEvents`, and
+ * all 43 name the same event, `EV_Christmas`.** Of those, **18 are schematics** — the 14-asset
+ * `Schematics/Research/XMas_RS` tree plus four `Events/Christmas/Calendar_Schematics/Ficsmas_Schematic_*`.
+ * The other 25 are RECIPES, which this guard never sees. **Zero non-event schematics exist anywhere in
+ * the export**, and the modded schematic trees present (CatwalkLadders, ContentLib) declare none.
+ *
+ * ⚠ THE FIRST VERSION OF THIS PARAGRAPH SAID FOURTEEN, AND IT WAS UNDER-SCOPED. It searched only
+ * directories NAMED `Schematics` and so missed the four calendar schematics filed under
+ * `Events/Christmas/`. Recorded rather than quietly corrected, because the failure is the recurring one
+ * here: a count taken from a narrower scope than the claim it is used to support.
  *
  * The refusal condition requires a non-empty event list, so this guard is STRUCTURALLY INCAPABLE of
  * touching a HUB tier, a MAM research node, or any ordinary milestone — they declare no events, so the
