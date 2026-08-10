@@ -24,6 +24,7 @@
 #include "Fixes/Interop/FPMTexturePoolGuard.h"
 #include "Fixes/Interop/FPMZiplineVolume.h"
 #include "Core/FPMCrashStamp.h"
+#include "Fixes/Interop/FPMWeatherIndoorGate.h"
 #include "Fixes/Interop/FPMWwiseServerGate.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 #include "Fixes/Vanilla/FPMPowerWarningProbe.h"
@@ -127,6 +128,19 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * work, and Ant's constraint is "keep the performance good".
 	 */
 	FPMFixes::Arm(FFPMDistanceFieldAudit::Get());
+
+	/*
+	 * Tier 2 of the particle work, and it is the CHEAP half by design. Ant: "I want the dirt particle
+	 * stuffs to be included in the fog stuff so stuff stops going through the walls when inside."
+	 *
+	 * It is NOT collision and does not claim to be. NS_Wind, NS_Forest_Field_Wind and
+	 * NS_Forest_Red_Wind ship with NO collision module at all (counted from the export), and no runtime
+	 * call can add one that was never compiled into the emitter script. This scales their intensity down
+	 * while the shared enclosure check says the player is in a SEALED ROOM -- walls, not just a roof.
+	 *
+	 * ⚠ Arming it is what STARTS the enclosure sampler. Nothing traces until something asks.
+	 */
+	FPMFixes::Arm(FFPMWeatherIndoorGate::Get());
 
 	// Re-port of a fix the rewrite orphaned (FPM1 RegisterWwiseServerAudioGate). Installs a hook ONLY
 	// on a dedicated server, where UAkGameplayStatics::StopActor cannot reach an audio device and so

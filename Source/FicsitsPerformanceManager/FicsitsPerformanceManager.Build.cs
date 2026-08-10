@@ -35,7 +35,12 @@ public class FicsitsPerformanceManager : ModuleRules
 			"RenderCore",
 			"CinematicCamera",
 			"Foliage",
-			//"Niagara",
+			// UNiagaraComponent / UNiagaraSystem, for the weather indoor gate (Tier 2 of the particle
+			// work). ue-niagara-effects names Niagara + NiagaraCore as the pair to declare.
+			// ⚠ It shipped COMMENTED OUT in the template, and a presence check that greps for the
+			// name matches the comment and silently decides it is already there. Caught by the
+			// linker, but only because something used it.
+			"Niagara", "NiagaraCore",
 			//"EnhancedInput",
 			//"GameplayCameras",
 			//"TemplateSequence",

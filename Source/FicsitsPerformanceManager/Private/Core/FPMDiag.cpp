@@ -170,6 +170,14 @@ static TAutoConsoleVariable<int32> CVarDiagDistanceField(
 	     "FPM.DistanceField.Repair changes what is DONE, and it adds renderer work."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagWeatherGate(
+	TEXT("FPM.Diag.WeatherGate"), 1,
+	TEXT("Weather particles scaled down in a sealed room. 0 = silent, 1 = the target count, every change "
+	     "of sealed state, and the FIRST time a write fails to hold. That last line matters most: these "
+	     "systems are spawned from Blueprint, so a graph re-pushing the value would make the gate inert, "
+	     "and it must say so rather than take credit."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -195,6 +203,7 @@ namespace
 		&CVarDiagPowerWarning,
 		&CVarDiagEnclosure,
 		&CVarDiagDistanceField,
+		&CVarDiagWeatherGate,
 	};
 
 	/*
@@ -234,6 +243,7 @@ namespace
 		case FPMDiag::EChannel::PowerWarning:   return TEXT("FPM.Diag.PowerWarning");
 		case FPMDiag::EChannel::Enclosure:      return TEXT("FPM.Diag.Enclosure");
 		case FPMDiag::EChannel::DistanceField:  return TEXT("FPM.Diag.DistanceField");
+		case FPMDiag::EChannel::WeatherGate:    return TEXT("FPM.Diag.WeatherGate");
 		default:                                return TEXT("<unknown>");
 		}
 	}
