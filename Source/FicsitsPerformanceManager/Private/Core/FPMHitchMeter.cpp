@@ -13,6 +13,12 @@
 #include "ShaderPipelineCache.h"
 #include "UObject/UObjectGlobals.h"
 
+// The PSO widening's two engine surfaces. Both are RHI, which is already a PRIVATE dependency of this
+// module (added for RHIGetTextureMemoryStats) — and both headers are included only from Private/, so the
+// existing private entry is exactly right and Build.cs needs no change.
+#include "PipelineFileCache.h"
+#include "PipelineStateCache.h"
+
 /*
  * THE THRESHOLD IS A CVAR AND ITS HELP TEXT CARRIES THE TRAP, because the trap is not obvious and it turns
  * the instrument into a liar rather than merely mis-tuning it.
@@ -79,6 +85,12 @@ void FFPMHitchMeter::Arm()
 		[this](uint32 Count, double Seconds, const FShaderPipelineCache::FShaderCachePrecompileContext&)
 		{ OnPsoPrecompileComplete(Count, Seconds); });
 
+	// The cold-creation bucket. A lambda for the same reason as the two above — it keeps
+	// FPipelineCacheFileFormatPSO out of FPM's public header; the member below takes a plain int32.
+	PsoLoggedHandle = FPipelineFileCacheManager::OnPipelineStateLogged().AddLambda(
+		[this](const FPipelineCacheFileFormatPSO& PSO)
+		{ OnPsoCreated(static_cast<int32>(PSO.Type)); });
+
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
 	// that distinguishes "measured nothing" from "never measured".
 	UE_LOG(LogFicsitsPerformanceManager, Display,
@@ -129,6 +141,32 @@ void FFPMHitchMeter::Disarm()
 		FShaderPipelineCache::GetPrecompilationCompleteDelegate().Remove(PsoCompleteHandle);
 		PsoCompleteHandle.Reset();
 	}
+	if (PsoLoggedHandle.IsValid())
+	{
+		FPipelineFileCacheManager::OnPipelineStateLogged().Remove(PsoLoggedHandle);
+		PsoLoggedHandle.Reset();
+	}
+}
+
+void FFPMHitchMeter::OnPsoCreated(int32 DescriptorType)
+{
+	PsoCreatesInFrame.Increment();
+	PsoCreatesTotal.Increment();
+
+	// FPipelineCacheFileFormatPSO::DescriptorType — Compute=0, Graphics=1, RayTracing=2
+	// (`PipelineFileCache.h:202-207`). Kept as a switch on the raw value rather than a cast back to the
+	// enum, so this file needs no RHI type in its own signature.
+	switch (DescriptorType)
+	{
+	case 0:  PsoCreatesCompute.Increment();    break;
+	case 1:  PsoCreatesGraphics.Increment();   break;
+	case 2:  PsoCreatesRayTracing.Increment(); break;
+	default: break;
+	}
+
+	// No log line per PSO, deliberately. Her 03:27 session created enough of these to reach the engine's
+	// own 100-hitch marker, and one line each would bury every other channel. The per-span count in the
+	// hitch line and the session split in FPM.Pso.Report are what the question actually needs.
 }
 
 void FFPMHitchMeter::OnPsoPrecompileBegin(uint32 Count)
@@ -274,9 +312,38 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	const bool bPsoInSpan = bPsoRunActive.load(std::memory_order_relaxed);
 	if (bPsoInSpan) { ++FramesDuringPso; }
 
+	/*
+	 * ★ THE COLD-CREATION COUNT — consumed here, not at the call sites. Set() returns the old value and
+	 * resets in one atomic operation, so a creation landing between the read and the reset cannot be lost.
+	 * See the header note for why this one is consumed inside while the other three are parameters.
+	 */
+	const int32 PsoCreatesInSpan = PsoCreatesInFrame.Set(0);
+
+	/*
+	 * ★ THE TWO ASYNC LEVELS THE RUN FLAG CANNOT SEE. Sampled once per span; both are plain atomic reads.
+	 *
+	 * `GetNumActivePipelinePrecompileTasks()` is finer than `bPsoRunActive` by construction — the run flag
+	 * is a single bool held true across a whole batched run, this is the task count in flight right now.
+	 * `NumActivePrecacheRequests()` covers `r.PSOPrecache`, a mechanism this meter had no visibility into
+	 * at all.
+	 */
+	const int32 PrecompileTasks  = PipelineStateCache::GetNumActivePipelinePrecompileTasks();
+	const int32 PrecacheRequests = static_cast<int32>(PipelineStateCache::NumActivePrecacheRequests());
+	const bool  bPsoWorkInSpan   = PrecompileTasks > 0 || PrecacheRequests > 0;
+
+	PeakPrecompileTasks  = FMath::Max(PeakPrecompileTasks, PrecompileTasks);
+	PeakPrecacheRequests = FMath::Max(PeakPrecacheRequests, PrecacheRequests);
+	if (bPsoWorkInSpan) { ++FramesDuringPsoWork; }
+
 	// The point of the widening: a span that matched nothing is now counted rather than merely absent from
 	// four other counters. Design `:1218` -- "most stalls were anonymous BY CONSTRUCTION".
-	const bool bAttributed = FlushesInSpan > 0 || SyncLoadsInSpan > 0 || GcInSpan > 0 || bPsoInSpan;
+	//
+	// ⚠ THE TWO NEW TERMS EARN THEIR PLACE HERE FOR DIFFERENT REASONS. A cold PSO creation is an EVENT
+	// inside the span and belongs beside the flush and sync-load terms. In-flight async PSO work is a
+	// LEVEL, like the run flag, and is the weaker claim of the two -- so it is last, and the summary
+	// reports it as a rate rather than a count.
+	const bool bAttributed = FlushesInSpan > 0 || SyncLoadsInSpan > 0 || GcInSpan > 0 || bPsoInSpan
+		|| PsoCreatesInSpan > 0 || bPsoWorkInSpan;
 
 	const float ThresholdMs = CVarHitchThresholdMs.GetValueOnAnyThread();
 	const float CeilingMs   = CVarHitchIgnoreAboveMs.GetValueOnAnyThread();
@@ -295,11 +362,13 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 		 * be the mechanism. The statistic would have silently stopped covering exactly the cases the
 		 * hypothesis lives or dies on.
 		 */
-		if (FlushesInSpan > 0)   { ++LoadStallsWithFlush; }
-		if (SyncLoadsInSpan > 0) { ++StallsWithSyncLoad; }
-		if (GcInSpan > 0)        { ++StallsWithGc; }
-		if (bPsoInSpan)          { ++StallsWithPso; }
-		if (!bAttributed)        { ++StallsUnattributed; }
+		if (FlushesInSpan > 0)    { ++LoadStallsWithFlush; }
+		if (SyncLoadsInSpan > 0)  { ++StallsWithSyncLoad; }
+		if (GcInSpan > 0)         { ++StallsWithGc; }
+		if (bPsoInSpan)           { ++StallsWithPso; }
+		if (PsoCreatesInSpan > 0) { ++StallsWithPsoCreate; }
+		if (bPsoWorkInSpan)       { ++StallsWithPsoWork; }
+		if (!bAttributed)         { ++StallsUnattributed; }
 		return;
 	}
 
@@ -310,11 +379,13 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	HitchMsTotal += SpanMs;
 	WorstHitchMs   = FMath::Max(WorstHitchMs, SpanMs);
 	SessionWorstMs = FMath::Max(SessionWorstMs, SpanMs);
-	if (FlushesInSpan > 0)   { ++HitchesWithFlush; }
-	if (SyncLoadsInSpan > 0) { ++HitchesWithSyncLoad; }
-	if (GcInSpan > 0)        { ++HitchesWithGc; }
-	if (bPsoInSpan)          { ++HitchesWithPso; }
-	if (!bAttributed)        { ++HitchesUnattributed; }
+	if (FlushesInSpan > 0)    { ++HitchesWithFlush; }
+	if (SyncLoadsInSpan > 0)  { ++HitchesWithSyncLoad; }
+	if (GcInSpan > 0)         { ++HitchesWithGc; }
+	if (bPsoInSpan)           { ++HitchesWithPso; }
+	if (PsoCreatesInSpan > 0) { ++HitchesWithPsoCreate; }
+	if (bPsoWorkInSpan)       { ++HitchesWithPsoWork; }
+	if (!bAttributed)         { ++HitchesUnattributed; }
 
 	if (!FPMDiag::IsOn(FPMDiag::EChannel::Hitch)) { return; }
 
@@ -350,13 +421,33 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	// "during", not "because of". And a span that matched nothing is stamped UNATTRIBUTED so the anonymous
 	// ones are greppable in the log rather than only countable in the summary.
 	const TCHAR* PsoPart = bPsoInSpan ? TEXT(" | during a PSO precompile run") : TEXT("");
+
+	// ★ THE COLD-CREATION FIELD IS THE STRONGEST OF THE PSO THREE, so it is worded as a fact rather than
+	// as an overlap: N pipelines that were not in the cache were built during this span. The ±1 frame
+	// marshalling caveat is why it still says "in this span" and not "caused this".
+	FString PsoCreatePart;
+	if (PsoCreatesInSpan > 0)
+	{
+		PsoCreatePart = FString::Printf(TEXT(" | %d COLD PSO CREATION(S) in this span"), PsoCreatesInSpan);
+	}
+
+	// The weakest of the three, and worded to match: a level that was non-zero, with its numbers, and no
+	// claim attached.
+	FString PsoWorkPart;
+	if (bPsoWorkInSpan)
+	{
+		PsoWorkPart = FString::Printf(TEXT(" | PSO work in flight: %d precompile task(s), %d precache request(s)"),
+			PrecompileTasks, PrecacheRequests);
+	}
+
 	const TCHAR* UnattributedPart = bAttributed ? TEXT("") : TEXT(" | UNATTRIBUTED");
 
 	UE_LOG(LogFicsitsPerformanceManager, Warning,
 		TEXT("[FPM] HITCH %.1f ms%s - %d async-load flush(es), %d GC pass(es) in this span, %d package(s) "
-		     "still loading%s%s%s%s"),
+		     "still loading%s%s%s%s%s%s"),
 		SpanMs, bClosedByLoad ? TEXT(" (closed by a world load)") : TEXT(""),
-		FlushesInSpan, GcInSpan, GetNumAsyncPackages(), *SyncPart, PsoPart, UnattributedPart, *Packages);
+		FlushesInSpan, GcInSpan, GetNumAsyncPackages(), *SyncPart, *PsoCreatePart, *PsoWorkPart, PsoPart,
+		UnattributedPart, *Packages);
 }
 
 bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
@@ -370,7 +461,24 @@ bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 	{
 		LastTickSeconds = Now;
 		bPrimed = true;
+
+		/*
+		 * ⚠ ALL FOUR IN-FRAME COUNTERS ARE DISCARDED HERE, NOT JUST FLUSHES — corrected 2026-08-10 while
+		 * adding the PSO one, and the first three were a pre-existing bug of the same shape.
+		 *
+		 * The stated intent was always "attributing a loading screen's flushes to the first playable frame
+		 * would manufacture exactly the correlation this meter exists to test honestly". That reasoning
+		 * covers sync loads and GC passes word for word, and they were left accumulating anyway — so the
+		 * first span after every load carried the whole loading screen's sync-load count.
+		 *
+		 * It matters most for the new one. A loading screen builds a large number of cold pipelines, the
+		 * first playable span is a common place for a hitch, and the two together would have produced a
+		 * confident false attribution in the very bucket this widening was built to make trustworthy.
+		 */
 		FlushesInFrame.Set(0);
+		SyncLoadsInFrame.Set(0);
+		GcInFrame.Set(0);
+		PsoCreatesInFrame.Set(0);
 		return true;
 	}
 
@@ -443,8 +551,9 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		// blind to sync loads, so reporting it on its own is what made a partial zero look like a whole one.
 		Line += FString::Printf(
 			TEXT(" | worst %.1f ms, mean %.1f ms | %d had an async-load flush, %d had a SYNC load, %d had a "
-			     "GC, %d were during a PSO precompile"),
-			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc, HitchesWithPso);
+			     "GC, %d had a COLD PSO creation, %d had PSO work in flight, %d were during a PSO precompile"),
+			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc, HitchesWithPsoCreate,
+			HitchesWithPsoWork, HitchesWithPso);
 
 		/*
 		 * ★ THE UNATTRIBUTED SHARE IS THE NUMBER THIS WIDENING LIVES OR DIES BY, so it is printed as a
@@ -478,18 +587,61 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
 			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
 	}
+
+	/*
+	 * ★ THE SAME RATE TREATMENT FOR ASYNC PSO WORK, because it is a level and levels flatter themselves.
+	 * Unlike the precompile run this one CAN span normal play — `r.PSOPrecache` fires while streaming — so
+	 * the in-flight versus out-of-flight comparison is the only form in which it means anything. Printed
+	 * only when work actually overlapped this window.
+	 */
+	if (FramesDuringPsoWork > 0)
+	{
+		const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuringPsoWork)
+			? FramesInWindow - static_cast<uint64>(FramesDuringPsoWork)
+			: 0;
+		const int32 HitchesOutside = Hitches - HitchesWithPsoWork;
+		Line += FString::Printf(
+			TEXT(" | async PSO work overlapped %d span(s) (peak %d precompile task(s), %d precache "
+			     "request(s)): %d hitch(es) there (%.2f%%) vs %d in the other %llu (%.2f%%)"),
+			FramesDuringPsoWork, PeakPrecompileTasks, PeakPrecacheRequests, HitchesWithPsoWork,
+			100.0 * HitchesWithPsoWork / FramesDuringPsoWork,
+			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
+			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
+	}
 	if (LoadStalls > 0)
 	{
 		// The stalls carry their own flush count. Folding them into the hitch figure would overstate the
 		// hitch rate; dropping the count entirely is what review finding B caught.
 		Line += FString::Printf(
-			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc, %d pso, %d UNATTRIBUTED), not "
-			     "counted as hitches"),
+			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc, %d cold-pso, %d pso-work, "
+			     "%d pso-precompile, %d UNATTRIBUTED), not counted as hitches"),
 			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread(), LoadStallsWithFlush, StallsWithSyncLoad,
-			StallsWithGc, StallsWithPso, StallsUnattributed);
+			StallsWithGc, StallsWithPsoCreate, StallsWithPsoWork, StallsWithPso, StallsUnattributed);
 	}
-	Line += FString::Printf(TEXT(" | session totals: %d flush(es), %d sync load(s), %d GC pass(es)"),
-		FlushesTotal.GetValue(), SyncLoadsTotal.GetValue(), GcTotal.GetValue());
+	Line += FString::Printf(
+		TEXT(" | session totals: %d flush(es), %d sync load(s), %d GC pass(es), %d cold PSO creation(s)"),
+		FlushesTotal.GetValue(), SyncLoadsTotal.GetValue(), GcTotal.GetValue(), PsoCreatesTotal.GetValue());
+
+	/*
+	 * ★ THE LIVENESS PROOF, PRINTED EXACTLY WHERE A ZERO WOULD OTHERWISE BE UNREADABLE.
+	 *
+	 * If nothing PSO-shaped has been seen all session, the four PSO fields above are all 0 — and 0 has two
+	 * meanings: "no PSO work happened" and "none of this could ever have reported anything". Three of the
+	 * inputs are gated by console variables FPM does not own. So when the totals are empty, the capability
+	 * is stated instead of left to be assumed. When they are non-zero the instrument has proved itself and
+	 * this stays quiet.
+	 *
+	 * This is the `FPMCVarWriter` pattern: do not claim the path works, demonstrate it — and where the
+	 * demonstration is a zero, show the gate.
+	 */
+	if (PsoCreatesTotal.GetValue() == 0 && PsoRunsCompleted.load(std::memory_order_relaxed) == 0)
+	{
+		Line += FString::Printf(
+			TEXT(" | PSO buckets all zero — capability: filecache=%d, reportPSO=%d, precaching=%d"),
+			FPipelineFileCacheManager::IsPipelineFileCacheEnabled() ? 1 : 0,
+			FPipelineFileCacheManager::ReportNewPSOs() ? 1 : 0,
+			PipelineStateCache::IsPSOPrecachingEnabled() ? 1 : 0);
+	}
 
 	// Run-level context, appended only once a run has actually completed. The seconds figure is labelled as
 	// compile time rather than stall time every place it is printed, because it is the former.
@@ -540,12 +692,81 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	FramesDuringPso = 0;
 	HitchesWithPso = 0;
 	StallsWithPso = 0;
+	// ⚠ `PsoCreatesInFrame` is NOT reset here either, and for a different reason from `bPsoRunActive`:
+	// `ClassifySpan` consumes it every span, so it is already ~0 by now, and clearing it on a window
+	// boundary could discard a creation that landed between the last span and this line. The session
+	// totals (`PsoCreatesTotal` and the three type splits) are session-scoped and never reset.
+	HitchesWithPsoCreate = 0;
+	StallsWithPsoCreate = 0;
+	FramesDuringPsoWork = 0;
+	HitchesWithPsoWork = 0;
+	StallsWithPsoWork = 0;
+	PeakPrecompileTasks = 0;
+	PeakPrecacheRequests = 0;
 	HitchesUnattributed = 0;
 	StallsUnattributed = 0;
 	LinesThisWindow = 0;
 	LinesSuppressed = 0;
 	WorstHitchMs = 0.0;
 	HitchMsTotal = 0.0;
+}
+
+void FFPMHitchMeter::LogPsoReport()
+{
+	/*
+	 * ★ CAPABILITY FIRST, COUNTS SECOND. Every number below can legitimately be zero, and a zero is only
+	 * readable next to the gate that produces it. All four reads are null-safe on a dedicated server,
+	 * checked rather than assumed because this fix is `Side() == Any` and a null-deref here would take
+	 * down the server rather than misreport:
+	 *   - `IsPipelineFileCacheEnabled()` / `ReportNewPSOs()` read a static bool and a cvar.
+	 *   - `IsPSOPrecachingEnabled()` is `GPSOPrecaching != 0 && GRHISupportsPSOPrecaching`
+	 *     (`PipelineStateCache.cpp:4127-4135`); NullRHI never sets the latter.
+	 *   - `NumActivePrecacheRequests()` returns 0 on that same check BEFORE touching its globals
+	 *     (`:4339-4344`), and `FShaderPipelineCache::IsPrecompiling()` null-checks its singleton
+	 *     (`ShaderPipelineCache.cpp:1727-1734`).
+	 */
+	const bool bFileCache  = FPipelineFileCacheManager::IsPipelineFileCacheEnabled();
+	const bool bReportPSOs = FPipelineFileCacheManager::ReportNewPSOs();
+	const bool bPrecaching = PipelineStateCache::IsPSOPrecachingEnabled();
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] PSO capability: file cache %s, new-PSO reporting %s, PSO precaching %s. "
+		     "The cold-creation count below can only move when new-PSO reporting is ON."),
+		bFileCache  ? TEXT("ON")  : TEXT("OFF"),
+		bReportPSOs ? TEXT("ON")  : TEXT("OFF"),
+		bPrecaching ? TEXT("ON")  : TEXT("OFF"));
+
+	// ⚠ Stated plainly rather than left for the reader to infer from three ON/OFF words. A dead bucket
+	// that does not say it is dead is the exact failure this meter was built against.
+	UE_CLOG(!bReportPSOs, LogFicsitsPerformanceManager, Warning,
+		TEXT("[FPM] r.ShaderPipelineCache.ReportPSO is OFF, so the cold-PSO bucket CANNOT report a "
+		     "non-zero. Read its 0 as 'not measured', not as 'no cold pipelines were built'."));
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] cold PSO creations this session: %d total (%d graphics, %d compute, %d ray tracing). "
+		     "Each one is a pipeline that was not in the cache and had to be built during play."),
+		PsoCreatesTotal.GetValue(), PsoCreatesGraphics.GetValue(), PsoCreatesCompute.GetValue(),
+		PsoCreatesRayTracing.GetValue());
+
+	// Cross-check against the engine's own tally. It counts only new PSOs with at least one bind or a
+	// compile failure, and it is gated on LogPSO as well as Enabled, so it can disagree with ours -- a
+	// disagreement is information, which is why both are printed instead of just the one we control.
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] engine cross-check: FPipelineFileCacheManager::NumPSOsLogged() = %u (gated on file "
+		     "cache AND r.ShaderPipelineCache.LogPSO; 0 here with a non-zero count above means logging is "
+		     "off, not that nothing was built)."),
+		FPipelineFileCacheManager::NumPSOsLogged());
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] PSO work right now: %d precompile task(s) in flight, %d precache request(s) active, "
+		     "bundled precompile %s. Precompile runs completed this session: %d (last: %u task(s), "
+		     "%.2f s of compile time summed across the run)."),
+		PipelineStateCache::GetNumActivePipelinePrecompileTasks(),
+		PipelineStateCache::NumActivePrecacheRequests(),
+		FShaderPipelineCache::IsPrecompiling() ? TEXT("RUNNING") : TEXT("idle"),
+		PsoRunsCompleted.load(std::memory_order_relaxed),
+		PsoTasksLastRun.load(std::memory_order_relaxed),
+		PsoSecondsLastRun.load(std::memory_order_relaxed));
 }
 
 /*
@@ -573,4 +794,20 @@ static FAutoConsoleCommand GHitchReportCmd(
 	FConsoleCommandDelegate::CreateStatic([]()
 	{
 		FFPMHitchMeter::Get().LogSummary(TEXT("on request"));
+	}));
+
+/*
+ * `FPM.Pso.Report` — the PSO picture on its own, capability first.
+ *
+ * Separate from `FPM.Hitch.Report` because it answers a different question. The hitch summary asks "what
+ * happened in this window"; this asks "is the PSO measurement alive, and what has it seen all session".
+ * The second question is the one that has to be settled before any PSO number is worth reading.
+ */
+static FAutoConsoleCommand GPsoReportCmd(
+	TEXT("FPM.Pso.Report"),
+	TEXT("Print the PSO picture: whether each bucket can fire, cold creations this session, and current "
+	     "precompile/precache work in flight."),
+	FConsoleCommandDelegate::CreateStatic([]()
+	{
+		FFPMHitchMeter::Get().LogPsoReport();
 	}));

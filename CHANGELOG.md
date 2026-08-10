@@ -62,6 +62,53 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 09:50 — CODE — PSO attribution widened from one mechanism to three, and the old bucket shown to be a tautology
+
+- **What:** The hitch meter watched one of the three ways a pipeline state object costs time in UE 5.6.
+  It now watches all three.
+  1. **Cold PSO creation (new, and the important one).** Subscribes to
+     `FPipelineFileCacheManager::OnPipelineStateLogged()`, which fires once per pipeline that was not in
+     the cache and had to be built during play. Counted per span, split graphics / compute / ray tracing,
+     and added to the attributed set. This is an EVENT inside the span, so it sits beside the flush and
+     sync-load terms rather than beside the run flag.
+  2. **Async PSO work in flight (new).** Samples `GetNumActivePipelinePrecompileTasks()` and
+     `NumActivePrecacheRequests()` once per span. The second one covers `r.PSOPrecache`, a whole mechanism
+     the meter could not see before. Reported as a rate against its own denominator, with per-window
+     peaks, for the reason the run bucket already documents.
+  3. **The existing precompile-run flag**, kept and now explained rather than bare.
+  Adds `FPM.Pso.Report`, which prints the capability of each bucket before it prints any count.
+  Also repairs a pre-existing defect found while adding this: the `!bPrimed` branch discarded accumulated
+  flushes so a loading screen could not be blamed on the first playable frame, but it never discarded the
+  sync-load or GC counters. All four in-frame counters are discarded there now.
+- **Why:** Ant, 2026-08-10: *"Pso stuff need to be even wider"*. Measurement says the old bucket could
+  never have answered anything in game. From her own 0.8.0 client log, the precompile runs finish at
+  07:05:20 and the first hitch window opens at 07:06:16, so `bPsoRunActive` is false for the entire
+  playable session and `0 were during a PSO precompile` is a tautology, not a finding. Meanwhile the
+  engine's own `LogPSOHitching` recorded `100 PSO creation hitches so far (79 graphics, 21 compute). 10 of
+  them were precached.` in about eleven minutes of her 03:27 session. That is 90 cold misses over 20 ms
+  each, it matches her report of hitches while moving through the world, and FPM counted none of it.
+  The engine's counters for those are file-scope statics with no getter and a `STATS` build gate, so the
+  count is unreachable from a mod. The cause is reachable, and that is what this subscribes to.
+- **Gate verified before wiring, not after:** `ReportNewPSOs()` reads `r.ShaderPipelineCache.ReportPSO`,
+  default `PIPELINE_CACHE_DEFAULT_ENABLED` = `(!WITH_EDITOR)` = 1 in a retail client
+  (`PipelineFileCache.h:18`). Corroborated on disk rather than from the default alone:
+  `Saved/FactoryGame_PCD3D_SM6.upipelinecache` is 2.6 MB, written 2026-08-10 05:33, and the log reports
+  that user cache holding 5464 entries. All four engine calls are null-safe on a NullRHI dedicated server,
+  checked because this fix is `Side() == Any`.
+- **Files:** `Public/Core/FPMHitchMeter.h`, `Private/Core/FPMHitchMeter.cpp`,
+  `FicsitsPerformanceManager.uplugin` (0.8.0 → 0.8.1, `VersionName` / `SemVersion` /
+  `RemoteVersionRange`). No `Build.cs` change: `RHI` is already a private dependency and both new headers
+  are included only from `Private/`.
+- **Bump rationale:** PATCH, not MINOR. By this file's own player-notice test, diagnostics and probes are
+  invisible with the console closed. Nothing here changes behavior.
+- **Revert:** Remove the `PsoLoggedHandle` subscription in `Arm()` and its removal in `Disarm()`, the
+  `OnPsoCreated` body, and the two level samples in `ClassifySpan`. Undo if the per-frame atomic reads
+  ever measure as non-free, or if the ±1 frame marshalling delay proves to misattribute in practice.
+- **Verified:** build-only (`FactoryEditor Win64 Development`, `Result: Succeeded`, 28.36 s) ·
+  `check_structure.py` 22 fixes / 0 errors / 0 warnings · NOT-YET boot-tested.
+
+---
+
 ## 2026-08-10 08:40 — VERSION — 0.7.0 → 0.8.0
 
 - **What:** MINOR bump. `VersionName` / `SemVersion` / `RemoteVersionRange` in the `.uplugin`, and the

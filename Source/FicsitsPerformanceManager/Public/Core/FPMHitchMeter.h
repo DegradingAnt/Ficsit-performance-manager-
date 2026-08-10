@@ -105,6 +105,18 @@ public:
 	 */
 	void LogSyncPackages();
 
+	/**
+	 * `FPM.Pso.Report` — the whole PSO picture, including whether each bucket is CAPABLE of firing.
+	 *
+	 * ★ IT LEADS WITH THE CAPABILITY LINE, and that is the point of having a separate command. Three of
+	 * the four inputs here are gated by console variables we do not own, so a zero from any of them has
+	 * two readings — "no PSO work happened" and "this could never have reported anything". Printing
+	 * `r.ShaderPipelineCache.Enabled` / `.ReportPSO` and `IsPSOPrecachingEnabled()` beside the counts is
+	 * the liveness proof `FPMCVarWriter` sets the pattern for: prove the instrument can move before
+	 * anyone reads a zero off it.
+	 */
+	void LogPsoReport();
+
 private:
 	/**
 	 * The `float` this is handed is `FApp::GetDeltaTime()` and is DELIBERATELY UNUSED — see the header
@@ -193,9 +205,74 @@ private:
 	 *
 	 * On a dedicated server this simply never fires — no RHI means no `ShaderPipelineCache`, so the flag
 	 * stays false and the bucket reads as an honest zero rather than needing a `Side()` exception.
+	 *
+	 * ⚠⚠ AND MEASUREMENT HAS NOW SHOWN THIS BUCKET IS A TAUTOLOGY IN-GAME. From Ant's 0.8.0 client log,
+	 * 2026-08-10, primary:
+	 *     07:04:58  FShaderPipelineCache starting pipeline cache 'FactoryGame' … 82 tasks
+	 *     07:04:59  FShaderPipelineCache starting pipeline cache 'FactoryGame_usr' … 5454 tasks
+	 *     07:05:19  FShaderPipelineCache FactoryGame_usr completed 5454 tasks in 0.74s
+	 *     07:05:20  BeginNextPrecompileCacheTask() - Finished, no jobs remaining.
+	 *     07:06:16  [FPM] hitch meter: running | … 0 were during a PSO precompile
+	 * The precompile runs finish BEFORE the first hitch window opens. `bPsoRunActive` is therefore false
+	 * for the whole playable session, and `0 were during a PSO precompile` is not the finding "PSO is
+	 * innocent" — it is "this bucket cannot fire". Every window in every log says 0 for that reason.
+	 * Kept anyway, because it correctly describes startup and its zero is now EXPLAINED rather than bare.
 	 */
 	void OnPsoPrecompileBegin(uint32 Count);
 	void OnPsoPrecompileComplete(uint32 Count, double Seconds);
+
+	/**
+	 * ★ THE COLD-CREATION BUCKET — the PSO widening Ant asked for, and the half that was missing entirely.
+	 * Wired 2026-08-10.
+	 *
+	 * Ant: *"Pso stuff need to be even wider"*. The run-level bucket above answers "was a precompile batch
+	 * running", which after the 21-second startup is always no. It never had a chance at the thing she
+	 * actually reports — *"hitches when moving fast through the world"*.
+	 *
+	 * ⚠ THE ENGINE ALREADY COUNTS THE REAL EVENT AND IT IS NOT SMALL. `LogPSOHitching`, from her own
+	 * 03:27 client log:
+	 *     Encountered  50 PSO creation hitches so far (35 graphics, 15 compute).  6 of them were precached.
+	 *     Encountered 100 PSO creation hitches so far (79 graphics, 21 compute). 10 of them were precached.
+	 * That is 100+ runtime pipeline creations each over `r.PSO.RuntimeCreationHitchThreshold` (20 ms) in
+	 * about eleven minutes, and 90 of them were cold misses. The counters behind that line
+	 * (`GraphicsPSOCreationHitchCount`, `PipelineStateCache.cpp:225-227`) are file-scope statics with no
+	 * getter, and the matching `STAT_RuntimeGraphicsPSOHitchCount` is compiled out with `STATS` in
+	 * Shipping. Neither is reachable from a mod. So the count is NOT what we subscribe to — the CAUSE is.
+	 *
+	 * ★ WHAT WE SUBSCRIBE TO, AND THE FULL EMITTER CHAIN, verified from engine bytes rather than assumed
+	 * (a delegate that cannot fire is this project's most expensive defect class):
+	 *   1. `FPipelineFileCacheManager::CacheGraphicsPSO` reaches `if (bActuallyNewPSO)` — the pipeline was
+	 *      not already in the cache, i.e. a genuine cold creation (`PipelineFileCache.cpp:3608`).
+	 *   2. `if (ReportNewPSOs())` → `NewPSOsToReport.Enqueue(NewEntry)` (`:3621-3623`).
+	 *   3. `PipelineStateCache::FlushResources()`, which runs once per frame from
+	 *      `RHICommandList::BeginFrame`, calls `BroadcastNewPSOsDelegate()` (`PipelineStateCache.cpp:3306`).
+	 *   4. That drains the queue and, still gated on `ReportNewPSOs()`, marshals to the game thread via
+	 *      `ExecuteOnGameThread` and broadcasts one event per PSO (`PipelineFileCache.cpp:3546-3556`).
+	 *
+	 * ★ AND THE GATE IS OPEN IN THE SHIPPED GAME, which is the part that had to be checked rather than
+	 * hoped for. `ReportNewPSOs()` reads `r.ShaderPipelineCache.ReportPSO`, whose default is
+	 * `PIPELINE_CACHE_DEFAULT_ENABLED` = `(!WITH_EDITOR)` (`PipelineFileCache.h:18`) — so **1** in a retail
+	 * client. Corroborated on disk rather than from the default alone: her
+	 * `Saved/FactoryGame_PCD3D_SM6.upipelinecache` is 2.6 MB, written 2026-08-10 05:33, and the log reports
+	 * that user cache holding 5464 PSOs. The recording path is demonstrably running.
+	 *
+	 * ⚠ TWO HONEST LIMITS, stated because the rest of this file would be worthless if this one overclaimed:
+	 *   1. **Attribution is ±1 frame.** The creation happens on the render thread; the broadcast is
+	 *      marshalled to the game thread, so it can land in the next span. At a 50 ms threshold against
+	 *      ~4 ms frames that is a real edge, and it is why the line says "created in this span" rather
+	 *      than "caused by".
+	 *   2. **A cold creation is not automatically a hitch.** The engine applies a 20 ms threshold before
+	 *      calling one a hitch; we apply OUR threshold to the frame and report the coincidence. Broader
+	 *      than the engine's counter on purpose — a cheap creation that lands inside a slow frame is still
+	 *      the fact worth having.
+	 *
+	 * `int32` rather than the real `FPipelineCacheFileFormatPSO::DescriptorType`, for the same reason the
+	 * two precompile callbacks take plain scalars: keeping `PipelineFileCache.h` out of FPM's public
+	 * header. The lambda in `Arm()` unpacks `PSO.Type` (`Compute=0, Graphics=1, RayTracing=2`,
+	 * `PipelineFileCache.h:202-207`). The split exists so the numbers are directly comparable against the
+	 * `LogPSOHitching` line's own graphics/compute split.
+	 */
+	void OnPsoCreated(int32 DescriptorType);
 
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle FlushHandle;
@@ -204,6 +281,7 @@ private:
 	FDelegateHandle PreGcHandle;
 	FDelegateHandle PsoBeginHandle;
 	FDelegateHandle PsoCompleteHandle;
+	FDelegateHandle PsoLoggedHandle;
 
 	double LastTickSeconds = 0.0;
 	double WindowSeconds = 0.0;
@@ -267,6 +345,50 @@ private:
 	int32 FramesDuringPso = 0;
 	int32 HitchesWithPso = 0;
 	int32 StallsWithPso = 0;
+
+	/**
+	 * Cold PSO creations — an EVENT per newly-created pipeline, unlike the run flag above. See the long
+	 * note on `OnPsoCreated`. Consumed inside `ClassifySpan` rather than at its two call sites: the
+	 * signature already carries a `bool` wedged between two `int32`s, and a sixth positional scalar there
+	 * is a silent-swap bug waiting to happen. Consuming inside also makes it impossible for a future call
+	 * site to forget the reset, which is the failure the call-site pattern is exposed to.
+	 *
+	 * Thread-safe because the broadcast reaches us through `ExecuteOnGameThread` and a counter costs
+	 * nothing — the same reasoning already applied to the flush and sync-load counters.
+	 */
+	FThreadSafeCounter PsoCreatesInFrame;
+	FThreadSafeCounter PsoCreatesTotal;
+
+	/** Split to match the `LogPSOHitching` line's own graphics/compute split, so the two are comparable. */
+	FThreadSafeCounter PsoCreatesGraphics;
+	FThreadSafeCounter PsoCreatesCompute;
+	FThreadSafeCounter PsoCreatesRayTracing;
+
+	int32 HitchesWithPsoCreate = 0;
+	int32 StallsWithPsoCreate = 0;
+
+	/**
+	 * ★ ASYNC PSO WORK IN FLIGHT — the third mechanism, and the second one the old bucket was blind to.
+	 *
+	 * UE 5.6 has THREE ways a pipeline costs time, and FPM watched exactly one:
+	 *   1. bundled pipeline-cache precompile — `bPsoRunActive`, above. Startup only, measured.
+	 *   2. **PSO precaching** (`r.PSOPrecache`) — `PipelineStateCache::NumActivePrecacheRequests()`.
+	 *      Entirely invisible until now, and in 5.6 it is the mechanism doing most of the work.
+	 *   3. on-demand cold creation at draw time — the `OnPsoCreated` bucket above.
+	 *
+	 * Both levels are sampled per span. `GetNumActivePipelinePrecompileTasks()` is one atomic load
+	 * (`PipelineStateCache.cpp:2908-2911`) and `NumActivePrecacheRequests()` is two atomic reads with no
+	 * lock on any branch (`:2318-2328`) — checked before wiring them into a per-frame path, because this
+	 * is a performance mod and a per-frame lock would be the joke writing itself.
+	 *
+	 * Reported as a RATE against `FramesDuringPsoWork`, for the reason the run bucket already documents:
+	 * a level that spans many frames needs its own denominator or the raw overlap count flatters itself.
+	 */
+	int32 FramesDuringPsoWork = 0;
+	int32 HitchesWithPsoWork = 0;
+	int32 StallsWithPsoWork = 0;
+	int32 PeakPrecompileTasks = 0;
+	int32 PeakPrecacheRequests = 0;
 
 	/**
 	 * ★ THE UNATTRIBUTED RATE IS THIS WIDENING'S DONE-CONDITION, not a by-product of it.
