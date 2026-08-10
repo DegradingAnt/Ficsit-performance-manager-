@@ -441,11 +441,23 @@ private:
 	 * reason to have two consumption idioms in one file.
 	 */
 	double GtFrameStartSeconds = 0.0;
-	std::atomic<int64> GtBusyUsInSpan{0};
 
 	/** The render-thread pair. Both are written from the render thread, so both must be atomic. */
 	std::atomic<int64> RtFrameStartCycles{0};
 	std::atomic<int64> RtBusyUsInSpan{0};
+
+	/**
+	 * ★ THE SPLIT'S OWN LIVENESS PROOF. Without it the three-way verdict's fall-through reports
+	 * "NEITHER THREAD BUSY - gpu/vsync/os" for every hitch when the four frame delegates are simply not
+	 * firing — a specific and confident wrong cause, which is strictly worse than a dead zero. A zero is
+	 * useless; that actively certifies the wrong subsystem.
+	 *
+	 * Counting frames answers the question the review demands of every counter here: what input makes
+	 * this non-zero? One `OnEndFrame` broadcast. If that never happens the meter says the split is
+	 * unavailable instead of inventing a verdict.
+	 */
+	std::atomic<int64> GtFramesSeen{0};
+	std::atomic<int64> RtFramesSeen{0};
 
 	/**
 	 * ⚠ THE VERDICT COUNTERS, and the thresholds they use are deliberately generous rather than tuned.
@@ -458,6 +470,10 @@ private:
 	int32 HitchesGameThreadBound = 0;
 	int32 HitchesRenderThreadBound = 0;
 	int32 HitchesNeitherThreadBusy = 0;
+
+	/** Hitches measured while the split could not speak. Kept apart from the three real verdicts so a
+	 *  broken instrument can never be mistaken for a finding about the GPU. */
+	int32 HitchesSplitUnavailable = 0;
 	double WorstGtBusyMs = 0.0;
 	double WorstRtBusyMs = 0.0;
 

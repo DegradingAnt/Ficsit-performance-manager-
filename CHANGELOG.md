@@ -62,6 +62,50 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 13:00 — CODE — vox-review fixes on the work-or-wait split: an off-by-one frame, and three ways it could state a confident wrong cause
+
+- **What:** Four review findings on the 0.8.3 split, fixed before it ever ran.
+  1. **BLOCKER — off by one frame.** The game-thread busy time was accumulated in `OnFrameEndGameThread`
+     and consumed in `ClassifySpan`. Our ticker runs at `LaunchEngineLoop.cpp:5852`, the `OnEndFrame`
+     broadcast at `:5869` — so the span closed BEFORE the current frame's end fired, and the read
+     returned the PREVIOUS frame's duration against the CURRENT frame's span. A 700 ms game-thread stall
+     gave `SpanMs≈700, GtBusy≈4` and printed `NEITHER THREAD BUSY - gpu/vsync/os`. The one hitch class
+     the split exists to name was the one it misnamed, and it pointed at the wrong half of the engine.
+     Now read live as `Now - GtFrameStartSeconds`, which is the current frame's work up to the tick on
+     the same clock as the span.
+  2. **BLOCKER — no liveness proof.** The three-way verdict has a fall-through. With the frame delegates
+     dead, both values sit at 0.0, every test fails, and 100% of hitches report a specific confident
+     cause that is a lie. Worse than a dead zero: a zero is useless, this certifies the wrong subsystem.
+     `GtFramesSeen` now gates the verdict, and a dead split prints `thread split UNAVAILABLE` with an
+     explicit "do not read this as a GPU stall".
+  3. **BLOCKER, found while fixing 2 — the same failure one level down.** `Side()` is `Any`. On a
+     dedicated server the engine loop runs so the game-thread delegates DO fire, but there is no render
+     thread, so `OnEndFrameRT` never does. One shared liveness flag would have made every non-game-thread
+     server hitch blame `gpu/vsync/os` on a machine with no GPU. The halves are now proved separately.
+  4. **HIGH — the capability line was gated on the wrong buckets.** It printed `precaching`, which gates
+     `FramesDuringPsoWork`, but the whole line was suppressed once cold creations were non-zero — and
+     they will be (100 measured in eleven minutes). Each bucket now states its own capability when it is
+     the one sitting at zero.
+  Also: `worst frame work` relabelled `worst ON A HITCH`, since it only samples hitching spans; the
+  render-thread accumulator documented as "frame time COMPLETED during this span", which is what these
+  two delegates can honestly report.
+- **Why:** Ant asked for a vox-review of the three PSO/hitch commits and for the findings to be fixed.
+  Three of the four are the same smell the review skill names as the most expensive in this project —
+  an instrument that does not merely fail, but states a confident wrong cause.
+- **Files:** `Public/Core/FPMHitchMeter.h`, `Private/Core/FPMHitchMeter.cpp`,
+  `FicsitsPerformanceManager.uplugin` (0.8.3 → 0.8.4, all three version fields).
+- **Spec note carried forward, not silently dropped:** Ant said *"Fpm should hook whatever it needs. We
+  need all the control we can get"*, and no hook was written. The review flagged that as reinterpreted
+  scope. `FDynamicRHI::RHICreateGraphicsPipelineState` is pure virtual (`DynamicRHI.h:414`), reachable
+  through `GDynamicRHI`, cold-path only, and SML's virtual hook needs no UObject — it is ready to write.
+  The boot below decides it: if `LogPSOHitching` produces its lines, the deferral was right.
+- **Revert:** the split as a whole reverts by removing the four `FCoreDelegates` subscriptions and the
+  verdict block in `ClassifySpan`.
+- **Verified:** `FactoryEditor Win64 Development` and `FactoryGameSteam Win64 Shipping` both
+  `Result: Succeeded` · `check_structure.py` 22 fixes / 0 errors / 0 warnings · boot test follows.
+
+---
+
 ## 2026-08-10 11:55 — CODE — every hitch now says WHERE the time went, not only what happened during it
 
 - **What:** The meter subscribes to `FCoreDelegates::OnBeginFrame` / `OnEndFrame` (game thread) and

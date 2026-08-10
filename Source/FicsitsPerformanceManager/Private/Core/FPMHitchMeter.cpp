@@ -293,15 +293,29 @@ void FFPMHitchMeter::OnFrameBeginGameThread()
 
 void FFPMHitchMeter::OnFrameEndGameThread()
 {
-	// Guard the very first end-without-begin, which happens if we arm mid-frame. A negative or absurd
-	// duration folded into the accumulator would poison the verdict for the whole window.
-	if (GtFrameStartSeconds <= 0.0) { return; }
-
-	const double BusyMs = (FPlatformTime::Seconds() - GtFrameStartSeconds) * 1000.0;
+	/*
+	 * ⚠⚠ THIS DELIBERATELY DOES NOT ACCUMULATE, AND THE FIRST VERSION DID — review blocker, 2026-08-10.
+	 *
+	 * Accumulating here and consuming at tick time is off by exactly one frame, because of where our
+	 * ticker sits inside the engine loop:
+	 *     LaunchEngineLoop.cpp:5462   OnBeginFrame.Broadcast()
+	 *     LaunchEngineLoop.cpp:5852   FTSTicker::GetCoreTicker().Tick()   <- Tick() and ClassifySpan
+	 *     LaunchEngineLoop.cpp:5869   OnEndFrame.Broadcast()              <- this callback
+	 * The span closes BEFORE this frame's OnEndFrame runs, so an accumulator read at that point holds the
+	 * PREVIOUS frame's duration while `SpanMs` measures the current one.
+	 *
+	 * The consequence was not a small inaccuracy, it was a confident wrong answer: a 700 ms game-thread
+	 * stall in frame N gave SpanMs≈700 with GtBusy≈4 (frame N-1), which failed both verdict tests and
+	 * printed "NEITHER THREAD BUSY - gpu/vsync/os". The single hitch class the split exists to name was
+	 * the one it misnamed, and it pointed at the wrong half of the engine.
+	 *
+	 * `ClassifySpan` now reads `FPlatformTime::Seconds() - GtFrameStartSeconds` directly, which is the
+	 * CURRENT frame's game-thread work up to the tick, on the same clock as the span. All this callback
+	 * has to do is close the frame so a span that lands between frames measures nothing rather than
+	 * measuring stale work.
+	 */
 	GtFrameStartSeconds = 0.0;
-	if (BusyMs <= 0.0) { return; }
-
-	GtBusyUsInSpan.fetch_add(static_cast<int64>(BusyMs * 1000.0), std::memory_order_relaxed);
+	GtFramesSeen.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FFPMHitchMeter::OnFrameBeginRenderThread()
@@ -319,6 +333,7 @@ void FFPMHitchMeter::OnFrameEndRenderThread()
 	if (BusyMs <= 0.0) { return; }
 
 	RtBusyUsInSpan.fetch_add(static_cast<int64>(BusyMs * 1000.0), std::memory_order_relaxed);
+	RtFramesSeen.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FFPMHitchMeter::OnPsoCreated(int32 DescriptorType)
@@ -519,8 +534,50 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	 * explains it. Folding this into `bAttributed` would destroy that reading by making every hitch look
 	 * explained.
 	 */
-	const double GtBusyMs = static_cast<double>(GtBusyUsInSpan.exchange(0, std::memory_order_relaxed)) / 1000.0;
+	/*
+	 * ★ THE GAME-THREAD SIDE IS READ LIVE, NOT ACCUMULATED. See the long note on `OnFrameEndGameThread`
+	 * for the off-by-one this replaced. `GtFrameStartSeconds` is non-zero exactly when we are inside a
+	 * frame, which — given the ticker sits at `LaunchEngineLoop.cpp:5852`, between OnBeginFrame and
+	 * OnEndFrame — is the normal case for every span this meter closes.
+	 *
+	 * `SpanMs - GtBusyMs` is then the time the game thread was NOT doing its own frame work: the
+	 * frame-end sync, the vsync wait, and the render thread catching up.
+	 */
+	const double GtBusyMs = GtFrameStartSeconds > 0.0
+		? (FPlatformTime::Seconds() - GtFrameStartSeconds) * 1000.0
+		: 0.0;
+
+	/*
+	 * The render-thread side stays accumulated, and that is correct rather than inconsistent: the render
+	 * thread runs asynchronously and a frame it FINISHES during this span may have started in a previous
+	 * one. This measures render-thread frame time completed within the span, which is the honest quantity
+	 * available from these two delegates. It is not "the render thread's work on this frame".
+	 */
 	const double RtBusyMs = static_cast<double>(RtBusyUsInSpan.exchange(0, std::memory_order_relaxed)) / 1000.0;
+
+	/*
+	 * ★ THE LIVENESS PROOF FOR THE SPLIT — review blocker, 2026-08-10, and the more dangerous of the two.
+	 *
+	 * The three-way verdict below has a fall-through: anything that is neither game-thread bound nor
+	 * render-thread bound is reported as "NEITHER THREAD BUSY - gpu/vsync/os". If the four frame
+	 * delegates never fired, both numbers are 0.0 forever, every hitch fails both tests, and the meter
+	 * reports a SPECIFIC AND CONFIDENT CAUSE that is a lie. That is worse than a dead zero — a zero is
+	 * merely useless, this actively certifies the wrong subsystem.
+	 *
+	 * So the split declares its own liveness. If no game-thread frame has ever been seen, there is no
+	 * verdict to give and the line says so instead of guessing.
+	 */
+	const bool bSplitLive = GtFramesSeen.load(std::memory_order_relaxed) > 0;
+
+	/*
+	 * ⚠ AND THE TWO HALVES ARE PROVED SEPARATELY, because on a dedicated server exactly one of them is
+	 * alive. `Side()` is `Any`, the engine loop runs there, so OnBeginFrame/OnEndFrame DO fire — but
+	 * there is no render thread, so OnEndFrameRT never does. Treating the pair as one liveness flag would
+	 * make every server hitch that is not game-thread bound print "gpu/vsync/os" about a machine with no
+	 * GPU. That is the same confident-wrong-cause failure the split flag above exists to prevent, one
+	 * level down, and it would have shipped.
+	 */
+	const bool bRtLive = RtFramesSeen.load(std::memory_order_relaxed) > 0;
 
 	// The point of the widening: a span that matched nothing is now counted rather than merely absent from
 	// four other counters. Design `:1218` -- "most stalls were anonymous BY CONSTRUCTION".
@@ -583,14 +640,20 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	 * went somewhere neither of them owns — the GPU, the swapchain, vsync, the driver, or the OS taking
 	 * the core away. No existing bucket in this meter could ever have said that.
 	 */
-	const bool bGtBound = GtBusyMs >= SpanMs * 0.5;
-	const bool bRtBound = !bGtBound && RtBusyMs >= SpanMs * 0.5;
-	if (bGtBound)      { ++HitchesGameThreadBound; }
+	const bool bGtBound = bSplitLive && GtBusyMs >= SpanMs * 0.5;
+	const bool bRtBound = bSplitLive && bRtLive && !bGtBound && RtBusyMs >= SpanMs * 0.5;
+	if (!bSplitLive)   { ++HitchesSplitUnavailable; }
+	else if (bGtBound) { ++HitchesGameThreadBound; }
 	else if (bRtBound) { ++HitchesRenderThreadBound; }
 	else               { ++HitchesNeitherThreadBusy; }
 
-	WorstGtBusyMs = FMath::Max(WorstGtBusyMs, GtBusyMs);
-	WorstRtBusyMs = FMath::Max(WorstRtBusyMs, RtBusyMs);
+	// Only meaningful while the split is live, and only sampled on hitching spans — which is why the
+	// summary calls it "worst seen ON A HITCH" rather than implying it saw every frame.
+	if (bSplitLive)
+	{
+		WorstGtBusyMs = FMath::Max(WorstGtBusyMs, GtBusyMs);
+		WorstRtBusyMs = FMath::Max(WorstRtBusyMs, RtBusyMs);
+	}
 
 	if (!FPMDiag::IsOn(FPMDiag::EChannel::Hitch)) { return; }
 
@@ -650,11 +713,20 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	// ★ THE FIRST FIELD ANYONE READING A HITCH LINE SHOULD LOOK AT, because it says which half of the
 	// engine to open. Both raw numbers are printed beside the verdict so the verdict can be checked
 	// rather than trusted.
-	const FString ThreadPart = FString::Printf(
-		TEXT(" | %s (game thread busy %.1f ms, render thread busy %.1f ms of %.1f ms)"),
-		bGtBound ? TEXT("GAME-THREAD BOUND") : bRtBound ? TEXT("RENDER-THREAD BOUND")
-		                                                : TEXT("NEITHER THREAD BUSY - gpu/vsync/os"),
-		GtBusyMs, RtBusyMs, SpanMs);
+	// The third verdict's WORDING depends on whether a render thread exists at all. On a dedicated server
+	// it does not, so naming the GPU there would be nonsense about a machine that has none.
+	const TCHAR* Verdict =
+		bGtBound ? TEXT("GAME-THREAD BOUND")
+		: bRtBound ? TEXT("RENDER-THREAD BOUND")
+		: bRtLive ? TEXT("NEITHER THREAD BUSY - gpu/vsync/os")
+		          : TEXT("GAME THREAD IDLE, no render thread on this side - blocked off-thread");
+
+	const FString ThreadPart = bSplitLive
+		? FString::Printf(
+			TEXT(" | %s (game thread busy %.1f ms, render thread completed %.1f ms of %.1f ms)"),
+			Verdict, GtBusyMs, RtBusyMs, SpanMs)
+		: FString(TEXT(" | thread split UNAVAILABLE - no frame delegate has fired, so this hitch has NO "
+		               "where-verdict. Do not read it as a GPU stall."));
 
 	UE_LOG(LogFicsitsPerformanceManager, Warning,
 		TEXT("[FPM] HITCH %.1f ms%s%s - %d async-load flush(es), %d GC pass(es) in this span, %d "
@@ -697,9 +769,12 @@ bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 		// The work-or-wait accumulators too, and an in-flight frame start with them. A loading screen's
 		// game-thread time folded into the first playable span would make it read as game-thread bound no
 		// matter what actually happened in it.
-		GtBusyUsInSpan.store(0, std::memory_order_relaxed);
+		// ⚠ `GtFrameStartSeconds` is NOT cleared here, unlike everything else in this block. It is read
+		// live rather than accumulated, so it holds the CURRENT frame's start — the frame we are standing
+		// in right now, since the ticker runs between OnBeginFrame and OnEndFrame. Clearing it would blind
+		// the very next span for no benefit. The render-thread accumulator IS cleared, because it carries
+		// work from before the load boundary.
 		RtBusyUsInSpan.store(0, std::memory_order_relaxed);
-		GtFrameStartSeconds = 0.0;
 		RtFrameStartCycles.store(0, std::memory_order_relaxed);
 		return true;
 	}
@@ -795,11 +870,26 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		 * game-thread bound" and "8 unattributed, all neither-thread-busy" send you to opposite ends of
 		 * the engine, and until now both printed as the same line.
 		 */
-		Line += FString::Printf(
-			TEXT(" | where: %d game-thread bound, %d render-thread bound, %d neither (gpu/vsync/os) | "
-			     "worst frame work seen: game %.1f ms, render %.1f ms"),
-			HitchesGameThreadBound, HitchesRenderThreadBound, HitchesNeitherThreadBusy,
-			WorstGtBusyMs, WorstRtBusyMs);
+		if (GtFramesSeen.load(std::memory_order_relaxed) > 0)
+		{
+			Line += FString::Printf(
+				TEXT(" | where: %d game-thread bound, %d render-thread bound, %d neither (gpu/vsync/os) | "
+				     "worst ON A HITCH: game thread %.1f ms, render thread %.1f ms | %lld GT / %lld RT "
+				     "frame(s) seen"),
+				HitchesGameThreadBound, HitchesRenderThreadBound, HitchesNeitherThreadBusy,
+				WorstGtBusyMs, WorstRtBusyMs,
+				static_cast<long long>(GtFramesSeen.load(std::memory_order_relaxed)),
+				static_cast<long long>(RtFramesSeen.load(std::memory_order_relaxed)));
+		}
+		else
+		{
+			// ⚠ The denominator discipline this file opens with, applied to the split. Saying nothing here
+			// would let the reader assume the where-verdict simply had nothing to report.
+			Line += FString::Printf(
+				TEXT(" | where: UNAVAILABLE for all %d hitch(es) — no OnEndFrame broadcast has been seen, "
+				     "so the game/render split is DEAD, not quiet"),
+				HitchesSplitUnavailable);
+		}
 	}
 
 	/*
@@ -868,12 +958,25 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	 * This is the `FPMCVarWriter` pattern: do not claim the path works, demonstrate it — and where the
 	 * demonstration is a zero, show the gate.
 	 */
-	if (PsoCreatesTotal.GetValue() == 0 && PsoRunsCompleted.load(std::memory_order_relaxed) == 0)
+	/*
+	 * ⚠ EACH BUCKET'S CAPABILITY IS GATED ON ITS OWN EMPTINESS — review finding, 2026-08-10. The first
+	 * version gated the WHOLE line, including `precaching`, on the cold-creation and precompile-run
+	 * counters being zero. Cold creations will normally be non-zero (100 measured in eleven minutes of
+	 * her 03:27 session), which suppressed the line entirely — and `precaching` gates a THIRD bucket
+	 * (`FramesDuringPsoWork`) that would then sit at zero with its explanation hidden. `PSOPrecache` had
+	 * zero matches across her client logs, so an unsupported precache path is a live possibility here,
+	 * not a hypothetical.
+	 */
+	if (PsoCreatesTotal.GetValue() == 0)
 	{
 		Line += FString::Printf(
-			TEXT(" | PSO buckets all zero — capability: filecache=%d, reportPSO=%d, precaching=%d"),
+			TEXT(" | cold-PSO bucket zero — capability: filecache=%d, reportPSO=%d"),
 			FPipelineFileCacheManager::IsPipelineFileCacheEnabled() ? 1 : 0,
-			FPipelineFileCacheManager::ReportNewPSOs() ? 1 : 0,
+			FPipelineFileCacheManager::ReportNewPSOs() ? 1 : 0);
+	}
+	if (FramesDuringPsoWork == 0)
+	{
+		Line += FString::Printf(TEXT(" | no async PSO work seen — capability: precaching=%d"),
 			PipelineStateCache::IsPSOPrecachingEnabled() ? 1 : 0);
 	}
 
@@ -945,6 +1048,7 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	HitchesGameThreadBound = 0;
 	HitchesRenderThreadBound = 0;
 	HitchesNeitherThreadBusy = 0;
+	HitchesSplitUnavailable = 0;
 	WorstGtBusyMs = 0.0;
 	WorstRtBusyMs = 0.0;
 	LinesThisWindow = 0;
