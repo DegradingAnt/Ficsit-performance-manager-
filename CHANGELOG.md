@@ -62,6 +62,44 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 13:45 — CODE — stall sampler: name the game thread's missing 400 ms
+
+- **What:** A new fix, `FFPMStallSampler`. A low-priority watchdog thread reads a per-frame heartbeat
+  stamped by the game thread. When a frame passes `FPM.Stall.SampleAfterMs` (default 120) it captures
+  the GAME THREAD's callstack with `FPlatformStackWalk::CaptureThreadStackBackTrace` and attributes each
+  program counter to its owning MODULE by range test against a table snapshotted at Arm. Reports two
+  rankings — top-of-stack (what it was executing) and anywhere-in-stack (who is on the callpath) — both
+  with their denominator. `FPM.Stall.Report`.
+- **Why:** the 0.8.4 boot narrowed the hitches as far as counting can. 54 of 55 GAME-THREAD BOUND, game
+  thread busy ~99.9% of the span, 83-100% matching none of the six cause buckets, render thread idle at
+  11 ms while the game thread burned 400. A later window measured worst 449.8 ms, mean 216.9 ms, 7 of 8
+  unattributed. The next question is not "how many" but "doing WHAT", and only a stack sample answers it.
+- **Module, not function, and that is enough:** a retail install ships no PDBs, so function names are
+  not available and this does not pretend otherwise. Addresses resolve by arithmetic against
+  `BaseOfImage`/`ImageSize` — no symbol server, nothing that can fail quietly. With 53 mods on the
+  server and 124 in her client profile, "14 of 20 samples inside FicsitWiremod" IS the answer.
+- **It suspends the game thread, so it is bounded rather than trusted:** at most one sample per stall,
+  a minimum gap (`FPM.Stall.MinGapMs`, 250), and a hard session cap (`FPM.Stall.SessionBudget`, 200)
+  whose usage is printed beside the results. The module table is snapshotted at Arm on the game thread
+  and never re-read while a suspend is in flight — taking a lock the suspended thread might hold is the
+  classic profiler deadlock, and the snapshot makes it impossible rather than unlikely.
+- **Liveness:** refuses to arm at all if the module table comes back empty, and counts captures that
+  returned zero frames separately, so a session where every capture failed cannot read as a quiet one.
+- **Limit stated in the report itself:** this samples frames that ALREADY overran, so the percentages
+  are a profile of where the game thread is WHEN STUCK, not a general profile.
+- **Files:** `Public/Core/FPMStallSampler.h`, `Private/Core/FPMStallSampler.cpp`, `Core/FPMDiag.h` +
+  `FPMDiag.cpp` (new `StallSampler` channel — the existing static_assert caught the half-finished
+  registration at compile time, exactly as designed), `Private/FicsitsPerformanceManager.cpp`,
+  `.uplugin` (0.8.5 → 0.8.6).
+- **Bump rationale:** PATCH. Diagnostics, invisible with the console closed.
+- **Revert:** remove the `FPMFixes::Arm(FFPMStallSampler::Get())` line, or set
+  `FPM.Stall.SessionBudget 0` to stop all sampling while leaving the fix armed.
+- **Verified:** `FactoryEditor` + `FactoryGameSteam Win64 Shipping` + `FactoryServer Linux Shipping` all
+  Succeeded · `check_structure.py` 23 fixes / 0 / 0 · packaged and payloads verified at 0.8.6 · NOT yet
+  boot-tested.
+
+---
+
 ## 2026-08-10 13:00 — CODE — vox-review fixes on the work-or-wait split: an off-by-one frame, and three ways it could state a confident wrong cause
 
 - **What:** Four review findings on the 0.8.3 split, fixed before it ever ran.

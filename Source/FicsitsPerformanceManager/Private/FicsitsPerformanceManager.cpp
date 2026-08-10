@@ -6,6 +6,7 @@
 #include "Core/FPMCVarWriter.h"
 #include "Core/FPMFixContract.h"
 #include "Core/FPMGCMeter.h"
+#include "Core/FPMStallSampler.h"
 #include "Core/FPMHitchMeter.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMOverlay.h"
@@ -204,6 +205,22 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * nothing: no quality lever shortens a mark that scales with the live object graph.
 	 */
 	FPMFixes::Arm(FFPMGCMeter::Get());
+
+	/*
+	 * ★ AND THE ONE THAT PICKS UP WHERE COUNTING STOPS. Armed 2026-08-10, straight off the 0.8.4 boot.
+	 *
+	 * That boot narrowed the hitches as far as buckets can go: 54 of 55 GAME-THREAD BOUND with the game
+	 * thread busy ~99.9% of the span, 83-100% matching none of the six cause buckets, and the render
+	 * thread idle at 11 ms while the game thread burned 400. The meter proved WHERE the time goes and
+	 * exhausted its ability to say WHAT is spending it.
+	 *
+	 * Only a sample of the thread's own callstack answers that. This resolves to MODULE rather than
+	 * function — a retail install ships no PDBs — which with 53 mods on the server and 124 in her client
+	 * profile is the question anyway: WHICH ONE.
+	 *
+	 * It suspends the game thread to read it, so it is capped, gapped, and reports its own budget usage.
+	 */
+	FPMFixes::Arm(FFPMStallSampler::Get());
 
 	// And the thing the meter is pointed AT. Root-caused 2026-08-02, recovered unbuilt by the 2026-08-09
 	// scratchpad audit: vanilla's own player-list widget blocking-loads a platform icon nobody holds a hard

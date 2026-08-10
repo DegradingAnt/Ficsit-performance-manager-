@@ -80,6 +80,7 @@ public:
 		DistanceField,    // FPM.Diag.DistanceField — buildables missing distance-field contribution
 		WeatherGate,      // FPM.Diag.WeatherGate — weather particles scaled down in a sealed room
 		GCMeter,          // FPM.Diag.GCMeter — garbage-collection pauses, and the timer/forced split
+		StallSampler,     // FPM.Diag.StallSampler — WHICH MODULE the game thread was in during a hitch
 		Count
 	};
 

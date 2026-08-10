@@ -185,6 +185,13 @@ static TAutoConsoleVariable<int32> CVarDiagGCMeter(
 	     "back for level 2 - the per-pass detail IS the measurement."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagStallSampler(
+	TEXT("FPM.Diag.StallSampler"), 1,
+	TEXT("Which MODULE the game thread was inside during a measured stall. 0 = silent, 1 = the overlay row "
+	     "and the ranked report. The sampling itself is controlled by FPM.Stall.* - this only gates the "
+	     "reporting, so turning it off hides the answer rather than stopping the work."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -212,6 +219,7 @@ namespace
 		&CVarDiagDistanceField,
 		&CVarDiagWeatherGate,
 		&CVarDiagGCMeter,
+		&CVarDiagStallSampler,
 	};
 
 	/*
@@ -253,6 +261,7 @@ namespace
 		case FPMDiag::EChannel::DistanceField:  return TEXT("FPM.Diag.DistanceField");
 		case FPMDiag::EChannel::WeatherGate:    return TEXT("FPM.Diag.WeatherGate");
 		case FPMDiag::EChannel::GCMeter:        return TEXT("FPM.Diag.GCMeter");
+		case FPMDiag::EChannel::StallSampler:   return TEXT("FPM.Diag.StallSampler");
 		default:                                return TEXT("<unknown>");
 		}
 	}
