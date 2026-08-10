@@ -62,6 +62,49 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 17:35 — CODE — the measurement that decides the PSO pre-optimize exception
+
+- **What:** the hitch meter now counts cold PSO creations that happen MID-PLAY — more than 30 s after a
+  world load — separately from the startup burst, and `FPM.Pso.Report` prints a verdict naming the
+  decision it feeds.
+- **Why:** Ant, 2026-08-10, on whether FPM2 should spend an ini exception on
+  `r.ShaderPipelineCache.PreOptimizeEnabled`: *"Defer until we have a startup measurement."* This is
+  that measurement, and it exists so the ruling is made against a number instead of a rule.
+
+- **Pre-optimize IS off in her game, confirmed from the retail cooked config rather than assumed.** The
+  FModel dump of 1.2.3.1 / CL495413 shows `FactoryGame/Config/DefaultEngine.ini:15` setting
+  `r.ShaderPipelineCache.Enabled=1` and nothing else, so `PreOptimizeEnabled` sits at the engine's own
+  default of 0 (`ShaderPipelineCache.cpp:138-142`). There is something to turn on. Whether it is worth
+  turning on is the open question.
+- **Why `PsoCreatesTotal` could not answer it.** Pre-optimize front-loads compilation into startup, so
+  it can only help pipelines that would otherwise be built LATER. The existing total is dominated by the
+  arrival burst that pre-optimize would merely MOVE. The new counter isolates the part it would remove.
+- **Not gated on a hitch, deliberately.** A 4 ms pipeline build costs real time and never trips the
+  hitch threshold. Counting only the ones that hitched would undercount the prize and could report a
+  confident zero on a session that spent seconds compiling.
+- **The 30 s settle window is a judgement, and it errs long on purpose.** Erring long can only
+  UNDERSTATE the case for pre-optimize, which is the safe direction when what is being decided is
+  permanent residue on a player's machine. It resets on every world load, so a quit-to-menu-and-back
+  does not let the next world's startup burst count as mid-play.
+- **The verdict refuses to read as a pass when it is not one.** Four distinct outcomes: no world loaded
+  yet (not a result), still inside the settle window (play longer), new-PSO reporting off (UNMEASURABLE
+  — the zero means "not measured"), and only then zero-means-no or a count with the size of the prize.
+
+- **⚠ Threading, caught before it shipped.** `OnPsoCreated` does not run on the game thread — every
+  counter beside it is a `FThreadSafeCounter` for that reason — so the settle timestamp it compares
+  against is `std::atomic<double>` with relaxed ordering, not a plain double. Relaxed is sufficient: it
+  is a threshold against a clock, so reading a stale value misfiles at most one sample.
+
+- **Files:** `Public/Core/FPMHitchMeter.h`, `Private/Core/FPMHitchMeter.cpp`,
+  `FicsitsPerformanceManager.uplugin` (0.11.0 → **0.11.1**, PATCH: a counter and a log line, invisible
+  with the console closed).
+- **Revert:** `git revert`. Nothing else depends on it.
+- **Verified:** build-only. `Result: Succeeded`; `check_structure.py` 26 fixes / 0 / 0. NOT-YET
+  boot-tested. The boot question is one command after a normal play session: `FPM.Pso.Report`. A zero
+  mid-play count closes the ini exception for good; a large one reopens it with a number attached.
+
+---
+
 ## 2026-08-10 17:05 — CODE — "the trains mesh went low poly": measured, fixed at runtime, and FPM1's ini exception was never needed
 
 - **What:** a new fix, `FFPMNaniteStreamingGuard`. It reads Nanite's live quality-scale factor, and the

@@ -94,6 +94,16 @@ static TAutoConsoleVariable<int32> CVarPsoEngineHitchLog(
 	ECVF_Default);
 
 /**
+ * ★ HOW LONG AFTER A WORLD LOAD STILL COUNTS AS STARTUP.
+ *
+ * Thirty seconds, and it is a judgement rather than a measurement — chosen to be generously long, since
+ * the failure that matters here is counting the arrival burst as mid-play and arguing for an ini
+ * exception on inflated numbers. Erring long can only UNDERSTATE the case for pre-optimize, which is the
+ * safe direction when the thing being decided is permanent residue on a player's machine.
+ */
+constexpr double GFPMPsoSettleSeconds = 30.0;
+
+/**
  * Flip the engine's PSO-hitch category. `FSelfRegisteringExec::StaticExec` is CORE_API and the `LOG`
  * command is handled by `FLogSuppressionImplementation::Exec_Runtime` (`LogSuppressionInterface.cpp:589`,
  * `:591`) — `Exec_Runtime` rather than `Exec_Dev`, so it is present in Shipping.
@@ -352,6 +362,36 @@ void FFPMHitchMeter::OnPsoCreated(int32 DescriptorType)
 	default: break;
 	}
 
+	/*
+	 * ★ THE ONE NUMBER THAT DECIDES THE PRE-OPTIMIZE QUESTION, and the reason it is a separate counter.
+	 *
+	 * Ant, 2026-08-10, on whether FPM2 should spend an ini exception on
+	 * `r.ShaderPipelineCache.PreOptimizeEnabled`: *"Defer until we have a startup measurement."*
+	 *
+	 * Verified from the retail cooked config this session — `FactoryGame/Config/DefaultEngine.ini:15`
+	 * sets `r.ShaderPipelineCache.Enabled=1` and nothing else, so `PreOptimizeEnabled` sits at the
+	 * engine's own default of 0 (`ShaderPipelineCache.cpp:138-142`). Pre-optimize IS off in her game, so
+	 * there is something to turn on. What is unknown is whether turning it on would buy anything.
+	 *
+	 * Pre-optimize front-loads PSO compilation into startup. It can only help PSOs that would otherwise
+	 * be compiled LATER — during play. So the size of the prize is exactly this: how many PSOs get
+	 * created once the world has settled. `PsoCreatesTotal` cannot answer it, because it is dominated by
+	 * the startup burst that pre-optimize would merely move rather than remove.
+	 *
+	 * ⚠ IT IS NOT GATED ON A HITCH, on purpose. A 4 ms PSO compile costs real time and never trips the
+	 * hitch threshold, so counting only the ones that hitched would undercount the prize and could
+	 * report a confident zero on a session that spent seconds compiling.
+	 *
+	 * READ IT AS: near zero over a long session means the shipped cache already covers her play and
+	 * pre-optimize would front-load work she never needed — the exception is dead. A large number means
+	 * that cost is being paid mid-game and moving it to startup is worth the residue argument.
+	 */
+	const double Settled = SettledRealSeconds.load(std::memory_order_relaxed);
+	if (Settled > 0.0 && FPlatformTime::Seconds() >= Settled)
+	{
+		PsoCreatesAfterSettle.Increment();
+	}
+
 	// No log line per PSO, deliberately. Her 03:27 session created enough of these to reach the engine's
 	// own 100-hitch marker, and one line each would bury every other channel. The per-span count in the
 	// hitch line and the session split in FPM.Pso.Report are what the question actually needs.
@@ -421,6 +461,20 @@ void FFPMHitchMeter::OnWorldLoad(UWorld* World)
 		LogSummary(TEXT("world load"));
 	}
 	bPrimed = false;
+
+	/*
+	 * ★ WHEN "STARTUP" ENDS, for the pre-optimize measurement in `OnPsoCreated`.
+	 *
+	 * A world load is the only honest boundary available here. The loading screen is still up when this
+	 * fires, so a grace period follows it — PSOs compiled in the first seconds of a world are still the
+	 * arrival burst, and counting them as mid-play would inflate the prize and argue for an ini exception
+	 * the numbers do not support.
+	 *
+	 * ⚠ IT IS RESET ON EVERY LOAD, INCLUDING AUTOSAVE-DRIVEN ONES. That is deliberate: each world gets
+	 * its own settle window, so a quit-to-menu-and-back does not leave the counter treating the next
+	 * world's startup burst as mid-play.
+	 */
+	SettledRealSeconds.store(FPlatformTime::Seconds() + GFPMPsoSettleSeconds, std::memory_order_relaxed);
 }
 
 void FFPMHitchMeter::OnAsyncLoadingFlush()
@@ -1116,6 +1170,54 @@ void FFPMHitchMeter::LogPsoReport()
 		     "Each one is a pipeline that was not in the cache and had to be built during play."),
 		PsoCreatesTotal.GetValue(), PsoCreatesGraphics.GetValue(), PsoCreatesCompute.GetValue(),
 		PsoCreatesRayTracing.GetValue());
+
+	/*
+	 * ★ THE PRE-OPTIMIZE VERDICT, and it names the decision it is feeding so the number is not orphaned.
+	 *
+	 * Ant deferred the `r.ShaderPipelineCache.PreOptimizeEnabled` ini exception on 2026-08-10 pending
+	 * this measurement. Confirmed from the retail cooked config the same day:
+	 * `FactoryGame/Config/DefaultEngine.ini:15` sets only `r.ShaderPipelineCache.Enabled=1`, so
+	 * pre-optimize is at the engine default of 0 and IS available to turn on.
+	 */
+	const int32 AfterSettle = PsoCreatesAfterSettle.GetValue();
+
+	const double SettledAt = SettledRealSeconds.load(std::memory_order_relaxed);
+
+	if (SettledAt <= 0.0)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   pre-optimize verdict: NO WORLD LOADED YET, so the mid-play window has not opened "
+			     "and this measurement has not started. Not a result."));
+	}
+	else if (FPlatformTime::Seconds() < SettledAt)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   pre-optimize verdict: still inside the %.0f s settle window after the last world "
+			     "load, so every PSO so far is the arrival burst. Play a while and run this again."),
+			GFPMPsoSettleSeconds);
+	}
+	else if (!bReportPSOs)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM]   pre-optimize verdict: UNMEASURABLE. New-PSO reporting is off, so the mid-play "
+			     "count cannot move and its %d is 'not measured'."), AfterSettle);
+	}
+	else if (AfterSettle == 0)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   pre-optimize verdict: ZERO cold PSOs built more than %.0f s after a world load. "
+			     "r.ShaderPipelineCache.PreOptimizeEnabled would front-load work that is never paid during "
+			     "play, so it buys nothing here and does not justify an ini write. A real negative."),
+			GFPMPsoSettleSeconds);
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM]   pre-optimize verdict: %d of %d cold PSO(s) were built MID-PLAY, more than %.0f s "
+			     "after a world load. That is the work r.ShaderPipelineCache.PreOptimizeEnabled would move "
+			     "to startup, and the size of the prize if we spend an ini exception on it."),
+			AfterSettle, PsoCreatesTotal.GetValue(), GFPMPsoSettleSeconds);
+	}
 
 	// Cross-check against the engine's own tally. It counts only new PSOs with at least one bind or a
 	// compile failure, and it is gated on LogPSO as well as Enabled, so it can disagree with ours -- a

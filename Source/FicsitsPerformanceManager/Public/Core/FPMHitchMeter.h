@@ -407,6 +407,28 @@ private:
 	FThreadSafeCounter PsoCreatesCompute;
 	FThreadSafeCounter PsoCreatesRayTracing;
 
+	/**
+	 * ★ PSOs CREATED AFTER THE WORLD SETTLED — the number that decides the pre-optimize question.
+	 *
+	 * Ant deferred the `r.ShaderPipelineCache.PreOptimizeEnabled` ini exception on 2026-08-10 pending a
+	 * startup measurement, and this is it. Pre-optimize can only help PSOs that would otherwise compile
+	 * during PLAY; `PsoCreatesTotal` is dominated by the startup burst it would merely move. See the
+	 * long note on `OnPsoCreated` for how to read a zero here — it is a real answer, not an absent one.
+	 */
+	FThreadSafeCounter PsoCreatesAfterSettle;
+
+	/**
+	 * Wall-clock second after which a PSO creation counts as mid-play. Set on every world load, zero
+	 * before the first one — which is what keeps the main menu's own PSOs out of the gameplay count.
+	 *
+	 * ⚠ ATOMIC BECAUSE `OnPsoCreated` IS NOT ON THE GAME THREAD. Every counter beside it is a
+	 * `FThreadSafeCounter` for exactly that reason, and this is written from `OnWorldLoad` on the game
+	 * thread while being read from whichever thread built the pipeline. Relaxed ordering is enough: it
+	 * is a threshold compared against a clock, so reading the previous world's value for one PSO
+	 * misfiles at most that one sample and cannot corrupt anything.
+	 */
+	std::atomic<double> SettledRealSeconds{0.0};
+
 	int32 HitchesWithPsoCreate = 0;
 	int32 StallsWithPsoCreate = 0;
 

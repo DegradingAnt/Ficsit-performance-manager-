@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 0,
-	"VersionName": "0.11.0",
+	"VersionName": "0.11.1",
 	"FriendlyName": "FICSIT's performance manager (ALPHA)",
 	"Description": "ALPHA BUILD. This mod is in active development. Expect bugs, expect settings to move, and do not run it on a world you cannot replace. Back up your save first. Twenty repairs, guards and diagnostics for known multiplayer, rendering and stutter bugs. This build has no performance governor yet. REPAIRS, where we named the cause: static-base movement, so you stop rubber-banding on foundations. Rain occlusion, which builds the missing bounding box from real mesh geometry instead of muting the log. A Wwise gate for dedicated servers, which have no audio device for that call to reach. Asset residency, so the player list stops blocking the game thread to load an icon. A zipline volume lever. GUARDS, where the cause belongs to somebody else: an owner-less RPC gate. Unwired rail connections, about 2,000 averted asserts per server start. A HUD hook strip. A texture pool sized to your card. Null power-wire entries, removed before the autosave walks them, because that state crashed a dedicated server inside its own autosave. Schematic access, refused when the game is about to read a null event subsystem - the largest crash-to-desktop class in this project's dump corpus, at 19 of 57 dumps. A save-settings guard. CHOKE-POINT REPAIRS: inventory init, hologram net, and a navmesh tile ceiling that reads its own write back. DIAGNOSTICS that change no behavior: a hitch meter, because this game build compiles the engine one out. The hitch meter now names cold pipeline builds, which is the shader stutter that the startup precompile pass does not cover, and it reports whether that measurement is able to run at all. A clone sensor. A schematic probe. A power-circuit probe that answers whether the Fuse Blown popup is telling the truth. A distance-field audit that counts buildings the renderer cannot see. Press F8 for the debug overlay. FPM never destroys your items or your character. It makes no network requests of any kind. It leaves nothing behind when you uninstall it, and FPM.Residue audits that claim from inside the game. AI-assisted, human-reviewed. GPL-3.0.",
 	"Category": "Modding",
@@ -51,8 +51,8 @@
 			"BasePlugin": true
 		}
 	],
-	"SemVersion": "0.11.0",
-	"RemoteVersionRange": "=0.11.0",
+	"SemVersion": "0.11.1",
+	"RemoteVersionRange": "=0.11.1",
 	"RequiredOnRemote": true,
 	"GameVersion": ">=495413"
 }
