@@ -274,6 +274,45 @@ private:
 	 */
 	void OnPsoCreated(int32 DescriptorType);
 
+	/**
+	 * ★ WORK OR WAIT — the cut that halves the search space for every unattributed hitch.
+	 * Wired 2026-08-10, and it is the answer to the shape her logs keep showing:
+	 *     2 hitch(es) ... worst 212.5 ms ... 0 flush, 0 SYNC load, 0 GC, 0 PSO | 2 UNATTRIBUTED (100%)
+	 *
+	 * ⚠ EVERY BUCKET SO FAR ASKS "WHAT HAPPENED DURING THE SPAN", AND NONE ASKS THE PRIOR QUESTION.
+	 * This meter times wall clock between core-ticker ticks. That span contains the game thread's own
+	 * work AND everything it then waits on — frame-end sync, vsync, the render thread catching up. So a
+	 * 723 ms hitch has two completely different explanations that the meter cannot currently tell apart:
+	 * the game thread DID 723 ms of work, or the game thread did 4 ms of work and WAITED 719 ms.
+	 * Those point at opposite halves of the engine, and chasing the wrong one is how the four
+	 * instrument-gap incidents in this project's history started.
+	 *
+	 * ★ HOW THE SPLIT IS TAKEN, and why the ordering makes it valid. All four are plain CORE_API
+	 * `FSimpleMulticastDelegate`s broadcast from the main engine loop with no editor guard:
+	 *     OnBeginFrame    CoreDelegates.h:262   broadcast LaunchEngineLoop.cpp:5462   game thread
+	 *     OnEndFrame      CoreDelegates.h:268   broadcast LaunchEngineLoop.cpp:5869   game thread
+	 *     OnBeginFrameRT  CoreDelegates.h:271   broadcast LaunchEngineLoop.cpp:5283   render thread
+	 *     OnEndFrameRT    CoreDelegates.h:274   broadcast LaunchEngineLoop.cpp:5318   render thread
+	 * The core ticker that drives `Tick()` runs at `LaunchEngineLoop.cpp:5852` — BETWEEN OnBeginFrame and
+	 * OnEndFrame. So `OnBeginFrame -> OnEndFrame` is the game thread's own frame work, measured on the
+	 * same clock as the span, and `SpanMs - GameThreadBusyMs` is everything the game thread was not doing
+	 * itself. That subtraction is only meaningful because of that ordering, which is why it is cited.
+	 *
+	 * The result is a three-way verdict per hitch:
+	 *   - game thread busy for most of the span      -> GAME-THREAD BOUND. Look at gameplay, GC, loading.
+	 *   - game thread idle, render thread busy       -> RENDER-THREAD BOUND. Look at draw calls, PSOs.
+	 *   - both idle                                  -> neither. GPU, vsync, driver, or the OS.
+	 * The third is a real answer too, and it is the one no existing bucket could ever have produced.
+	 *
+	 * ⚠ MICROSECONDS IN AN INTEGER ATOMIC, NOT `std::atomic<double>`. The render-thread pair accumulates
+	 * across threads, and `fetch_add` on a floating-point atomic is a C++20 addition with uneven support.
+	 * An int64 of microseconds is exact for these magnitudes and needs no compare-exchange loop.
+	 */
+	void OnFrameBeginGameThread();
+	void OnFrameEndGameThread();
+	void OnFrameBeginRenderThread();
+	void OnFrameEndRenderThread();
+
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle FlushHandle;
 	FDelegateHandle PackageHandle;
@@ -282,6 +321,10 @@ private:
 	FDelegateHandle PsoBeginHandle;
 	FDelegateHandle PsoCompleteHandle;
 	FDelegateHandle PsoLoggedHandle;
+	FDelegateHandle FrameBeginHandle;
+	FDelegateHandle FrameEndHandle;
+	FDelegateHandle FrameBeginRtHandle;
+	FDelegateHandle FrameEndRtHandle;
 
 	double LastTickSeconds = 0.0;
 	double WindowSeconds = 0.0;
@@ -389,6 +432,34 @@ private:
 	int32 StallsWithPsoWork = 0;
 	int32 PeakPrecompileTasks = 0;
 	int32 PeakPrecacheRequests = 0;
+
+	/**
+	 * The work-or-wait split. See the note on `OnFrameBeginGameThread`.
+	 *
+	 * The game-thread pair is touched only from the game thread, so the start stamp is a plain double.
+	 * Its accumulator is still atomic because `ClassifySpan` consumes it with an exchange and there is no
+	 * reason to have two consumption idioms in one file.
+	 */
+	double GtFrameStartSeconds = 0.0;
+	std::atomic<int64> GtBusyUsInSpan{0};
+
+	/** The render-thread pair. Both are written from the render thread, so both must be atomic. */
+	std::atomic<int64> RtFrameStartCycles{0};
+	std::atomic<int64> RtBusyUsInSpan{0};
+
+	/**
+	 * ⚠ THE VERDICT COUNTERS, and the thresholds they use are deliberately generous rather than tuned.
+	 * A hitch is called game-thread bound when the game thread's own frame work covers most of the span,
+	 * render-thread bound when it does not and the render thread's does. Anything else is left in the
+	 * third bucket rather than forced into one of the first two — an honest "neither" is the finding for
+	 * a GPU or vsync stall, and rounding it into a named bucket would be the overstatement this whole
+	 * file argues against.
+	 */
+	int32 HitchesGameThreadBound = 0;
+	int32 HitchesRenderThreadBound = 0;
+	int32 HitchesNeitherThreadBusy = 0;
+	double WorstGtBusyMs = 0.0;
+	double WorstRtBusyMs = 0.0;
 
 	/**
 	 * ★ THE UNATTRIBUTED RATE IS THIS WIDENING'S DONE-CONDITION, not a by-product of it.

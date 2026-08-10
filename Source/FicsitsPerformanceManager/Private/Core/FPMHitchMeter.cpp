@@ -159,6 +159,12 @@ void FFPMHitchMeter::Arm()
 		[this](const FPipelineCacheFileFormatPSO& PSO)
 		{ OnPsoCreated(static_cast<int32>(PSO.Type)); });
 
+	// The work-or-wait split. All four are plain multicast delegates from the main engine loop.
+	FrameBeginHandle   = FCoreDelegates::OnBeginFrame.AddRaw(this, &FFPMHitchMeter::OnFrameBeginGameThread);
+	FrameEndHandle     = FCoreDelegates::OnEndFrame.AddRaw(this, &FFPMHitchMeter::OnFrameEndGameThread);
+	FrameBeginRtHandle = FCoreDelegates::OnBeginFrameRT.AddRaw(this, &FFPMHitchMeter::OnFrameBeginRenderThread);
+	FrameEndRtHandle   = FCoreDelegates::OnEndFrameRT.AddRaw(this, &FFPMHitchMeter::OnFrameEndRenderThread);
+
 	// Reveal the engine's own per-creation timing line. See the long note above the cvar.
 	// ⚠ Never on a dedicated server: NullRHI builds no pipelines, so this would raise a category that
 	// cannot emit and put a misleading switch in the server log for nothing.
@@ -227,6 +233,42 @@ void FFPMHitchMeter::Disarm()
 		PsoLoggedHandle.Reset();
 	}
 
+	/*
+	 * ⚠ THE RENDER-THREAD PAIR COMES OFF FROM THE GAME THREAD, AND THAT RACE IS ACCEPTED RATHER THAN
+	 * CLOSED. Stated plainly because the alternative reading — that unbinding is synchronised — is wrong,
+	 * and a comment that implies a guarantee the code does not provide is worse than no comment.
+	 *
+	 * `Remove()` on a multicast delegate is not ordered against a broadcast already running on the render
+	 * thread, so `OnFrameEndRenderThread` can land immediately after this. Two reasons that is safe here
+	 * and does not need a `FlushRenderingCommands()`:
+	 *   - The meter is a function-local static with process lifetime (`Get()`), so a late callback cannot
+	 *     touch freed memory. This is not a use-after-free.
+	 *   - All it can do is `fetch_add` into `RtBusyUsInSpan`, which nothing reads after this point —
+	 *     `LogSummary` already ran at the top of `Disarm()`.
+	 * Flushing rendering commands during teardown, when the render thread may already be going away, is
+	 * the riskier of the two options for a consequence that is provably nil.
+	 */
+	if (FrameBeginHandle.IsValid())
+	{
+		FCoreDelegates::OnBeginFrame.Remove(FrameBeginHandle);
+		FrameBeginHandle.Reset();
+	}
+	if (FrameEndHandle.IsValid())
+	{
+		FCoreDelegates::OnEndFrame.Remove(FrameEndHandle);
+		FrameEndHandle.Reset();
+	}
+	if (FrameBeginRtHandle.IsValid())
+	{
+		FCoreDelegates::OnBeginFrameRT.Remove(FrameBeginRtHandle);
+		FrameBeginRtHandle.Reset();
+	}
+	if (FrameEndRtHandle.IsValid())
+	{
+		FCoreDelegates::OnEndFrameRT.Remove(FrameEndRtHandle);
+		FrameEndRtHandle.Reset();
+	}
+
 	// ZERO RESIDUE. Restored unconditionally rather than behind the same cvar the arm path checked:
 	// someone can set FPM.Pso.EngineHitchLog to 0 mid-session, and a restore that reads the CURRENT value
 	// would then leave the category raised forever. Putting it back to its declared default is correct
@@ -235,6 +277,48 @@ void FFPMHitchMeter::Disarm()
 	{
 		FPMSetEnginePsoHitchLogging(false);
 	}
+}
+
+/*
+ * ★ THE WORK-OR-WAIT PAIR. Four callbacks, no hook, no allocation, and nothing that can block a frame.
+ *
+ * `FPlatformTime::Seconds()` on the game-thread side, matching the span clock exactly so the subtraction
+ * in `ClassifySpan` compares like with like. Cycles64 on the render-thread side, because that pair only
+ * ever produces a DURATION and cycles avoid a second conversion on the hotter thread.
+ */
+void FFPMHitchMeter::OnFrameBeginGameThread()
+{
+	GtFrameStartSeconds = FPlatformTime::Seconds();
+}
+
+void FFPMHitchMeter::OnFrameEndGameThread()
+{
+	// Guard the very first end-without-begin, which happens if we arm mid-frame. A negative or absurd
+	// duration folded into the accumulator would poison the verdict for the whole window.
+	if (GtFrameStartSeconds <= 0.0) { return; }
+
+	const double BusyMs = (FPlatformTime::Seconds() - GtFrameStartSeconds) * 1000.0;
+	GtFrameStartSeconds = 0.0;
+	if (BusyMs <= 0.0) { return; }
+
+	GtBusyUsInSpan.fetch_add(static_cast<int64>(BusyMs * 1000.0), std::memory_order_relaxed);
+}
+
+void FFPMHitchMeter::OnFrameBeginRenderThread()
+{
+	RtFrameStartCycles.store(static_cast<int64>(FPlatformTime::Cycles64()), std::memory_order_relaxed);
+}
+
+void FFPMHitchMeter::OnFrameEndRenderThread()
+{
+	const int64 Start = RtFrameStartCycles.exchange(0, std::memory_order_relaxed);
+	if (Start == 0) { return; }
+
+	const double BusyMs = FPlatformTime::ToMilliseconds64(
+		FPlatformTime::Cycles64() - static_cast<uint64>(Start));
+	if (BusyMs <= 0.0) { return; }
+
+	RtBusyUsInSpan.fetch_add(static_cast<int64>(BusyMs * 1000.0), std::memory_order_relaxed);
 }
 
 void FFPMHitchMeter::OnPsoCreated(int32 DescriptorType)
@@ -424,6 +508,20 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	PeakPrecacheRequests = FMath::Max(PeakPrecacheRequests, PrecacheRequests);
 	if (bPsoWorkInSpan) { ++FramesDuringPsoWork; }
 
+	/*
+	 * ★ WORK OR WAIT. Consumed every span, exactly like the event counters, so a span always reports its
+	 * own frame time rather than a neighbour's. See the header note for why the subtraction is valid.
+	 *
+	 * ⚠ THIS IS ORTHOGONAL TO `bAttributed` AND MUST STAY SO. Attribution answers WHAT happened; this
+	 * answers WHERE the time went. A hitch can be confidently game-thread bound and still completely
+	 * unattributed — that pairing is not a contradiction, it is the most useful thing this meter can say
+	 * about a hitch it cannot name: the cause is on the game thread and none of the four known causes
+	 * explains it. Folding this into `bAttributed` would destroy that reading by making every hitch look
+	 * explained.
+	 */
+	const double GtBusyMs = static_cast<double>(GtBusyUsInSpan.exchange(0, std::memory_order_relaxed)) / 1000.0;
+	const double RtBusyMs = static_cast<double>(RtBusyUsInSpan.exchange(0, std::memory_order_relaxed)) / 1000.0;
+
 	// The point of the widening: a span that matched nothing is now counted rather than merely absent from
 	// four other counters. Design `:1218` -- "most stalls were anonymous BY CONSTRUCTION".
 	//
@@ -475,6 +573,24 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	if (PsoCreatesInSpan > 0) { ++HitchesWithPsoCreate; }
 	if (bPsoWorkInSpan)       { ++HitchesWithPsoWork; }
 	if (!bAttributed)         { ++HitchesUnattributed; }
+
+	/*
+	 * The three-way verdict. Half the span is the bar for "this thread was the one busy" — generous on
+	 * purpose. A tuned threshold would imply a precision these two clocks do not have, and the useful
+	 * signal here is coarse by nature: which HALF of the engine to go and look at.
+	 *
+	 * The `else` is a real verdict, not a leftover. Both threads idle across a 200 ms span means the time
+	 * went somewhere neither of them owns — the GPU, the swapchain, vsync, the driver, or the OS taking
+	 * the core away. No existing bucket in this meter could ever have said that.
+	 */
+	const bool bGtBound = GtBusyMs >= SpanMs * 0.5;
+	const bool bRtBound = !bGtBound && RtBusyMs >= SpanMs * 0.5;
+	if (bGtBound)      { ++HitchesGameThreadBound; }
+	else if (bRtBound) { ++HitchesRenderThreadBound; }
+	else               { ++HitchesNeitherThreadBusy; }
+
+	WorstGtBusyMs = FMath::Max(WorstGtBusyMs, GtBusyMs);
+	WorstRtBusyMs = FMath::Max(WorstRtBusyMs, RtBusyMs);
 
 	if (!FPMDiag::IsOn(FPMDiag::EChannel::Hitch)) { return; }
 
@@ -531,10 +647,19 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 
 	const TCHAR* UnattributedPart = bAttributed ? TEXT("") : TEXT(" | UNATTRIBUTED");
 
+	// ★ THE FIRST FIELD ANYONE READING A HITCH LINE SHOULD LOOK AT, because it says which half of the
+	// engine to open. Both raw numbers are printed beside the verdict so the verdict can be checked
+	// rather than trusted.
+	const FString ThreadPart = FString::Printf(
+		TEXT(" | %s (game thread busy %.1f ms, render thread busy %.1f ms of %.1f ms)"),
+		bGtBound ? TEXT("GAME-THREAD BOUND") : bRtBound ? TEXT("RENDER-THREAD BOUND")
+		                                                : TEXT("NEITHER THREAD BUSY - gpu/vsync/os"),
+		GtBusyMs, RtBusyMs, SpanMs);
+
 	UE_LOG(LogFicsitsPerformanceManager, Warning,
-		TEXT("[FPM] HITCH %.1f ms%s - %d async-load flush(es), %d GC pass(es) in this span, %d package(s) "
-		     "still loading%s%s%s%s%s%s"),
-		SpanMs, bClosedByLoad ? TEXT(" (closed by a world load)") : TEXT(""),
+		TEXT("[FPM] HITCH %.1f ms%s%s - %d async-load flush(es), %d GC pass(es) in this span, %d "
+		     "package(s) still loading%s%s%s%s%s%s"),
+		SpanMs, bClosedByLoad ? TEXT(" (closed by a world load)") : TEXT(""), *ThreadPart,
 		FlushesInSpan, GcInSpan, GetNumAsyncPackages(), *SyncPart, *PsoCreatePart, *PsoWorkPart, PsoPart,
 		UnattributedPart, *Packages);
 }
@@ -568,6 +693,14 @@ bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 		SyncLoadsInFrame.Set(0);
 		GcInFrame.Set(0);
 		PsoCreatesInFrame.Set(0);
+
+		// The work-or-wait accumulators too, and an in-flight frame start with them. A loading screen's
+		// game-thread time folded into the first playable span would make it read as game-thread bound no
+		// matter what actually happened in it.
+		GtBusyUsInSpan.store(0, std::memory_order_relaxed);
+		RtBusyUsInSpan.store(0, std::memory_order_relaxed);
+		GtFrameStartSeconds = 0.0;
+		RtFrameStartCycles.store(0, std::memory_order_relaxed);
 		return true;
 	}
 
@@ -655,6 +788,18 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		 */
 		Line += FString::Printf(TEXT(" | %d UNATTRIBUTED (%.0f%% of hitches)"),
 			HitchesUnattributed, 100.0 * HitchesUnattributed / Hitches);
+
+		/*
+		 * ★ WHERE THE TIME WENT, printed beside WHAT caused it, because the two answer different
+		 * questions and the pairing is what makes an unattributed hitch actionable. "8 unattributed, all
+		 * game-thread bound" and "8 unattributed, all neither-thread-busy" send you to opposite ends of
+		 * the engine, and until now both printed as the same line.
+		 */
+		Line += FString::Printf(
+			TEXT(" | where: %d game-thread bound, %d render-thread bound, %d neither (gpu/vsync/os) | "
+			     "worst frame work seen: game %.1f ms, render %.1f ms"),
+			HitchesGameThreadBound, HitchesRenderThreadBound, HitchesNeitherThreadBusy,
+			WorstGtBusyMs, WorstRtBusyMs);
 	}
 
 	/*
@@ -794,6 +939,14 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	PeakPrecacheRequests = 0;
 	HitchesUnattributed = 0;
 	StallsUnattributed = 0;
+	// ⚠ The work-or-wait ACCUMULATORS are not reset here — `ClassifySpan` exchanges them every span, and
+	// clearing them on a window boundary could discard a frame that has already been measured but whose
+	// span has not closed. Only the per-window verdict tallies reset.
+	HitchesGameThreadBound = 0;
+	HitchesRenderThreadBound = 0;
+	HitchesNeitherThreadBusy = 0;
+	WorstGtBusyMs = 0.0;
+	WorstRtBusyMs = 0.0;
 	LinesThisWindow = 0;
 	LinesSuppressed = 0;
 	WorstHitchMs = 0.0;

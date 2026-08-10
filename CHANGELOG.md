@@ -62,6 +62,49 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 11:55 — CODE — every hitch now says WHERE the time went, not only what happened during it
+
+- **What:** The meter subscribes to `FCoreDelegates::OnBeginFrame` / `OnEndFrame` (game thread) and
+  `OnBeginFrameRT` / `OnEndFrameRT` (render thread), and reports a three-way verdict per hitch:
+  **game-thread bound**, **render-thread bound**, or **neither thread busy (gpu/vsync/os)**. The raw
+  numbers print beside the verdict so it can be checked rather than trusted. The window summary carries
+  the tally and the worst frame work seen on each thread.
+- **Why:** Every bucket in this meter asks what HAPPENED during a span. None asked the prior question.
+  The span is wall clock between core-ticker ticks, so it contains the game thread's own work AND
+  everything it then waits on. A 723 ms hitch had two opposite explanations the meter could not tell
+  apart — the game thread did 723 ms of work, or it did 4 ms and waited 719 ms. Her logs are full of the
+  case that needs it: `2 hitch(es) ... worst 212.5 ms ... 0 flush, 0 SYNC load, 0 GC, 0 PSO | 2
+  UNATTRIBUTED (100%)`. This does not name those, but it halves the search space for all of them, and
+  the third verdict is a real finding no existing bucket could produce.
+- **Why the subtraction is valid:** the core ticker driving `Tick()` runs at `LaunchEngineLoop.cpp:5852`,
+  BETWEEN the `OnBeginFrame` broadcast at `:5462` and the `OnEndFrame` broadcast at `:5869`. So
+  `OnBeginFrame -> OnEndFrame` is the game thread's own frame work on the same clock as the span. All
+  four delegates are plain CORE_API `FSimpleMulticastDelegate` (`CoreDelegates.h:262-274`) broadcast from
+  the main engine loop with no editor guard.
+- **Kept orthogonal to attribution, deliberately.** A hitch can be game-thread bound AND unattributed.
+  That pairing is the most useful thing the meter can say about a hitch it cannot name, and folding the
+  verdict into `bAttributed` would have destroyed it by making every hitch look explained.
+- **Threads and types:** the render-thread pair accumulates across threads, so both its fields are
+  atomic, and the accumulator is `int64` MICROSECONDS rather than `std::atomic<double>` — floating-point
+  `fetch_add` is a C++20 addition with uneven support, and integer microseconds are exact at these
+  magnitudes with no compare-exchange loop.
+- **One race accepted and documented rather than closed:** `Remove()` on the render-thread delegates runs
+  from the game thread and is not ordered against an in-flight broadcast. Safe because the meter is a
+  function-local static with process lifetime, and the only possible late write is into an accumulator
+  nothing reads after `LogSummary` has already run. `FlushRenderingCommands()` during teardown would be
+  the riskier option for a nil consequence. ⚠ The first version of this comment claimed an ordering the
+  code did not implement; corrected before commit.
+- **Files:** `Public/Core/FPMHitchMeter.h`, `Private/Core/FPMHitchMeter.cpp`,
+  `FicsitsPerformanceManager.uplugin` (0.8.2 → 0.8.3, all three version fields).
+- **Bump rationale:** PATCH. Diagnostics, invisible with the console closed, no behavior change.
+- **Revert:** Remove the four `FCoreDelegates` subscriptions and the verdict block in `ClassifySpan`.
+  Undo if the per-frame delegate cost ever measures as non-free — it is four multicast broadcasts per
+  frame that the engine already performs whether or not anyone is listening.
+- **Verified:** build-only (`FactoryEditor Win64 Development`, `Result: Succeeded`, 25.98 s) ·
+  `check_structure.py` 22 fixes / 0 errors / 0 warnings · NOT-YET boot-tested.
+
+---
+
 ## 2026-08-10 11:40 — CODE — the engine's own per-PSO timing switched on, because it was compiled in and merely silent
 
 - **What:** `Arm()` raises the engine log category `LogPSOHitching` to Verbose, and `Disarm()` puts it back
