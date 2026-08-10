@@ -131,10 +131,37 @@ void FFPMNavMeshCeiling::OnWorldLoad(UWorld* World)
 		return;
 	}
 
+	/*
+	 * ⚠ THE VERIFY INSTRUCTION THIS LINE USED TO CARRY WAS PROBABLY BACKWARDS. Corrected 2026-08-10
+	 * against the first 0.7.0 server boot, and the correction matters more than the fix does.
+	 *
+	 * It read: "the engine's 'serialized maxTiles (65536, 16 bits) vs calculated maxtiles (306440'
+	 * warning should be ABSENT... If it is still there, this fix did not take effect regardless of
+	 * what the counts above say." The live log then showed 19 actors raised, every one read back OK,
+	 * and that warning firing three times ~100 ms later — which by the instruction's own wording meant
+	 * FAILURE.
+	 *
+	 * But read the two numbers in the warning: serialized 65536 (16 bits) vs calculated 306440
+	 * (19 bits). 306440 FITS COMFORTABLY UNDER the 524288 we raise to. The mismatch is between the
+	 * navmesh SAVED at 65536 and what the map now calculates — so "Recreating dtNavMesh instance" is
+	 * the engine RECONCILING to the new headroom, which is what a successful raise should cause. An
+	 * absent warning might instead mean the raise never happened.
+	 *
+	 * That is a symmetrical trap: a wrong criterion makes a WORKING fix look broken, and the next
+	 * person "fixes" it into something worse. It was written into both the design doc and this log
+	 * line, so it would have been believed twice.
+	 *
+	 * ⚠ STILL NOT SETTLED. The alternative — the engine clamps back to the serialized value and the
+	 * raise is cosmetic — is not excluded. The read-back below happens after the WRITE, not after the
+	 * RECREATE, so it cannot tell those apart. Board m6333090 carries what would settle it.
+	 */
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] navmesh ceiling: %d actor(s) seen, %d raised to %d, %d write(s) did not stick. "
-		     "VERIFY: the engine's 'serialized maxTiles (65536, 16 bits) vs calculated maxtiles (306440' "
-		     "warning should be ABSENT from this session's nav log. If it is still there, this fix did "
-		     "not take effect regardless of what the counts above say."),
-		GFPMNavSeen, GFPMNavRaised, GFPMNavTileCeiling, GFPMNavFailedReadback);
+		     "⚠ READ THE ENGINE'S OWN LINE, DO NOT ASSUME ITS MEANING: 'serialized maxTiles (65536, 16 "
+		     "bits) vs calculated maxtiles (306440, 19 bits)'. 306440 fits under %d, so 'Recreating "
+		     "dtNavMesh instance' is most likely the engine ADOPTING the new headroom, not rejecting "
+		     "it - an earlier version of this line claimed the opposite and was probably wrong. What "
+		     "would actually settle it is a read-back AFTER the recreate, which this fix does not yet "
+		     "do (board m6333090)."),
+		GFPMNavSeen, GFPMNavRaised, GFPMNavTileCeiling, GFPMNavFailedReadback, GFPMNavTileCeiling);
 }
