@@ -1,0 +1,139 @@
+// Copyright 2026 DegradingAnt. Licensed under GPL-3.0.
+
+#pragma once
+
+#include "CoreMinimal.h"
+
+/**
+ * ★ AM I INSIDE? ASKED ONCE, ANSWERED ONCE, FOR EVERY FEATURE THAT NEEDS IT.
+ *
+ * Ant, 2026-08-10: *"Yes, one check for all \"inside\" stuff."* · *"It needs to check for sealed rooms,
+ * not just cover."* · *"it needs to be performant. It's a performance mod after all."*
+ *
+ * Three features want this answer — the indoor fog, the HUD visor rain droplets, and the airborne
+ * particles that currently drift through walls. Giving each its own test is the wrong build, and not
+ * for tidiness: three tests drift, and then two features disagree about whether the player is inside
+ * while each looks reasonable on its own. One ray batch, one cadence, one damped verdict.
+ *
+ * ══ WHY THE OLD PROBE COULD NOT DO THIS ══
+ *
+ * FPM1's enclosure test was **sky-biased**: thirteen rays aimed up, weighted toward the zenith. It can
+ * find a roof and it is structurally blind to walls. That is fine for a fog bubble and useless for
+ * "why do particles come through my wall", which is the fault Ant is actually reporting. So the ray set
+ * is rebuilt rather than carried.
+ *
+ * ══ THE RAY SET ══
+ *
+ * 24 directions on a **Fibonacci hemisphere**, `z >= -0.15`. Even angular coverage with no axis bias,
+ * which hand-placed rings cannot give and which matters once walls count.
+ *
+ * ⚠ THE FLOOR IS DELIBERATELY EXCLUDED. Straight down is blocked whenever the player is standing on
+ * anything, so it is a constant, and a constant carries no information while still costing a trace and
+ * inflating every fraction. Walls are found by the horizontal band, not by looking down.
+ *
+ * ══ WHAT IT REPORTS, AND WHY MORE THAN ONE NUMBER ══
+ *
+ * The consumers do NOT want the same predicate, and forcing one on them would be a bug dressed as
+ * consistency:
+ *
+ *   - **Fog** counts PLAYER BUILDABLES only. A natural cave ceiling should stay foggy — a deliberate
+ *     ruling on the old controller, and right.
+ *   - **Visor rain** needs only a roof. Vanilla already handles world geometry through its baked static
+ *     occlusion textures, so the part vanilla misses is player buildables overhead.
+ *   - **Particles** need a genuinely sealed volume, walls included.
+ *
+ * One batch produces all of it. There is still exactly one place the geometry question is asked.
+ *
+ * ══ PERFORMANCE — THIS IS A PERFORMANCE MOD ══
+ *
+ * Four measures, in decreasing order of what they save:
+ *
+ *  1. **Nothing runs when nothing is listening.** No consumer registered, no traces. Zero, not cheap.
+ *  2. **Nothing runs while the player is still.** The ray set is world-space, so the reading depends on
+ *     POSITION and not on where the camera is pointing. Standing at a machine, turning on the spot,
+ *     reading a sign — all reuse the last answer. This is the largest saving by far, because it is the
+ *     common case.
+ *  3. **The traces are ASYNC.** `UWorld::AsyncLineTraceByChannel` (`World.h:2372`) queues them onto the
+ *     physics scene's own worker threads and delivers the results through a delegate on the game
+ *     thread next frame. The game thread never blocks on a trace.
+ *  4. **Capped cadence** even while moving.
+ *
+ * ⚠ IT IS DELIBERATELY *NOT* OFFLOADED TO THE SERVER, and that is the design's own rule rather than a
+ * shortcut. Offload pays only when the client does not already hold the inputs. Here the input is the
+ * local camera position and the local collision scene — the client has both, so a round trip would add
+ * latency and buy nothing. The design states this directly in its rain counter-example. A doorway also
+ * needs a sub-second response, which rules out anything with a round trip.
+ *
+ * CLIENT-SIDE BY NATURE: it traces from the local camera, so a dedicated server has nothing to ask.
+ * `Start()` refuses there.
+ *
+ * ZERO RESIDUE: line traces and integers. No console variable, no ini, no actor touched, nothing
+ * written to any object in the world.
+ */
+struct FFPMEnclosureReading
+{
+	/** ★ SEALED ROOM: fraction of the hemisphere blocked by PLAYER BUILDABLES, walls included. */
+	float BuiltSealed = 0.f;
+
+	/** Fraction of the UPWARD rays blocked by player buildables. A roof, ignoring walls. */
+	float BuiltOverhead = 0.f;
+
+	/** Fraction of the hemisphere blocked by anything at all, terrain and world assets included. */
+	float AnySealed = 0.f;
+
+	/** Distinct rays that hit a buildable. Stops one large nearby surface carrying a fraction alone. */
+	int32 BuiltHits = 0;
+
+	/** Distance to the nearest sealing hit, cm. -1 when nothing was hit. Sizes a fog bubble. */
+	float NearestCm = -1.f;
+
+	/** False when there was no pawn to trace from — menu, spectator, or mid-respawn. */
+	bool bValid = false;
+};
+
+/** What a consumer is asking about. Registering one is what turns the sampler on. */
+enum class EFPMEnclosureNeed : uint8
+{
+	/** A roof overhead. Cheapest predicate. The visor-rain gate wants this. */
+	Overhead,
+
+	/** A sealed volume, walls included. Particles and fog want this. */
+	SealedRoom,
+};
+
+class FICSITSPERFORMANCEMANAGER_API FPMEnclosure
+{
+public:
+	/**
+	 * Register a consumer. The sampler runs only while at least one is registered, so a disabled
+	 * feature costs literally nothing rather than costing a little.
+	 *
+	 * @return a token to hand back to `Unregister`.
+	 */
+	static int32 Register(const TCHAR* ConsumerName, EFPMEnclosureNeed Need);
+	static void Unregister(int32 Token);
+
+	/** Stops sampling and forgets every consumer. Called from module shutdown. */
+	static void Shutdown();
+
+	/**
+	 * ★ THE DAMPED VERDICTS. These are what a consumer reads.
+	 *
+	 * Damped because walking a doorway makes a raw reading flicker, and an undamped consumer would
+	 * pulse its effect. The damping is SYMMETRIC on purpose: being late to hide an effect shows the
+	 * bug, being late to show it looks like a missing effect, and neither is clearly worse — so neither
+	 * direction gets the benefit of the doubt.
+	 */
+	static bool IsUnderBuiltRoof();
+	static bool IsInSealedRoom();
+
+	/** The most recent raw reading, undamped — for a log line or a consumer with its own thresholds. */
+	static const FFPMEnclosureReading& Last();
+
+	/** Seconds since the last completed reading. Large means the sampler is idle or the player is still. */
+	static double SecondsSinceReading();
+
+	/** `FPM.Enclosure.Report` — the reading, both verdicts, and what it cost. */
+	static void LogNow();
+
+};

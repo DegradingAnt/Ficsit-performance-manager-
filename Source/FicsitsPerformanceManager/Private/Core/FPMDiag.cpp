@@ -156,6 +156,13 @@ static TAutoConsoleVariable<int32> CVarDiagPowerWarning(
 	     "reader should not have to have known to turn a channel on beforehand."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagEnclosure(
+	TEXT("FPM.Diag.Enclosure"), 1,
+	TEXT("The shared indoor probe. 0 = silent, 1 = registrations only, 2 = every completed reading. "
+	     "Level 2 is one line per batch and batches only happen when the player MOVES, so it is far less "
+	     "chatty than it sounds. FPM.Enclosure.Report prints the reading and what it has cost."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -179,6 +186,7 @@ namespace
 		&CVarDiagWwiseGate,
 		&CVarDiagSchematicGuard,
 		&CVarDiagPowerWarning,
+		&CVarDiagEnclosure,
 	};
 
 	/*
@@ -216,6 +224,7 @@ namespace
 		case FPMDiag::EChannel::WwiseGate:      return TEXT("FPM.Diag.WwiseGate");
 		case FPMDiag::EChannel::SchematicGuard: return TEXT("FPM.Diag.SchematicGuard");
 		case FPMDiag::EChannel::PowerWarning:   return TEXT("FPM.Diag.PowerWarning");
+		case FPMDiag::EChannel::Enclosure:      return TEXT("FPM.Diag.Enclosure");
 		default:                                return TEXT("<unknown>");
 		}
 	}

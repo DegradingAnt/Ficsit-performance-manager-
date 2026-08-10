@@ -1,0 +1,116 @@
+// Copyright 2026 DegradingAnt. Licensed under GPL-3.0.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/Object.h"
+#include "Core/FPMFixContract.h"
+
+#include "FPMRainVisorGate.generated.h"
+
+class AFGCharacterPlayer;
+class AFGRainAudioSubsystem;
+
+/**
+ * RAIN ON THE HUD, INDOORS — and the first thing to know is that this is NOT the rain-occlusion fix
+ * with a gap in it. They are two systems, and one cannot reach the other.
+ *
+ * Board `m508019304` / `m6249395`. Ant reported it again this week: rain draws on screen while she
+ * stands under her own foundations.
+ *
+ * ★ WHY EXTENDING THE OCCLUSION FIX WOULD HAVE CHANGED NOTHING. Receipts from the UNCOOKED master
+ * materials, because cooking strips the expression graph that holds parameter names:
+ *
+ *   `MM_Rain.uasset`          references `RT_WeatherOcclusion` AND `FactoryBias`. World rain samples
+ *                             the DYNAMIC buildable occlusion RT, which is what
+ *                             `AFGBuildable::mRainOcclusionBoundingBox` feeds. `FFPMRainOcclusionFix`
+ *                             reaches this, correctly.
+ *   `PP_VisorDroplets.uasset` references NEITHER. Its only occlusion inputs are the BAKED per-cell
+ *                             textures, captured `#if WITH_EDITOR` before any player placed anything.
+ *
+ * So the screen-space droplets are **blind to player buildables by construction**. Anyone meaning to
+ * "extend the occlusion fix to cover the HUD" should stop: it would change nothing, which is the most
+ * expensive kind of fix.
+ *
+ * ★ THE ONLY GATE IS ONE BOOLEAN, OUTSIDE THE MATERIAL:
+ *
+ *   `AFGRainAudioSubsystem::UpdatePlayerUnderRainState()`   (FGRainAudioSubsystem.h:79)
+ *     broadcasts `OnPlayerUnderRainStateUpdated(bool)`      (:20, :42 — public, dynamic multicast)
+ *       the shipped blueprint writes `bIsUnderRain`         (FGCharacterPlayer.h — public UPROPERTY)
+ *         [game DLL] drives the visor material's alpha
+ *
+ * The rain-AUDIO subsystem has no relationship to `URainOcclusionWorldSubsystem`. It thinks the player
+ * is under rain while they stand under a roof, so the post-process runs. That is the bug.
+ *
+ * ⚠ THE LAST ARROW IS A HYPOTHESIS. `FGCharacterPlayer.cpp` is a link stub, so the step from the bool
+ * to the pixels cannot be read. **So this is built so that being wrong costs nothing:** it only writes
+ * the value the game would itself hold had it noticed the roof, and hands the game's own value back
+ * when the player steps out. If the DLL ignores the bool this is inert — and the log line at the first
+ * suppression is what separates "the gate ran and the droplets stayed" from "the gate never ran".
+ *
+ * ★ IT OWNS NO ENCLOSURE TEST. It asks `FPMEnclosure`, which is the one shared check
+ * (Ant: *"one check for all \"inside\" stuff"*). It registers as an `Overhead` consumer, because a roof
+ * is enough for rain — a sealed room is not required, and demanding one would leave droplets running
+ * under an open-sided canopy.
+ *
+ * NO HOOKS. A ticker, a public UPROPERTY, and a Blueprint-exposed delegate. Nothing is jump-patched.
+ * NO AccessTransformers entry — both members are public as shipped, stated so nobody adds one.
+ * ZERO RESIDUE — the only write is a transient property on a pawn, restored by `Disarm()`.
+ */
+
+/**
+ * The delegate sink: it remembers what the GAME thinks, so the gate knows what to give back.
+ *
+ * Must be a UObject with a UFUNCTION — `OnPlayerUnderRainStateUpdated` is a DYNAMIC multicast
+ * (`FGRainAudioSubsystem.h:20`), and dynamic delegates bind by reflected name.
+ *
+ * ⚠ NOT OPTIONAL, and the reason is one common case: **rain ENDS while the player is indoors.** The
+ * game writes false onto a bool the gate already forced to false, so the write is invisible — "the
+ * game agrees" and "the game changed its mind" look identical. Without this sink the shadow stays
+ * stale at true, and stepping outside into clear weather switches the droplets ON. Worse than the bug.
+ */
+UCLASS()
+class UFPMRainVisorSignal : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	/** Bound to the rain-audio subsystem. Records only; never writes back. */
+	UFUNCTION()
+	void OnPlayerUnderRainStateUpdated(bool NewState);
+
+	bool IsUnderRain() const { return bUnderRain; }
+
+	/** Used while hands-off, when the character's own bool IS the game's answer. */
+	void Observe(bool bValue) { bUnderRain = bValue; }
+
+private:
+	bool bUnderRain = false;
+};
+
+class FFPMRainVisorGate final : public IFPMFix
+{
+public:
+	static FFPMRainVisorGate& Get();
+
+	virtual const TCHAR* Name() const override { return TEXT("rain-visor-gate"); }
+
+	/** A dedicated server has no camera and no post-process chain to draw droplets on. */
+	virtual EFPMFixSide Side() const override { return EFPMFixSide::NeverOnDedicatedServer; }
+
+	/**
+	 * ChokePointRepair, and the distinction matters. The CAUSE is named with receipts — the rain-audio
+	 * subsystem does not account for player buildables. But that is not where this repairs:
+	 * `UpdatePlayerUnderRainState` is a link stub and `bIsPlayerUnderRain` is protected. The repair
+	 * happens at the nearest reachable point downstream, which is this value and not `OriginNamed`.
+	 */
+	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::ChokePointRepair; }
+
+	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::RainVisor; }
+
+	virtual void Arm() override;
+	virtual void Disarm() override;
+
+	/** `FPM.RainVisor.Report` — what the gate is doing and why. */
+	static void ReportNow();
+};
