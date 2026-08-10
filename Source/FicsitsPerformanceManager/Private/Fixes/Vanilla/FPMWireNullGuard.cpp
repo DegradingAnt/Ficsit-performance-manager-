@@ -203,9 +203,24 @@ void FFPMWireNullGuard::SweepWorld(UWorld* World)
 	}
 	else
 	{
-		UE_CLOG(FPMDiag::IsOn(FPMDiag::EChannel::WireGuard, 2), LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] wire guard: clean - 0 null entries in %d circuit connection(s) in '%s'."),
-			ScannedThisSweep, *World->GetName());
+		/*
+		 * ⚠ LEVEL 1, NOT 2 — corrected 2026-08-10, and the correction cost a diagnosis to earn.
+		 *
+		 * This line used to be gated at verbosity 2, so a clean sweep printed NOTHING. On the first live
+		 * server run that made two very different states indistinguishable: the server logged 102
+		 * vanilla `nullpointers in mWires` while this guard said nothing at all, and there was no way to
+		 * tell "swept 4,000 components and found none" from "never swept the server at all". An hour
+		 * went into a gap that a single always-printed denominator would have closed instantly.
+		 *
+		 * That is this file's own opening argument used against it: every count is reported WITH its
+		 * denominator precisely so a zero is legible. A silent zero is the one shape that is not.
+		 * One line per world save is roughly twelve an hour — cheap, and it is the line that proves the
+		 * sweep ran.
+		 */
+		UE_CLOG(FPMDiag::IsOn(FPMDiag::EChannel::WireGuard), LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] wire guard: clean - 0 null entries in %d circuit connection(s) in '%s' "
+			     "(sweep #%d this session)."),
+			ScannedThisSweep, *World->GetName(), SweepsRun);
 	}
 }
 
