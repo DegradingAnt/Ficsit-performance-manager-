@@ -25,6 +25,7 @@
 #include "Core/FPMCrashStamp.h"
 #include "Fixes/Interop/FPMWwiseServerGate.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
+#include "Fixes/Vanilla/FPMPowerWarningProbe.h"
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
 #include "Streaming/FPMAssetResidency.h"
 
@@ -99,6 +100,19 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// in a power-wire array). Armed on BOTH sides: the client log carries the same 2,549 unresolvable
 	// level references the server does, so the same invalid state exists there.
 	FPMFixes::Arm(FFPMWireNullGuard::Get());
+
+	/*
+	 * P3.9's power-warning item, and it is the DIAGNOSTIC half only. Ant sees a "Fuse Blown" popup on
+	 * every login in single player and on the server, and two research passes found vanilla's graph
+	 * never reads the payload it is handed — so a false positive is plausible. Plausible is not
+	 * measured, and LAW 13 says do not suppress a warning until we know it is lying.
+	 *
+	 * It installs NO HOOK on purpose. The emitter is a BlueprintNativeEvent whose native body is empty
+	 * (FGCircuitSubsystem.cpp:47) because BP_CircuitSubsystem implements the popup in Blueprint, so a
+	 * SUBSCRIBE_METHOD there would never fire and its silence would read as "no bug". It reads circuit
+	 * STATE instead, over a window, because mIsFuseTriggered is replicated and arrives after a join.
+	 */
+	FPMFixes::Arm(FFPMPowerWarningProbe::Get());
 
 	// Re-port of a fix the rewrite orphaned (FPM1 RegisterWwiseServerAudioGate). Installs a hook ONLY
 	// on a dedicated server, where UAkGameplayStatics::StopActor cannot reach an audio device and so

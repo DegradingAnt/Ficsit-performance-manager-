@@ -149,6 +149,13 @@ static TAutoConsoleVariable<int32> CVarDiagSchematicGuard(
 	     "the guard DOES - different things, deliberately different names."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagPowerWarning(
+	TEXT("FPM.Diag.PowerWarning"), 1,
+	TEXT("Power-circuit fuse probe. 0 = silent, 1 = every CHANGE in the sample during the post-load "
+	     "window. The VERDICT line is NOT gated by this - it is the whole reason the probe exists, and a "
+	     "reader should not have to have known to turn a channel on beforehand."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -171,6 +178,7 @@ namespace
 		&CVarDiagWireGuard,
 		&CVarDiagWwiseGate,
 		&CVarDiagSchematicGuard,
+		&CVarDiagPowerWarning,
 	};
 
 	/*
@@ -207,6 +215,7 @@ namespace
 		case FPMDiag::EChannel::WireGuard:      return TEXT("FPM.Diag.WireGuard");
 		case FPMDiag::EChannel::WwiseGate:      return TEXT("FPM.Diag.WwiseGate");
 		case FPMDiag::EChannel::SchematicGuard: return TEXT("FPM.Diag.SchematicGuard");
+		case FPMDiag::EChannel::PowerWarning:   return TEXT("FPM.Diag.PowerWarning");
 		default:                                return TEXT("<unknown>");
 		}
 	}
