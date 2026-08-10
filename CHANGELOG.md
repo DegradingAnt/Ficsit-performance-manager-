@@ -63,6 +63,44 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 21:20 — CODE — the LINUX SERVER target has not built since 0.11.4, and nothing said so
+
+- **What:** `0.11.5` → `0.11.6`. One character class in a comment, plus a new gate in
+  `tools/check_structure.py` so it cannot recur: `check_nested_block_comments()`.
+
+- **Why:** `FPMMaterialEffectProbe.h` quoted an engine doc comment verbatim, which put a `/*` inside a
+  block comment. clang refuses it:
+
+  ```
+  FPMMaterialEffectProbe.h(22,8): error: '/*' within block comment [-Werror,-Wcomment]
+  Result: Failed (OtherCompilationError)
+  ```
+
+  **MSVC does not even warn.** All three Windows Shipping targets built clean while the Linux server
+  target failed — and the routine loop is `Build.bat FactoryEditor` plus the Windows targets, neither of
+  which runs clang.
+
+  ⚠ **So 0.11.4 shipped with no Linux server binary at all.** The header arrived in `b01cbb4` at
+  2026-08-10 19:26; the `.so` on disk was dated 17:22 — **two hours older than the file that could not
+  compile.** A deploy would have carried the previous build to DatHost and reported success. This is the
+  `sf-toolfix` rule "verify the ARTEFACT, not the step", in the one platform nobody was looking at.
+
+  Escaping the closer as `*\/` does not help — the OPENER is what `-Wcomment` flags. Nor do backticks:
+  the first attempt at this fix reintroduced the same error one line below the one it was fixing, and
+  the new gate is what caught that.
+
+- **Files:** `Public/Fixes/Interop/FPMMaterialEffectProbe.h`, `tools/check_structure.py`,
+  `FicsitsPerformanceManager.uplugin` (0.11.5 → 0.11.6).
+
+- **Revert:** `git revert` this commit — but the Linux target then stops building again. The gate is the
+  part worth keeping regardless.
+
+- **Verified:** all FOUR Shipping targets now `Result: Succeeded` — FactoryGameSteam Win64,
+  FactoryServer Win64, FactoryGameEGS Win64, FactoryServer **Linux**. `check_structure.py`: 27 fixes, 0
+  errors, 0 warnings, exit 0. **The gate was verified in both directions**: a fixture reintroducing the
+  exact construct was caught at the right file and line with exit 1, then removed and the tree
+  re-confirmed clean.
+
 ## 2026-08-10 20:45 — CODE — the distance-field audit was blaming dead code, and its repair was unsound
 
 - **What:** `0.11.4` → `0.11.5`. The audit read `AAbstractInstanceManager::InstanceMap` (new access

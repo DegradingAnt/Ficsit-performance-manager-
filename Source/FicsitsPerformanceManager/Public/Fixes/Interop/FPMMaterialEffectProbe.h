@@ -19,9 +19,15 @@
  *
  * Vanilla's own contract, `FGMaterialEffectComponent.h:66`:
  *
- *     /** Set the meshes to override material on, cannot be called after PreStarted. *\/
+ *     // Set the meshes to override material on, cannot be called after PreStarted.
  *     UFUNCTION( BlueprintCallable )
  *     void SetMeshes( TArray< UMeshComponent* > meshes );
+ *
+ * ⚠ The engine writes that first line as a Doxygen block comment. It is transcribed with `//` here
+ *   deliberately: a nested block-comment OPENER inside a block comment is `-Wcomment`, which clang
+ *   promotes to a hard ERROR under `-Werror`. MSVC does not even warn. That asymmetry broke the LINUX
+ *   SERVER target for two hours on 2026-08-10 while all three Windows targets built clean — and
+ *   backticks around it do not help, because the preprocessor's comment scanner does not read markdown.
  *
  * The call is REJECTED, so the meshes are never set, so the dismantle effect runs against an empty set.
  * That is wasted work and a missing visual, not a cosmetic warning — which is why it falls under Ant's

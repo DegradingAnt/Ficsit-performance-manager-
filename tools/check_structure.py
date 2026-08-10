@@ -367,6 +367,48 @@ def check_raw_subscribe() -> None:
                 err(f"{f.relative_to(REPO)}:{i} uses a raw SUBSCRIBE_ macro — go through FPM_SUBSCRIBE*")
 
 
+def check_nested_block_comments() -> None:
+    """clang -Wcomment is an ERROR under -Werror; MSVC does not even warn.
+
+    That asymmetry silently broke the LINUX SERVER target on 2026-08-10 while all three Windows
+    targets built clean. FPMMaterialEffectProbe.h quoted an engine doc comment verbatim, which put a
+    `/*` inside a block comment:
+
+        FPMMaterialEffectProbe.h(22,8): error: '/*' within block comment [-Werror,-Wcomment]
+
+    Nothing caught it, because the routine loop is `Build.bat FactoryEditor` plus the Windows Shipping
+    targets — and neither of those runs clang. The Linux .so on disk was TWO HOURS OLDER than the file
+    that could not compile, so 0.11.4 shipped with no Linux server binary at all and the deploy would
+    have quietly carried the previous build.
+
+    This is a GATE, not a reporter: it errs, so the exit code is non-zero. Catching it here costs
+    milliseconds; catching it from a cross-compile costs a full Linux build, and catching it from a
+    deploy costs one of Ant's boots.
+
+    Escaping the closer as `*\\/` does NOT help — the opener is what -Wcomment flags — and neither do
+    backticks around it, which is how the first attempt at this fix reintroduced the same error one
+    line below the one it was fixing. Transcribe engine doc comments with `//`.
+    """
+    for f in sorted(SRC.rglob("*.h")) + sorted(SRC.rglob("*.cpp")):
+        if f.name.endswith(".g.h"):
+            continue
+        in_block = False
+        for i, line in enumerate(read(f).splitlines(), 1):
+            if in_block and "/*" in line:
+                err(
+                    f"{f.relative_to(REPO)}:{i} has '/*' inside a block comment. clang treats this as "
+                    "-Wcomment => ERROR under -Werror and the LINUX SERVER target will not build, while "
+                    "every Windows target builds clean. Transcribe the quoted comment with '//'."
+                )
+            # Track the block state AFTER reporting, so an opener on the same line as its own closer
+            # (`/* ... */`) never counts as entering a block.
+            without_inline = re.sub(r"/\*.*?\*/", "", line)
+            if "/*" in without_inline:
+                in_block = True
+            elif "*/" in without_inline:
+                in_block = False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -385,6 +427,7 @@ def main() -> int:
     check_no_network()
     check_licence_headers()
     check_raw_subscribe()
+    check_nested_block_comments()
 
     for w in WARNINGS:
         print(f"WARN  {w}")
