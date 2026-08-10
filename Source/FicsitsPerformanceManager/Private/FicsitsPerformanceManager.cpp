@@ -21,6 +21,7 @@
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 #include "Fixes/Interop/FPMTexturePoolGuard.h"
 #include "Fixes/Interop/FPMZiplineVolume.h"
+#include "Fixes/Interop/FPMWwiseServerGate.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
 #include "Streaming/FPMAssetResidency.h"
@@ -96,6 +97,11 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// in a power-wire array). Armed on BOTH sides: the client log carries the same 2,549 unresolvable
 	// level references the server does, so the same invalid state exists there.
 	FPMFixes::Arm(FFPMWireNullGuard::Get());
+
+	// Re-port of a fix the rewrite orphaned (FPM1 RegisterWwiseServerAudioGate). Installs a hook ONLY
+	// on a dedicated server, where UAkGameplayStatics::StopActor cannot reach an audio device and so
+	// only writes a warning — 681 of them in the 2026-08-09 server session. A client installs nothing.
+	FPMFixes::Arm(FFPMWwiseServerGate::Get());
 
 	// P3.5. CLIENT ONLY by contract, not by a hand-rolled early return - a server has no player HUD and
 	// the old mod's server failed to boot carrying an earlier version of this.

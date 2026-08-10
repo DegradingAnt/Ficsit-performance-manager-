@@ -132,6 +132,14 @@ static TAutoConsoleVariable<int32> CVarDiagWireGuard(
 	     "it. On 2026-08-09 this exact state SIGSEGV'd the dedicated server inside its autosave."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagWwiseGate(
+	TEXT("FPM.Diag.WwiseGate"), 1,
+	TEXT("Wwise StopActor calls suppressed on a dedicated server, which has no audio device for them "
+	     "to reach. 0 = silent, 1 = the arm line plus a heartbeat every 100,000 suppressions so a "
+	     "deployed server can prove the gate is live from its own log. The heartbeat is deliberately "
+	     "sparse - the entire point of this gate is to stop writing a line per call."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -152,6 +160,7 @@ namespace
 		&CVarDiagZipline,
 		&CVarDiagTexturePool,
 		&CVarDiagWireGuard,
+		&CVarDiagWwiseGate,
 	};
 
 	/*
@@ -186,6 +195,7 @@ namespace
 		case FPMDiag::EChannel::Zipline:        return TEXT("FPM.Diag.Zipline");
 		case FPMDiag::EChannel::TexturePool:    return TEXT("FPM.Diag.TexturePool");
 		case FPMDiag::EChannel::WireGuard:      return TEXT("FPM.Diag.WireGuard");
+		case FPMDiag::EChannel::WwiseGate:      return TEXT("FPM.Diag.WwiseGate");
 		default:                                return TEXT("<unknown>");
 		}
 	}

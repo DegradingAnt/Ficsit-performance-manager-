@@ -62,6 +62,33 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 00:40 — CODE — Wwise server audio gate: re-port of a fix the rewrite orphaned
+
+- **What:** New `FFPMWwiseServerGate` (`Fixes/Interop/FPMWwiseServerGate.{h,cpp}`). On a DEDICATED
+  SERVER ONLY, cancels `UAkGameplayStatics::StopActor`. New `WwiseGate` diag channel and
+  `FPM.WwiseGate.Report`.
+- **Why:** `AkGameplayStatics.cpp:966-979` fetches the audio device first and returns if it is null,
+  logging `Could not retrieve audio device.` A dedicated server has no audio device, so the call is a
+  **guaranteed no-op whose only effect is the warning** — cancelling it there is behaviour-identical
+  minus the log write. Measured **681** occurrences in the 2026-08-09 server session; it is one of
+  three repeating lines that are together 23% of a 61,687-line log, and a log you have to wade through
+  hides the crash callstack you were actually looking for.
+- **Files:** `Fixes/Interop/FPMWwiseServerGate.{h,cpp}` (new), `Core/FPMDiag.{h,cpp}` (channel + cvar +
+  name switch), `FicsitsPerformanceManager.cpp` (include + Arm).
+- **Revert:** drop the `FPMFixes::Arm(FFPMWwiseServerGate::Get())` line.
+- **Verified:** build-only (`Build.bat FactoryEditor -Module=FicsitsPerformanceManager`, Succeeded).
+  NOT boot-tested — the count can only be confirmed on a deployed server.
+- **⚠ THIS IS THE THIRD FIX THE REWRITE ORPHANED.** FPM1 had it as
+  `RegisterWwiseServerAudioGate` (`FicsitPerformanceManager.cpp:1480-1510`); FPM2 shipped without it
+  and nothing noticed until its warnings turned up while reading an unrelated crash log. REBUILT, not
+  copied, and its central claim was re-verified from the Wwise source rather than trusted from the old
+  comment — which cited 3,164 warnings/session, a figure from ITS session, not ours.
+- **Client safety:** the guard is at REGISTRATION, not per call. A client's audio device is real and
+  `StopActor` must run; `Arm()` returns early there, so a client installs no hook at all and there is
+  no per-call branch for a later edit to get wrong.
+
+---
+
 ## 2026-08-09 22:55 — VERSION — 0.6.0 → 0.7.0
 
 - **What:** MINOR bump. Ships the wire null guard (new fix), the hitch meter's PSO bucket and
