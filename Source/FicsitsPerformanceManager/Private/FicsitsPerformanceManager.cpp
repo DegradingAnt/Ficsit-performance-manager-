@@ -30,6 +30,7 @@
 #include "Fixes/Interop/FPMWeatherIndoorGate.h"
 #include "Fixes/Interop/FPMWwiseServerGate.h"
 #include "Fixes/ModFeatures/FPMGlassQuality.h"
+#include "Fixes/ModFeatures/FPMNaniteStreamingGuard.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 #include "Fixes/Vanilla/FPMPowerWarningProbe.h"
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
@@ -279,6 +280,19 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * because FPM2 is zero-residue, and the header states what that costs at the loading screen.
 	 */
 	FPMFixes::Arm(FFPMGlassQuality::Get());
+
+	/*
+	 * ★ NANITE'S STREAMING POOL, and the answer to "the trains mesh went low poly as i loaded new
+	 * terrain". Also below the interceptor, for the same reason as the glass above — though this one
+	 * only writes once it has MEASURED Nanite scaling quality down, so on most boots it writes nothing.
+	 *
+	 * ⚠ IT MUST ARM AFTER FFPMTexturePoolGuard, WHICH IT DOES (that one is ~90 lines up). The texture
+	 * pool guard now sizes itself around FFPMNaniteStreamingGuard::ReservedMB() instead of a private
+	 * copy of the number, so both fixes agree about how much of the card Nanite is holding. ReservedMB()
+	 * reads the live cvar and works before this fix arms, so the ordering is a preference rather than a
+	 * trap — but the texture pool guard re-polls, and it is the later poll that picks up a raise.
+	 */
+	FPMFixes::Arm(FFPMNaniteStreamingGuard::Get());
 
 	// The debug feed, on by default while the mod is pre-release. Ant: "i want UI to show when and what
 	// the rain fix thing is doing so i can see that its working." It attaches as soon as a viewport

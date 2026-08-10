@@ -144,6 +144,16 @@ namespace FPMTexturePool
 	/** Is Cartograph loaded? It only decides whether an allowance is carved out, not whether we act. */
 	bool DetectCartograph();
 
-	/** Pure. No writes, no logging, no globals — so the caller can log every input beside the output. */
-	FFPMPoolDecision ComputePoolMB(int64 VramMB, bool bCartographPresent);
+	/**
+	 * Pure. No writes, no logging, no globals — so the caller can log every input beside the output.
+	 *
+	 * ⚠ `NaniteReserveMB` IS AN INPUT AND NOT A CONSTANT ANY MORE. It used to be the literal 512 in this
+	 * file, which happened to equal `r.Nanite.Streaming.StreamingPoolSize`'s engine default. Once
+	 * `FFPMNaniteStreamingGuard` can RAISE that pool, a private copy of the number here would let the
+	 * texture pool claim VRAM Nanite is already using. The caller passes
+	 * `FFPMNaniteStreamingGuard::ReservedMB()`, which reads the live cvar, so there is one declaration
+	 * site. It is still clamped to at least `NaniteFloorMB` inside — passing 0 must not hand Nanite's
+	 * whole share to textures.
+	 */
+	FFPMPoolDecision ComputePoolMB(int64 VramMB, bool bCartographPresent, int32 NaniteReserveMB);
 }

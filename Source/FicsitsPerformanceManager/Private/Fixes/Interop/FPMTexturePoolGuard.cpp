@@ -6,6 +6,7 @@
 
 #include "Core/FPMCVarWriter.h"
 #include "Core/FPMDiag.h"
+#include "Fixes/ModFeatures/FPMNaniteStreamingGuard.h"
 #include "UI/FPMChatRelay.h"
 
 #include "HAL/IConsoleManager.h"
@@ -83,7 +84,7 @@ bool FPMTexturePool::DetectCartograph()
 	return IPluginManager::Get().FindEnabledPlugin(TEXT("Cartograph")).IsValid();
 }
 
-FFPMPoolDecision FPMTexturePool::ComputePoolMB(int64 VramMB, bool bCartographPresent)
+FFPMPoolDecision FPMTexturePool::ComputePoolMB(int64 VramMB, bool bCartographPresent, int32 NaniteReserveMB)
 {
 	FFPMPoolDecision D;
 	D.bCartograph = bCartographPresent;
@@ -101,7 +102,10 @@ FFPMPoolDecision FPMTexturePool::ComputePoolMB(int64 VramMB, bool bCartographPre
 	}
 
 	// ---- PRIORITY ORDER. Textures are LAST, by Ant's Nanite ruling. -------------------------------
-	D.NaniteMB      = static_cast<int32>(NaniteFloorMB);
+	// Passed in, and clamped to the floor. FFPMNaniteStreamingGuard can now RAISE the streaming pool
+	// when it measures quality scaling, and this reservation has to follow it or textures would claim
+	// VRAM Nanite is already holding. See the header for why this stopped being a constant.
+	D.NaniteMB      = static_cast<int32>(FMath::Max<int64>(NaniteReserveMB, NaniteFloorMB));
 	D.CartographMB  = static_cast<int32>(bCartographPresent ? CartographReserveMB : 0);
 	D.RendererMB    = static_cast<int32>(FMath::Clamp<int64>(
 		static_cast<int64>(VramMB * RendererFraction), RendererFloorMB, RendererCapMB));
@@ -191,7 +195,8 @@ bool FFPMTexturePoolGuard::Tick(float /*DeltaTime*/)
 	}
 
 	const int64 VramMB = FPMTexturePool::QueryTotalVramMB();
-	const FFPMPoolDecision D = FPMTexturePool::ComputePoolMB(VramMB, bCartograph);
+	const FFPMPoolDecision D = FPMTexturePool::ComputePoolMB(
+		VramMB, bCartograph, FFPMNaniteStreamingGuard::ReservedMB());
 
 	if (D.StandDownReason)
 	{

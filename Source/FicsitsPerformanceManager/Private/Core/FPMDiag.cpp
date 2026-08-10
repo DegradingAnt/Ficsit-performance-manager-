@@ -208,6 +208,13 @@ static TAutoConsoleVariable<int32> CVarDiagGlassQuality(
 	     "FPM.Glass.Enable is the feature toggle; this only gates the talking."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagNaniteStreaming(
+	TEXT("FPM.Diag.NaniteStreaming"), 1,
+	TEXT("Nanite dropping geometric detail because its streaming pool is overcommitted. 0 = silent, "
+	     "1 = the arm line and the pool raise. FPM.Nanite.PoolMB is the lever and FPM.Nanite.Report is "
+	     "the measurement; this only gates the talking."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -238,6 +245,7 @@ namespace
 		&CVarDiagStallSampler,
 		&CVarDiagBlueprintSweep,
 		&CVarDiagGlassQuality,
+		&CVarDiagNaniteStreaming,
 	};
 
 	/*
@@ -282,6 +290,7 @@ namespace
 		case FPMDiag::EChannel::StallSampler:   return TEXT("FPM.Diag.StallSampler");
 		case FPMDiag::EChannel::BlueprintSweep: return TEXT("FPM.Diag.BlueprintSweep");
 		case FPMDiag::EChannel::GlassQuality:   return TEXT("FPM.Diag.GlassQuality");
+		case FPMDiag::EChannel::NaniteStreaming: return TEXT("FPM.Diag.NaniteStreaming");
 		default:                                return TEXT("<unknown>");
 		}
 	}

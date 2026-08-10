@@ -62,6 +62,77 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 17:05 — CODE — "the trains mesh went low poly": measured, fixed at runtime, and FPM1's ini exception was never needed
+
+- **What:** a new fix, `FFPMNaniteStreamingGuard`. It reads Nanite's live quality-scale factor, and the
+  first time that factor drops below 1.0 it raises `r.Nanite.Streaming.StreamingPoolSize` above the
+  engine's 512 MB — then keeps measuring so the report can say whether the raise worked.
+  `FPM.Nanite.PoolMB` is the lever, `FPM.Nanite.Report` is the measurement.
+- **Why:** Ant, 2026-08-03: *"its a streaming issue of some sort. my gpu isnt maxed and the trains mesh
+  went low poly as i loaded new terrain. something is still starved."* She asked today for research
+  before an ini exception was spent on it, and the research changed the answer.
+
+- **★ FPM1 REACHED FOR THE WRONG LEVER, AND PAID AN INI EXCEPTION FOR IT.** It wrote
+  `r.Nanite.Streaming.MaxPageInstallsPerFrame` and `.MaxPendingPages` to `Engine.ini` because both are
+  `ECVF_ReadOnly`. Those change how FAST pages arrive. The reported symptom is Nanite *deliberately
+  dropping detail* because its pool is overcommitted, which is a different mechanism and reads a
+  different number. `r.Nanite.Streaming.StreamingPoolSize` is `ECVF_RenderThreadSafe` with no
+  `ECVF_ReadOnly`, so it is writable at runtime and FPM2 fixes this with an ordinary cvar hold and zero
+  residue. **The exception was not needed and is not being carried.**
+
+- **The engine says what is happening, in its own words** (`NaniteStreamingManager.cpp:129`):
+  *"Controls for dynamically adjusting quality (pixels per edge) when the streaming pool is being
+  overcommitted... can happen when rendering scenes with lots of unique geometry at high resolutions."*
+  A megabase is that scene. The numbers: pool 512 MB (`:134`), scale down above 85% load (`:138`), floor
+  0.3 (`:146`).
+
+- **★ AND THE SCALER IS ASYMMETRIC, WHICH IS WHY A ONE-SECOND SPIKE LEAVES A LASTING ARTEFACT.**
+  `FQualityScalingManager::Update` (`:1193-1226`): over budget for 2 frames running multiplies the scale
+  by 0.97 — the engine's own comment is *"adjust quality down rapidly"* — while recovery needs 30
+  consecutive good frames before it starts and then climbs 1% a frame. Falling to the 0.3 floor takes
+  about forty frames; climbing back takes several seconds. Loading new terrain is exactly a short burst
+  of page requests. That asymmetry is the gap between "a number moved" and "the train looked wrong".
+
+- **It measures before it acts, and keeps measuring after.**
+  `Nanite::FStreamingManager::GetQualityScaleFactor()` (`NaniteStreamingManager.h:88-91`) is a public
+  header-inline accessor on `Nanite::GStreamingManager` (`:361`) — no hook, no access transformer, and
+  no symbol that can be missing. A machine whose pool never overcommits **never gets a write at all**.
+  When one does, the report compares the minimum before the raise against the minimum after it, and says
+  NOT ENOUGH rather than implying success from the fact that a write happened.
+  Liveness: 0 samples prints as a dead readout; "min 1.0 over N samples" prints as a real negative
+  result, explicitly not as the fix working.
+  ⚠ The write at `:3159` is on the ungated main path and `QualityScalingManager` is constructed
+  unconditionally at `:1247`, so the meter is live in a shipping build — checked, because an instrument
+  reading a value nothing writes is this project's most expensive recurring bug.
+
+- **⚠ IT SHARES VRAM WITH THE TEXTURE POOL GUARD, AND THAT COUPLING IS NOW EXPLICIT.**
+  `FPMTexturePoolGuard.cpp:26` reserved a literal `NaniteFloorMB = 512` — the same number as this pool's
+  engine default — before sizing the texture pool. Raising one without the other would let textures
+  claim VRAM Nanite is already using. `ComputePoolMB` now takes the reservation as a parameter and the
+  caller passes `FFPMNaniteStreamingGuard::ReservedMB()`, which reads the live cvar. One declaration
+  site, still clamped to the old floor. The texture pool guard's own comment turns out to have named
+  this mechanism already: *"It fails globally at 85% occupancy"* — that 85 is `QualityScale.MaxPoolPercentage`.
+
+- **The sizing is reasoned, not measured, and says so.** One eighth of the card clamped to [512, 2048]:
+  the floor means this can never be worse than vanilla, and the cap keeps clear of the 2-4 GB buffer
+  limit the engine warns about at `:141-143`. If the factor still drops after the raise, the cap is too
+  low for her base and the report tells her to raise `FPM.Nanite.PoolMB` by hand.
+
+- **Files:** `Public/Fixes/ModFeatures/FPMNaniteStreamingGuard.h` (new),
+  `Private/Fixes/ModFeatures/FPMNaniteStreamingGuard.cpp` (new),
+  `Public/Fixes/Interop/FPMTexturePoolGuard.h` + `Private/.../FPMTexturePoolGuard.cpp` (reservation is
+  now an input), `Public/Core/FPMDiag.h` + `Private/Core/FPMDiag.cpp` (new `NaniteStreaming` channel),
+  `Private/FicsitsPerformanceManager.cpp`, `FicsitsPerformanceManager.uplugin`
+  (0.10.1 → **0.11.0**, MINOR: geometry that stops dropping to low detail is something she sees).
+- **Revert:** `FPM.Nanite.PoolMB -1` leaves it as a pure meter with no write. Revert the commit to
+  remove it — and if so, restore `NaniteFloorMB` as a constant in the texture pool guard.
+- **Verified:** build-only. `Result: Succeeded`; `check_structure.py` 26 fixes / 0 / 0. NOT-YET
+  boot-tested. The boot question: play until terrain streams in, then `FPM.Nanite.Report`. Either it
+  never caught a drop (a real negative — her save does not reproduce it), or it caught one and the
+  report says whether the bigger pool stopped it.
+
+---
+
 ## 2026-08-10 16:20 — CODE — the distance-field audit across every core, and a readout that can say it did not
 
 - **What:** `CountAndMaybeRepair` is now three phases — GATHER (serial), ANALYSE
