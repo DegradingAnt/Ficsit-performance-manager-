@@ -277,6 +277,38 @@ def check_no_network() -> None:
                 err(f"{f.relative_to(REPO)} references {what} — hard rule 2 says no network activity, ever")
 
 
+def check_gamefeature_data() -> None:
+    """The GameFeature asset must know about every Content/ root, or the assets there never register.
+
+    `Content/<Plugin>.uasset` is an `FGGameFeatureData`. FactoryGame requires it for any plugin under
+    `Mods/GameFeatures/`, and it names the content roots that get scanned. Ant, 2026-08-10: *"it should
+    be updated along with the rest of the mod then."*
+
+    The failure this catches is silent and expensive: add `Content/Settings/` for the P4 settings
+    surface, forget the asset, and the rows simply do not appear in game with no error anywhere. The
+    asset is binary, so this reads it as bytes and looks for each directory name — crude, but it is the
+    difference between a loud check and no check.
+    """
+    asset = REPO / "Content" / f"{MODULE}.uasset"
+    if not asset.exists():
+        err(
+            f"Content/{MODULE}.uasset is missing. A plugin under Mods/GameFeatures/ needs its "
+            "FGGameFeatureData asset or the GameFeature never activates."
+        )
+        return
+
+    blob = asset.read_bytes()
+    if b"FGGameFeatureData" not in blob:
+        err(f"Content/{MODULE}.uasset does not look like an FGGameFeatureData asset")
+
+    for sub in sorted(p for p in (REPO / "Content").iterdir() if p.is_dir()):
+        if sub.name.encode() not in blob:
+            err(
+                f"Content/{sub.name}/ exists but {MODULE}.uasset never names it. Assets under it will "
+                "not be registered, and nothing will say so at runtime."
+            )
+
+
 def check_licence_headers() -> None:
     for f in sorted(SRC.rglob("*.cpp")) + sorted(SRC.rglob("*.h")):
         if f.name.endswith(".g.h"):
@@ -310,6 +342,7 @@ def main() -> int:
     check_every_fix_is_armed(fixes)
     check_predecessor_coverage()
     check_diag_table()
+    check_gamefeature_data()
     check_no_network()
     check_licence_headers()
     check_raw_subscribe()
