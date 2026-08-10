@@ -63,6 +63,44 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-11 00:05 — CODE — the save-settings guard called the editor gate a permanent failure
+
+- **What:** `0.11.12` → `0.11.13`. `FFPMSaveSettingsInterceptor` now tells an editor-gate refusal apart
+  from a genuine hook-install failure. **PATCH** — diagnosis only, behaviour unchanged.
+
+- **Why:** found in Ant's own editor log, not by reading code. Every hook in an editor build is refused
+  by `FPMHookLedger::Install` — the log shows all 22 as `REFUSED (editor build)`. This guard tested only
+  `FDelegateHandle::IsValid()` and could not tell that apart from the target having moved, so it logged:
+
+  ```
+  Error: [FPM] save-settings guard FAILED PERMANENTLY: hook install failed (before=FAILED, after=FAILED).
+         REMEDY: restart the game. If it recurs, the SaveSettings hook target has moved -
+         check UFGGameUserSettings::SaveSettings against FGGameUserSettings.h and report the game build.
+  ```
+
+  Nothing was wrong. It fired on **every** editor launch and sent the reader hunting a bug that does not
+  exist. An instrument reporting a fault that isn't there is the mirror of the dead-instrument problem,
+  and costs the same thing: trust in the log.
+
+  ★ **The fail-safe is unchanged and was always right.** With no interceptor installed there is nothing
+  standing FPM's holds down across a save, so refusing every `US_*`-backed write remains correct. Only
+  the classification and the remedy text differ: in an editor build this is a designed no-op; in a
+  shipping build it stays a hard `Error` with the same remedy.
+
+  ⚠ **The `else` is load-bearing.** Written first as an early `return` inside `if constexpr (WITH_EDITOR)`,
+  which leaves `Fail()` unreachable in an editor build — and this project compiles warnings as errors, so
+  `C4702: unreachable code` stopped the build. The discarded branch of an `if constexpr` must still leave
+  live code after it, or no code at all.
+
+- **Files:** `Private/Core/FPMSaveSettingsInterceptor.cpp`, `.uplugin`.
+
+- **Revert:** `git revert`. The editor log goes back to crying wolf once per launch.
+
+- **Verified:** `FactoryEditor Win64 Development` plus **all four** Shipping targets —
+  FactoryGameSteam Win64, FactoryGameEGS Win64, FactoryServer Win64, FactoryServer **Linux** — all
+  `Result: Succeeded`, zero warnings. `check_structure.py`: 28 fixes, 0 errors, 0 warnings.
+  **NOT BOOTED**; the corrected line has not been seen in a log.
+
 ## 2026-08-10 23:40 — CODE — the fix registry proves itself at boot instead of being trusted
 
 - **What:** `0.11.11` → `0.11.12`. `FPMFixes::SelfTest()`, run from `FPMMasterSwitch::Install()`.

@@ -256,9 +256,47 @@ void FFPMSaveSettingsInterceptor::Arm()
 	 */
 	if (!Before.IsValid() || !After.IsValid())
 	{
-		Fail(FString::Printf(TEXT("hook install failed (before=%s, after=%s)."),
+		/*
+		 * ⚠ AN INVALID HANDLE IN AN EDITOR BUILD IS EXPECTED, NOT A FAULT — and reporting it as one is a
+		 * defect this guard shipped with until 2026-08-10.
+		 *
+		 * `FPMHookLedger::Install` carries the editor gate and refuses EVERY hook in an editor build;
+		 * the boot log shows all 22 as "REFUSED (editor build)". This branch could not tell that apart
+		 * from the hook target genuinely having moved, so it logged an ERROR reading "FAILED
+		 * PERMANENTLY" and told the reader to restart the game and re-check
+		 * `UFGGameUserSettings::SaveSettings` against the header. Nothing was wrong, and the advice sent
+		 * them looking for a bug that does not exist — on every single editor launch.
+		 *
+		 * ★ THE FAIL-SAFE STILL ENGAGES, and that part was always right. With no hook installed there is
+		 * nothing standing FPM's holds down across a save, so refusing every US_*-backed write remains
+		 * the correct posture. What changes is only the CLASSIFICATION and the remedy text: in the
+		 * editor this is a designed no-op, in a shipping build it is a real fault.
+		 */
+		const FString Detail = FString::Printf(TEXT("hook install failed (before=%s, after=%s)."),
 			Before.IsValid() ? TEXT("ok") : TEXT("FAILED"),
-			After.IsValid()  ? TEXT("ok") : TEXT("FAILED")));
+			After.IsValid()  ? TEXT("ok") : TEXT("FAILED"));
+
+		/*
+		 * ⚠ THE `else` IS LOAD-BEARING, NOT STYLE. Written first as an early `return` inside the
+		 * `if constexpr`, which leaves `Fail()` unreachable in an editor build — and this project
+		 * compiles warnings as errors, so C4702 stopped the build outright. The discarded branch of an
+		 * `if constexpr` still has to leave live code after it, or there must be no code after it.
+		 */
+		if constexpr (WITH_EDITOR)
+		{
+			bGFPMSaveGuardFailed = true; // same fail-safe, different diagnosis
+
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] save-settings guard INERT in the editor, and this is BY DESIGN - not a fault. "
+				     "%s The hook ledger's editor gate refuses every hook in an editor build (see the "
+				     "'REFUSED (editor build)' lines above; all of them are refused, not just these two). "
+				     "US_*-backed writes stay refused for this session, which is the correct posture with "
+				     "no interceptor installed. Nothing to fix, and nothing to restart."), *Detail);
+		}
+		else
+		{
+			Fail(Detail);
+		}
 		return;
 	}
 
