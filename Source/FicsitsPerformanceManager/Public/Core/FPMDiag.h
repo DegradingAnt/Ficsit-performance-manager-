@@ -84,6 +84,7 @@ public:
 		BlueprintSweep,   // FPM.Diag.BlueprintSweep — inert blueprint recipe sweeps, cancelled
 		GlassQuality,     // FPM.Diag.GlassQuality — Lumen front-layer translucency, held on for glass
 		NaniteStreaming,  // FPM.Diag.NaniteStreaming — geometry dropping detail when the pool overcommits
+		MaterialEffect,   // FPM.Diag.MaterialEffect — who calls SetMeshes after PreStarted
 		Count
 	};
 

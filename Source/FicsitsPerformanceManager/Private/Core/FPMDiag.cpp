@@ -215,6 +215,13 @@ static TAutoConsoleVariable<int32> CVarDiagNaniteStreaming(
 	     "the measurement; this only gates the talking."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagMaterialEffect(
+	TEXT("FPM.Diag.MaterialEffect"), 1,
+	TEXT("Who calls UFGMaterialEffectComponent::SetMeshes. 0 = silent, 1 = one line per newly-seen owner "
+	     "class. The census SATURATION warning is not gated by this - a census that goes quiet at its cap "
+	     "reads as complete coverage. FPM.MaterialEffect.Report prints the ranking."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -246,6 +253,7 @@ namespace
 		&CVarDiagBlueprintSweep,
 		&CVarDiagGlassQuality,
 		&CVarDiagNaniteStreaming,
+		&CVarDiagMaterialEffect,
 	};
 
 	/*
@@ -291,6 +299,7 @@ namespace
 		case FPMDiag::EChannel::BlueprintSweep: return TEXT("FPM.Diag.BlueprintSweep");
 		case FPMDiag::EChannel::GlassQuality:   return TEXT("FPM.Diag.GlassQuality");
 		case FPMDiag::EChannel::NaniteStreaming: return TEXT("FPM.Diag.NaniteStreaming");
+		case FPMDiag::EChannel::MaterialEffect: return TEXT("FPM.Diag.MaterialEffect");
 		default:                                return TEXT("<unknown>");
 		}
 	}

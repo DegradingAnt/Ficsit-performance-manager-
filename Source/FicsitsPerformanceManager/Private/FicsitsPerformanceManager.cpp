@@ -17,6 +17,7 @@
 #include "Fixes/Interop/FPMHologramNetGuard.h"
 #include "Fixes/Interop/FPMHudHookGuard.h"
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
+#include "Fixes/Interop/FPMMaterialEffectProbe.h"
 #include "Fixes/Interop/FPMNoOwnerRpcGate.h"
 #include "Fixes/Interop/FPMNavMeshCeiling.h"
 #include "Fixes/Interop/FPMRailConnectionGuard.h"
@@ -189,6 +190,14 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * subsystem to evaluate them against.
 	 */
 	FPMFixes::Arm(FFPMSchematicNullGuard::Get());
+
+	/*
+	 * Read-only, never cancels. Vanilla rejects SetMeshes calls made after PreStarted 431 times in one of
+	 * Ant's sessions, so its dismantle effect runs against an empty mesh set - and the caller is unknown
+	 * because UFGMaterialEffectComponent's .cpp in the SML tree is a stub. This names the owning actor
+	 * class path of every call; the mount point in that path identifies the mod.
+	 */
+	FPMFixes::Arm(FFPMMaterialEffectProbe::Get());
 
 	// MEASUREMENT ONLY, AND IT INSTALLS NO HOOKS - it subscribes to two engine delegates and a ticker, so it
 	// will not appear in the hook ledger below. Armed here because Ant's hitches (2026-08-09) had no

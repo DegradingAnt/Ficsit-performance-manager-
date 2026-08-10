@@ -62,6 +62,61 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 20:15 — CODE — name the caller behind 431 rejected SetMeshes calls
+
+- **What:** a new read-only fix, `FFPMMaterialEffectProbe`. It hooks the non-virtual
+  `UFGMaterialEffectComponent::SetMeshes` (`FGMaterialEffectComponent.h:68`), never cancels, and records
+  the OWNING ACTOR'S CLASS PATH of every call. `FPM.MaterialEffect.Report`.
+- **Why:** measured in Ant's client log, 431 times in one session, arriving three-to-a-millisecond:
+
+```
+LogGame: Warning: BP_MaterialEffect_Dismantle_C_2147445857::SetMeshes,
+         This cannot be called after PreStarted.
+```
+
+  Vanilla's own contract at `FGMaterialEffectComponent.h:66` is *"Set the meshes to override material
+  on, cannot be called after PreStarted."* The call is REJECTED, so the meshes are never set and the
+  dismantle effect runs against an empty set. Wasted work and a missing visual, not a cosmetic warning —
+  which puts it squarely under *"all errors and warnings need fixing at the source"*.
+
+- **⚠ AND IT CORRECTS MY OWN EARLIER LEAD, which was wrong in two of three parts.** I had recorded this
+  as *"5733 SetMeshes warnings + 2140 'Failed to find remap material' errors, owned by SS_Mod"*. It is
+  **not** a material-lookup failure — the remap errors do not appear in this log at all — and
+  `BP_MaterialEffect_Dismantle_C` is a **vanilla** class, while Structural Solutions is content-only with
+  no `Source` and no modules, so it cannot be the C++ caller. The caller is genuinely unknown.
+
+- **Why the owner class path and not a stack walk.** A module-level walk (the `FFPMStallSampler`
+  technique) would answer "the engine" for nearly every call, because they arrive through Blueprint.
+  `GetPathName()` on the owning actor's class gives the MOUNT POINT it was loaded from —
+  `/Script/FactoryGame...` for vanilla, `/SS_Mod/...` or another plugin root for a mod. **The mount
+  point is the answer**, and it costs one string with no access transformer and no module table.
+
+- **It is an observer and nothing else.** No `Scope.Cancel()`, no mutation of the mesh array; the call
+  always falls through, so the game behaves exactly as it does without FPM. Fixing the ORDERING is a
+  separate decision that cannot be made before the caller is known — guessing a fix for an unknown
+  caller is how this project's worst regressions happened.
+- **Cost:** the census does real work only until it saturates at 20 distinct classes, then every call is
+  one relaxed atomic increment. This function arrives in bursts of hundreds, so the saturated path is
+  the one that matters and it is deliberately trivial. The census announces its own saturation rather
+  than going quiet, because "these 20 are all of them" is the wrong conclusion to hand this
+  investigation.
+- **Threading:** the counter is atomic and the map is behind an `IsInGameThread()` guard, on the same
+  reasoning `FFPMNoOwnerRpcGate` already documents — buildables are what the multithreaded Factory Tick
+  ticks, and this probe has not proven which thread reaches `SetMeshes`.
+- **Liveness:** zero calls prints as NO CALLS SEEN with the input that would make it non-zero named
+  (dismantle something), not as a confident zero.
+
+- **Files:** `Public/Fixes/Interop/FPMMaterialEffectProbe.h` + `Private/.../FPMMaterialEffectProbe.cpp`
+  (new), `Public/Core/FPMDiag.h` + `Private/Core/FPMDiag.cpp` (new `MaterialEffect` channel),
+  `Private/FicsitsPerformanceManager.cpp`, `FicsitsPerformanceManager.uplugin`
+  (0.11.3 → **0.11.4**, PATCH: a probe and a console command, invisible with the console closed).
+- **Revert:** `git revert`. It observes only, so removing it changes no behaviour.
+- **Verified:** build-only. `Result: Succeeded`; `check_structure.py` 27 fixes / 0 / 0. NOT-YET
+  boot-tested. The boot question is one line: dismantle a few buildings, then `FPM.MaterialEffect.Report`
+  and read the mount points.
+
+---
+
 ## 2026-08-10 19:40 — CODE — the distance-field trend line was arguing against its own data
 
 - **What:** the audit's between-sample comparison now distinguishes FELL / ROSE / UNCHANGED instead of
