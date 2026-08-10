@@ -837,18 +837,38 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	 */
 	const double MeanMs = Hitches > 0 ? (HitchMsTotal / Hitches) : 0.0;
 
-	FString Line = FString::Printf(
+	/*
+	 * ★ THREE ROWS, NOT ONE — and the reason is a screenshot, 2026-08-10.
+	 *
+	 * Every widening this session appended another field to a single summary string. By 0.8.4 it had
+	 * reached roughly six hundred characters, and Ant's overlay screenshot showed it spilling off BOTH
+	 * edges of a 1080p screen, unreadable. The log can carry a line that long. The panel cannot, and the
+	 * panel is the half she actually looks at.
+	 *
+	 * `PostSticky` keys a row by `Key`, so splitting costs three gauge rows that each rewrite in place
+	 * rather than one that wraps. It does NOT cost screen history: these are gauges, not events.
+	 *
+	 * The three answer three different questions, which is why this split and not some other:
+	 *   Reason  — how bad, and WHAT caused it
+	 *   where   — WHICH THREAD the time went to
+	 *   pso     — the PSO buckets, their rates, and whether they can fire at all
+	 * `FPMOverlay.h:43` requires the screen and the log to agree, so both get the same three lines.
+	 */
+	FString Head = FString::Printf(
 		TEXT("%s | %d hitch(es) in %llu frame(s) over %.1f s (threshold %.0f ms)"),
 		Reason, Hitches, static_cast<unsigned long long>(FramesInWindow), WindowSeconds,
 		CVarHitchThresholdMs.GetValueOnAnyThread());
+	FString Where;
+	FString Pso;
 
 	if (Hitches > 0)
 	{
 		// BOTH halves, always, and never folded together. The async-flush count alone was structurally
 		// blind to sync loads, so reporting it on its own is what made a partial zero look like a whole one.
-		Line += FString::Printf(
-			TEXT(" | worst %.1f ms, mean %.1f ms | %d had an async-load flush, %d had a SYNC load, %d had a "
-			     "GC, %d had a COLD PSO creation, %d had PSO work in flight, %d were during a PSO precompile"),
+		// Abbreviated from prose to a labelled list purely for width — the counters are unchanged.
+		Head += FString::Printf(
+			TEXT(" | worst %.1f ms, mean %.1f ms | cause: %d flush, %d sync, %d gc, %d cold-pso, "
+			     "%d pso-work, %d pso-precompile"),
 			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc, HitchesWithPsoCreate,
 			HitchesWithPsoWork, HitchesWithPso);
 
@@ -861,7 +881,7 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		 * whether or not the anonymous share actually moved -- and on 0.6.0 that share was 21 of 21.
 		 * `Hitches > 0` is guaranteed inside this branch, so the division is safe.
 		 */
-		Line += FString::Printf(TEXT(" | %d UNATTRIBUTED (%.0f%% of hitches)"),
+		Head += FString::Printf(TEXT(" | %d UNATTRIBUTED (%.0f%% of hitches)"),
 			HitchesUnattributed, 100.0 * HitchesUnattributed / Hitches);
 
 		/*
@@ -872,10 +892,9 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		 */
 		if (GtFramesSeen.load(std::memory_order_relaxed) > 0)
 		{
-			Line += FString::Printf(
-				TEXT(" | where: %d game-thread bound, %d render-thread bound, %d neither (gpu/vsync/os) | "
-				     "worst ON A HITCH: game thread %.1f ms, render thread %.1f ms | %lld GT / %lld RT "
-				     "frame(s) seen"),
+			Where = FString::Printf(
+				TEXT("where: %d game-thread bound, %d render-thread bound, %d neither (gpu/vsync/os) | "
+				     "worst ON A HITCH: gt %.1f ms, rt %.1f ms | %lld GT / %lld RT frame(s) seen"),
 				HitchesGameThreadBound, HitchesRenderThreadBound, HitchesNeitherThreadBusy,
 				WorstGtBusyMs, WorstRtBusyMs,
 				static_cast<long long>(GtFramesSeen.load(std::memory_order_relaxed)),
@@ -885,8 +904,8 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		{
 			// ⚠ The denominator discipline this file opens with, applied to the split. Saying nothing here
 			// would let the reader assume the where-verdict simply had nothing to report.
-			Line += FString::Printf(
-				TEXT(" | where: UNAVAILABLE for all %d hitch(es) — no OnEndFrame broadcast has been seen, "
+			Where = FString::Printf(
+				TEXT("where: UNAVAILABLE for all %d hitch(es) — no OnEndFrame broadcast has been seen, "
 				     "so the game/render split is DEAD, not quiet"),
 				HitchesSplitUnavailable);
 		}
@@ -904,7 +923,7 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 			? FramesInWindow - static_cast<uint64>(FramesDuringPso)
 			: 0;
 		const int32 HitchesOutside = Hitches - HitchesWithPso;
-		Line += FString::Printf(
+		Pso += FString::Printf(
 			TEXT(" | PSO precompile overlapped %d span(s): %d hitch(es) there (%.2f%%) vs %d in the other "
 			     "%llu (%.2f%%)"),
 			FramesDuringPso, HitchesWithPso, 100.0 * HitchesWithPso / FramesDuringPso,
@@ -924,7 +943,7 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 			? FramesInWindow - static_cast<uint64>(FramesDuringPsoWork)
 			: 0;
 		const int32 HitchesOutside = Hitches - HitchesWithPsoWork;
-		Line += FString::Printf(
+		Pso += FString::Printf(
 			TEXT(" | async PSO work overlapped %d span(s) (peak %d precompile task(s), %d precache "
 			     "request(s)): %d hitch(es) there (%.2f%%) vs %d in the other %llu (%.2f%%)"),
 			FramesDuringPsoWork, PeakPrecompileTasks, PeakPrecacheRequests, HitchesWithPsoWork,
@@ -936,13 +955,13 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	{
 		// The stalls carry their own flush count. Folding them into the hitch figure would overstate the
 		// hitch rate; dropping the count entirely is what review finding B caught.
-		Line += FString::Printf(
+		Pso += FString::Printf(
 			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc, %d cold-pso, %d pso-work, "
 			     "%d pso-precompile, %d UNATTRIBUTED), not counted as hitches"),
 			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread(), LoadStallsWithFlush, StallsWithSyncLoad,
 			StallsWithGc, StallsWithPsoCreate, StallsWithPsoWork, StallsWithPso, StallsUnattributed);
 	}
-	Line += FString::Printf(
+	Pso += FString::Printf(
 		TEXT(" | session totals: %d flush(es), %d sync load(s), %d GC pass(es), %d cold PSO creation(s)"),
 		FlushesTotal.GetValue(), SyncLoadsTotal.GetValue(), GcTotal.GetValue(), PsoCreatesTotal.GetValue());
 
@@ -969,14 +988,14 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	 */
 	if (PsoCreatesTotal.GetValue() == 0)
 	{
-		Line += FString::Printf(
+		Pso += FString::Printf(
 			TEXT(" | cold-PSO bucket zero — capability: filecache=%d, reportPSO=%d"),
 			FPipelineFileCacheManager::IsPipelineFileCacheEnabled() ? 1 : 0,
 			FPipelineFileCacheManager::ReportNewPSOs() ? 1 : 0);
 	}
 	if (FramesDuringPsoWork == 0)
 	{
-		Line += FString::Printf(TEXT(" | no async PSO work seen — capability: precaching=%d"),
+		Pso += FString::Printf(TEXT(" | no async PSO work seen — capability: precaching=%d"),
 			PipelineStateCache::IsPSOPrecachingEnabled() ? 1 : 0);
 	}
 
@@ -984,7 +1003,7 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	// compile time rather than stall time every place it is printed, because it is the former.
 	if (const int32 PsoRuns = PsoRunsCompleted.load(std::memory_order_relaxed); PsoRuns > 0)
 	{
-		Line += FString::Printf(
+		Pso += FString::Printf(
 			TEXT(", %d PSO precompile run(s) (last: %u task(s), %.2f s compile time)"),
 			PsoRuns, PsoTasksLastRun.load(std::memory_order_relaxed),
 			PsoSecondsLastRun.load(std::memory_order_relaxed));
@@ -992,7 +1011,7 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	if (LinesSuppressed > 0)
 	{
 		// Stated, never silent. A capped log that does not say it capped reads as a quiet session.
-		Line += FString::Printf(TEXT(" | %d hitch line(s) SUPPRESSED by the per-window cap"), LinesSuppressed);
+		Pso += FString::Printf(TEXT(" | %d hitch line(s) SUPPRESSED by the per-window cap"), LinesSuppressed);
 	}
 
 	// Post writes to the screen AND the log, so this must not also UE_LOG or every summary appears twice.
@@ -1009,7 +1028,11 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	// want when reading a session back, and it is the half that cannot be reconstructed afterwards.
 	if (FPMDiag::IsOn(FPMDiag::EChannel::Hitch))
 	{
-		FPMOverlay::PostSticky(TEXT("hitch meter"), Reason, Line);
+		// Three gauge rows rather than one that runs off both edges of the screen. Each keeps its own slot
+		// and rewrites in place, so this costs three stable rows and no scroll history.
+		FPMOverlay::PostSticky(TEXT("hitch meter"), Reason, Head);
+		if (!Where.IsEmpty()) { FPMOverlay::PostSticky(TEXT("hitch meter"), TEXT("where"), Where); }
+		if (!Pso.IsEmpty())   { FPMOverlay::PostSticky(TEXT("hitch meter"), TEXT("detail"), Pso); }
 	}
 
 	// Window resets; session totals do not.

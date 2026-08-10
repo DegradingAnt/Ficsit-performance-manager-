@@ -308,9 +308,28 @@ void FPMOverlay::EnsureAttached()
 		GEngine->GameViewport->GetViewportSize(ViewportSize);
 		const float DPI = GEngine->GameViewport->GetDPIScale();
 		if (ViewportSize.X <= 0.f || DPI <= 0.f) { return Fallback; }
+
+		/*
+		 * ⚠ TAKE THE NARROWER OF THE TWO INTERPRETATIONS — corrected 2026-08-10 from Ant's screenshot,
+		 * where every wrapped line still ran off the right edge and was cut mid-word ("| 1 UNATT",
+		 * "0 pso"). She asked for it plainly: *"you need to fix that UI so it doesnt truncate."*
+		 *
+		 * The comment above says Slate works in DPI-scaled units while the viewport reports pixels, so
+		 * the division is right where that holds. Where `GetViewportSize` already returns SLATE units,
+		 * dividing again inflates the wrap point by 1/DPI and pushes it past the screen edge — which is
+		 * precisely the observed failure, and the previous version could not tell the two cases apart.
+		 *
+		 * Determining which one this display does is not necessary, because the two errors are not
+		 * symmetric. Over-estimating truncates a measurement, which is the bug and the worst possible
+		 * thing for an instrument to do. Under-estimating wraps a little early, which costs a row.
+		 * So take the MIN of both candidates: whichever interpretation is correct, the text fits.
+		 */
+		const float AsPixels = static_cast<float>(ViewportSize.X);
+		const float AsSlate  = static_cast<float>(ViewportSize.X) / DPI;
+
 		// Floor rather than clamp-to-fallback: on a genuinely tiny viewport, wrapping hard is correct
 		// and still readable, whereas falling back to 1400 would run off the edge again.
-		return FMath::Max(320.f, static_cast<float>(ViewportSize.X) / DPI - Chrome);
+		return FMath::Max(320.f, FMath::Min(AsPixels, AsSlate) - Chrome);
 	});
 
 	SAssignNew(TextBlock, STextBlock)

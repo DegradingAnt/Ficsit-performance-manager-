@@ -160,7 +160,8 @@ void FFPMSchematicNullGuard::Arm()
 		 * overwhelmingly common case and leaves through here having cost one call and one compare.
 		 *
 		 * ⚠ THE LOCAL `Source/FactoryGame/Private/FGEventSubsystem.cpp` STUB RETURNS nullptr
-		 * UNCONDITIONALLY, AND THAT IS NOT WHAT RUNS. Those Private/*.cpp bodies exist to produce an
+		 * UNCONDITIONALLY, AND THAT IS NOT WHAT RUNS. Those generated `Private` .cpp bodies exist to
+		 * produce an
 		 * import library; at runtime the call binds to the retail FactoryGame module. Verified rather
 		 * than assumed: FPM1 ships four live call sites of this identical `AFGSubsystem::Get` shape -
 		 * AFGChatManager, AFGCircuitSubsystem, AFGBuildableSubsystem, AFGConveyorItemSubsystem - and the
