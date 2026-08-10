@@ -201,8 +201,26 @@ void FFPMDistanceFieldAudit::OnWorldLoad(UWorld* World)
 	GFPMDfTicker = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateLambda([](float Delta) -> bool
 		{
+			/*
+			 * ⚠ A NULL WORLD MUST NOT END THE SAMPLER, AND THE FIRST VERSION LET IT.
+			 *
+			 * Measured on the 2026-08-10 boot: only the "early" sample ever printed. The 30 s and 90 s
+			 * marks never fired, three minutes later — because this returned false the first tick the
+			 * weak pointer came back null, and a ticker that returns false is gone for good. Losing the
+			 * later samples costs the whole TREND, which is the only thing that separates "vanilla's
+			 * re-enable pass is still working" from "these were missed" — i.e. the actual question.
+			 *
+			 * This is the same shape as the FPMEnclosure blocker the review caught an hour earlier, in
+			 * the file written immediately after fixing it. So: re-resolve from the engine, and keep
+			 * ticking. Only the sample marks end the run.
+			 */
 			UWorld* W = GFPMDfWorld.Get();
-			if (W == nullptr) { return false; }
+			if (W == nullptr && GEngine != nullptr)
+			{
+				W = GEngine->GetCurrentPlayWorld();
+				if (W != nullptr) { GFPMDfWorld = W; }
+			}
+			if (W == nullptr) { return true; }
 
 			/*
 			 * The ticker runs on a short fixed interval and the SAMPLE MARKS are checked against elapsed

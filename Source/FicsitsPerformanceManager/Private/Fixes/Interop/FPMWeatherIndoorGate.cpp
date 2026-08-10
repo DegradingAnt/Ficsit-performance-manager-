@@ -16,6 +16,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 
 /*
@@ -187,6 +188,20 @@ void FFPMWeatherIndoorGate::Arm()
 		{
 			UWorld* World = GEngine ? GEngine->GetCurrentPlayWorld() : nullptr;
 			if (World == nullptr || !World->IsGameWorld()) { return true; }
+
+			/*
+			 * ⚠ IsGameWorld() IS TRUE IN THE MAIN MENU, so it is not the gate it looks like.
+			 *
+			 * Measured on the 2026-08-10 boot: this rescanned every 15 s while sitting at the menu and
+			 * reported "tracking 2 weather parameter(s)" each time — a full actor iteration, repeatedly,
+			 * with no player in the world and nothing to gate. Small, and exactly the kind of waste a
+			 * performance mod has no business shipping.
+			 *
+			 * A local pawn is the honest test: no pawn, nobody can be indoors, so there is nothing for
+			 * this gate to decide.
+			 */
+			const APlayerController* PC = GEngine->GetFirstLocalPlayerController(World);
+			if (PC == nullptr || PC->GetPawn() == nullptr) { return true; }
 
 			const double Now = FPlatformTime::Seconds();
 			if (GFPMWeatherTargets.Num() == 0 || Now - GFPMWeatherLastScan > GFPMWeatherScanSec)

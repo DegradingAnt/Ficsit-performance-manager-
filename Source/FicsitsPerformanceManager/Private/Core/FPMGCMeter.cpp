@@ -175,12 +175,20 @@ void FFPMGCMeter::Arm()
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] gc-meter ARMED - READ ONLY, no hook, two engine delegates. Baseline to beat, measured "
 		     "2026-08-02 on Ant's save: 27 pauses in ~22 min, mean 27.2 ms, worst 148.6 ms. "
-		     "This build reports gc.AllowParallelGC=%s, gc.TimeBetweenPurgingPendingKillObjects=%s, "
-		     "engine target interval %.1f s. It steers NOTHING - no quality lever shortens a mark that "
-		     "scales with the live object graph."),
+		     "This build reports gc.AllowParallelGC=%s, gc.TimeBetweenPurgingPendingKillObjects=%s. "
+		     "It steers NOTHING - no quality lever shortens a mark that scales with the live object "
+		     "graph."),
 		Parallel ? *Parallel->GetString() : TEXT("<not found>"),
-		Interval ? *Interval->GetString() : TEXT("<not found>"),
-		TargetInterval());
+		Interval ? *Interval->GetString() : TEXT("<not found>"));
+
+	/*
+	 * ⚠ THE ENGINE'S EFFECTIVE INTERVAL IS DELIBERATELY NOT PRINTED HERE.
+	 *
+	 * The first version printed it at arm time and it read "0.0 s" on the 2026-08-10 boot, because
+	 * StartupModule runs before GEngine is usable. A zero from an instrument that cannot yet read is
+	 * worse than no line at all - it invites exactly the wrong conclusion about the collection cadence.
+	 * Every per-pass line carries the live target, which is where it is meaningful anyway.
+	 */
 }
 
 void FFPMGCMeter::Disarm()

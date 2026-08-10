@@ -277,6 +277,44 @@ def check_no_network() -> None:
                 err(f"{f.relative_to(REPO)} references {what} — hard rule 2 says no network activity, ever")
 
 
+# Modules that are PROVIDED BY A PLUGIN. Depending on one in Build.cs without listing the plugin in the
+# descriptor builds fine and only warns at Shipping link time, so it is easy to ship a load-order bug.
+PLUGIN_MODULES = {
+    "Niagara": "Niagara", "NiagaraCore": "Niagara",
+    "AkAudio": "Wwise", "WwiseSoundEngine": "Wwise",
+    "AbstractInstance": "AbstractInstance",
+}
+
+
+def check_plugin_deps_declared() -> None:
+    """Every plugin-provided module used in Build.cs must be a declared plugin dependency.
+
+    Caught 2026-08-10 by a Shipping build, and NOT by any editor build:
+        Warning: Plugin 'FicsitsPerformanceManager' does not list plugin 'Niagara' as a dependency,
+                 but module 'FicsitsPerformanceManager' depends on module 'Niagara'.
+    Niagara had been added to Build.cs for the weather gate and never to the descriptor. It links
+    either way; what is not guaranteed is that the plugin is loaded before ours.
+    """
+    build_cs = SRC / f"{MODULE}.Build.cs"
+    uplugin = REPO / f"{MODULE}.uplugin"
+    if not (build_cs.exists() and uplugin.exists()):
+        return
+    try:
+        declared = {p.get("Name") for p in (json.loads(read(uplugin)).get("Plugins") or [])}
+    except json.JSONDecodeError:
+        return
+
+    for line in read(build_cs).splitlines():
+        if line.lstrip().startswith("//"):
+            continue
+        for module, plugin in PLUGIN_MODULES.items():
+            if f'"{module}"' in line and plugin not in declared:
+                err(
+                    f"Build.cs depends on module {module!r}, which the {plugin!r} plugin provides, but "
+                    f"the .uplugin does not list {plugin!r}. Only a Shipping build warns about this."
+                )
+
+
 def check_gamefeature_data() -> None:
     """The GameFeature asset must know about every Content/ root, or the assets there never register.
 
@@ -342,6 +380,7 @@ def main() -> int:
     check_every_fix_is_armed(fixes)
     check_predecessor_coverage()
     check_diag_table()
+    check_plugin_deps_declared()
     check_gamefeature_data()
     check_no_network()
     check_licence_headers()
