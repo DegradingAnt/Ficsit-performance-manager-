@@ -3,6 +3,7 @@
 #include "Core/FPMStallSampler.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMOverlay.h"
 
@@ -365,10 +366,12 @@ void FFPMStallSampler::LogReport()
 /*
  * `FPM.Stall.Report` — the ranking on demand, because a stall you just felt is the moment you want it.
  */
-static FAutoConsoleCommand GStallReportCmd(
+// WithOutputDevice — see FPMConsoleEcho.h. This printed nothing in the console until 2026-08-10.
+static FAutoConsoleCommandWithOutputDevice GStallReportCmd(
 	TEXT("FPM.Stall.Report"),
 	TEXT("Print which modules the game thread was inside during measured stalls, ranked."),
-	FConsoleCommandDelegate::CreateStatic([]()
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMScopedConsoleEcho Echo(&Ar);
 		FFPMStallSampler::Get().LogReport();
 	}));

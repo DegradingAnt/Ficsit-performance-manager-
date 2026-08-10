@@ -129,8 +129,23 @@ void FFPMGlassQuality::Arm()
 			[](IConsoleVariable*) { FFPMGlassQuality::ApplyFromToggle(TEXT("FPM.Glass.Enable changed")); }));
 	}
 
-	// NAME THE LAMBDA FIRST — sf-scaffold section 7. SML's SUBSCRIBE_ macros split the handler on
-	// top-level commas, so a body is never written inside the macro.
+	/*
+	 * ★ MEASURED 2026-08-10, AND THE ANSWER IS "THE RE-ASSERT HAS NEVER FIRED". FPM.Glass.Report, twice,
+	 * in Ant's own session:
+	 *
+	 *     held through 2 settings apply(s) with 0 repairs. The priority argument holds:
+	 *     ECVF_SetByPluginHighPriority (0x07) beats ECVF_SetByScalability (0x01)
+	 *
+	 * ⚠ IT IS KEPT ANYWAY, AND THAT IS A DELIBERATE REVERSAL of the "delete it, it is dead weight" note
+	 * the report itself printed. Two applies is a thin sample, the hook costs nothing between settings
+	 * changes, and deleting it would remove the only thing that can ever FALSIFY the priority argument.
+	 * If a game or engine update changes that ladder, the version with this check logs a warning naming
+	 * which cvar lost; the version without it silently stops making glass look right and nobody finds out
+	 * until Ant notices. A free check that can disprove the mod's own reasoning earns its place.
+	 *
+	 * NAME THE LAMBDA FIRST — sf-scaffold section 7. SML's SUBSCRIBE_ macros split the handler on
+	 * top-level commas, so a body is never written inside the macro.
+	 */
 	auto OnSettingsApplied = [](UFGGameUserSettings* Self)
 	{
 		if (!GlassWanted()) { return; }

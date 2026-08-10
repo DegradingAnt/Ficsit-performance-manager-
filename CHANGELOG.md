@@ -62,6 +62,61 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 19:05 — CODE — three report commands that printed nothing, a seventh cause bucket, and a guard demoted by its own measurement
+
+- **What:** the fixes the first driven boot found, plus the one idea worth taking from mining two mods.
+- **Why:** Ant ran three FPM report commands in the console and got blank lines. All three had worked.
+
+- **★ THREE COMMANDS ANSWERED WHERE NOBODY WAS LOOKING.** `FPM.Pso.Report`, `FPM.Stall.Report` and
+  `FPM.Blueprint.Report` were `FAutoConsoleCommand` + `UE_LOG(Display)`. A Display-level log does not
+  echo to the in-game console, so each ran, wrote a full answer to `FactoryGame.log`, and showed nothing.
+  `sf-boottest` names this exact trap — *"a command that looks dead has usually run"* — and three shipped
+  with it anyway. New `FPMScopedConsoleEcho` (RAII, attaches the console device to `GLog` for the call)
+  fixes the category rather than the three instances, so a line added later is covered too.
+  ⚠ Its destructor is load-bearing: the console's device dies with the call, and leaving it registered
+  would leave `GLog` writing into freed memory from any thread.
+  ⚠ And it is NEVER combined with a report that already takes an `FOutputDevice` — that would print
+  every line twice. Two mechanisms, one per shape, stated at both call sites.
+
+- **★ A SEVENTH HITCH CAUSE BUCKET: THE ASSET STREAMER.** The boot measured 9 world-load hitches, worst
+  946.6 ms, mean 281.0 ms, **100% UNATTRIBUTED**, in a session logging 2973 sync loads. The meter could
+  not ask whether the streamer was behind. It now samples `GetNumWantingResources()` per span and keeps
+  the peak (`ContentStreaming.h:321`, overridden `:747` — "the number of resources that currently wants
+  to be streamed in"), a LEVEL like the PSO run flag, with its own denominator.
+  **Liveness:** `GetNumWantingResourcesID()` (`:332`) moves only when the streaming system updates, so a
+  zero backlog is distinguishable from a readout nothing feeds. If it has never moved the summary says
+  UNPROVEN instead of printing a confident 0.
+  ⚠ The idea came from mining PreloadMap; none of its code did. That mod force-streams the map through a
+  ghost viewer, which FPM does not adopt — Ant ran it and confirmed it lags everything.
+
+- **★ THE NANITE GUARD DEMOTED TO A METER BY ITS OWN FIRST MEASUREMENT.** `1101 sample(s), 0 of them
+  scaled down` in her real base — the quality-scale factor never left 1.00, so Nanite is not dropping
+  geometric detail for pool pressure here and the raise had no trigger. Removed the raise, the VRAM
+  sizing and the `[512, 2048]` clamp. `OriginStatus` downgraded `OriginNamed` → `UnknownCause`, because
+  the mechanism it named was measured not to occur.
+  ⚠ Its baseline was wrong anyway: it compared against the ENGINE default of 512 MB while this game runs
+  **50** (`FactoryGame/Config/DefaultEngine.ini:47`, under `:45 DynamicallyGrowAllocations=1`).
+  ⚠ And the report contradicted itself — `pool 50 MB` one line, "does not overcommit a 512 MB pool" the
+  next, because the verdict interpolated the constant. It prints the live value now.
+
+- **REVERSED ONE OF MY OWN FIX ITEMS: the glass re-assert STAYS.** `FPM.Glass.Report` printed "the
+  re-assert is dead weight and can be deleted" — a verdict I wrote, fired on two samples. Deleting it
+  would remove the only thing that can FALSIFY the mod's priority argument; if an update ever changes
+  that ladder, the version with the check logs which cvar lost and the version without silently stops
+  working. The hook only fires on a settings Apply, so it costs nothing between times.
+
+- **Files:** `Public/Core/FPMConsoleEcho.h` + `Private/Core/FPMConsoleEcho.cpp` (new),
+  `Public/Core/FPMHitchMeter.h` + `Private/Core/FPMHitchMeter.cpp`, `Private/Core/FPMStallSampler.cpp`,
+  `Private/Fixes/Vanilla/FPMBlueprintSweepGate.cpp`,
+  `Public/Fixes/ModFeatures/FPMNaniteStreamingGuard.h` + `.cpp`,
+  `Private/Fixes/ModFeatures/FPMGlassQuality.cpp`, `FicsitsPerformanceManager.uplugin`
+  (0.11.1 → **0.11.2**, PATCH: repairs and diagnostics, invisible with the console closed).
+- **Revert:** `git revert`. The streaming bucket is additive; removing it returns the six-bucket line.
+- **Verified:** build-only. `Result: Succeeded`; `check_structure.py` 26 fixes / 0 / 0. NOT-YET
+  boot-tested — Ant is not booting Satisfactory tonight.
+
+---
+
 ## 2026-08-10 17:35 — CODE — the measurement that decides the PSO pre-optimize exception
 
 - **What:** the hitch meter now counts cold PSO creations that happen MID-PLAY — more than 30 s after a

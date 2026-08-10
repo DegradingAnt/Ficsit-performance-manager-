@@ -3,6 +3,7 @@
 #include "Fixes/Vanilla/FPMBlueprintSweepGate.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMHookLedger.h"
 
@@ -370,11 +371,14 @@ void FFPMBlueprintSweepGate::LogReport()
 		CVarBlueprintGateMinLibrary.GetValueOnAnyThread());
 }
 
-static FAutoConsoleCommand GBlueprintGateReportCmd(
+// WithOutputDevice — see FPMConsoleEcho.h. This printed nothing in the console until 2026-08-10,
+// which is why Ant could not see that the gate was cancelling 154 of 163 sweeps on her own library.
+static FAutoConsoleCommandWithOutputDevice GBlueprintGateReportCmd(
 	TEXT("FPM.Blueprint.Report"),
 	TEXT("Print how many blueprint recipe sweeps were cancelled versus allowed, and the audit result."),
-	FConsoleCommandDelegate::CreateStatic([]()
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMScopedConsoleEcho Echo(&Ar);
 		FFPMBlueprintSweepGate::Get().LogReport();
 	}));
 
@@ -385,11 +389,12 @@ static FAutoConsoleCommand GBlueprintGateReportCmd(
  * disagreements the gate is not your problem and the search moves elsewhere, which is worth as much as
  * a hit.
  */
-static FAutoConsoleCommand GBlueprintGateAuditCmd(
+static FAutoConsoleCommandWithOutputDevice GBlueprintGateAuditCmd(
 	TEXT("FPM.Blueprint.Audit"),
 	TEXT("Recompute every blueprint's recipe-requirement answer and report any that disagree with the "
 	     "cached value."),
-	FConsoleCommandDelegate::CreateStatic([]()
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMScopedConsoleEcho Echo(&Ar);
 		FFPMBlueprintSweepGate::Get().RunAuditNow();
 	}));

@@ -3,10 +3,12 @@
 #include "Core/FPMHitchMeter.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMOverlay.h"
 
 #include "HAL/IConsoleManager.h"
+#include "ContentStreaming.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/ScopeLock.h"
@@ -555,6 +557,35 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	if (bPsoInSpan) { ++FramesDuringPso; }
 
 	/*
+	 * ★ THE STREAMER'S BACKLOG — the seventh bucket, sampled HERE because this runs once per span and
+	 * the value is a LEVEL rather than an event. See the long note in the header for why it exists.
+	 *
+	 * Two plain int32 getters on a process-global collection. `GetNumWantingResources()` is the backlog
+	 * depth; `GetNumWantingResourcesID()` moves only when the streaming system actually updates, which is
+	 * what makes a zero backlog distinguishable from a readout nothing is feeding.
+	 */
+	int32 StreamingInSpan = 0;
+	{
+		FStreamingManagerCollection& Streaming = IStreamingManager::Get();
+		const int32 Wanting   = Streaming.GetNumWantingResources();
+		const int32 WantingId = Streaming.GetNumWantingResourcesID();
+
+		if (LastStreamingWantingId != -1 && WantingId != LastStreamingWantingId)
+		{
+			bStreamingIdEverMoved = true;
+		}
+		LastStreamingWantingId = WantingId;
+
+		StreamingWantingPeakInSpan = FMath::Max(StreamingWantingPeakInSpan, Wanting);
+		StreamingWantingWorst      = FMath::Max(StreamingWantingWorst, Wanting);
+		if (Wanting > 0) { ++FramesDuringStreaming; }
+
+		// Consumed: the peak belongs to the span that just closed.
+		StreamingInSpan = StreamingWantingPeakInSpan;
+		StreamingWantingPeakInSpan = 0;
+	}
+
+	/*
 	 * ★ THE COLD-CREATION COUNT — consumed here, not at the call sites. Set() returns the old value and
 	 * resets in one atomic operation, so a creation landing between the read and the reset cannot be lost.
 	 * See the header note for why this one is consumed inside while the other three are parameters.
@@ -641,6 +672,7 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	// LEVEL, like the run flag, and is the weaker claim of the two -- so it is last, and the summary
 	// reports it as a rate rather than a count.
 	const bool bAttributed = FlushesInSpan > 0 || SyncLoadsInSpan > 0 || GcInSpan > 0 || bPsoInSpan
+		|| StreamingInSpan > 0
 		|| PsoCreatesInSpan > 0 || bPsoWorkInSpan;
 
 	const float ThresholdMs = CVarHitchThresholdMs.GetValueOnAnyThread();
@@ -666,6 +698,7 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 		if (bPsoInSpan)           { ++StallsWithPso; }
 		if (PsoCreatesInSpan > 0) { ++StallsWithPsoCreate; }
 		if (bPsoWorkInSpan)       { ++StallsWithPsoWork; }
+		if (StreamingInSpan > 0)  { ++StallsWithStreaming; }
 		if (!bAttributed)         { ++StallsUnattributed; }
 		return;
 	}
@@ -683,6 +716,7 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	if (bPsoInSpan)           { ++HitchesWithPso; }
 	if (PsoCreatesInSpan > 0) { ++HitchesWithPsoCreate; }
 	if (bPsoWorkInSpan)       { ++HitchesWithPsoWork; }
+	if (StreamingInSpan > 0)  { ++HitchesWithStreaming; }
 	if (!bAttributed)         { ++HitchesUnattributed; }
 
 	/*
@@ -922,9 +956,30 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		// Abbreviated from prose to a labelled list purely for width — the counters are unchanged.
 		Head += FString::Printf(
 			TEXT(" | worst %.1f ms, mean %.1f ms | cause: %d flush, %d sync, %d gc, %d cold-pso, "
-			     "%d pso-work, %d pso-precompile"),
+			     "%d pso-work, %d pso-precompile, %d streaming"),
 			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc, HitchesWithPsoCreate,
-			HitchesWithPsoWork, HitchesWithPso);
+			HitchesWithPsoWork, HitchesWithPso, HitchesWithStreaming);
+
+		/*
+		 * ★ THE STREAMING BUCKET'S OWN LIVENESS LINE, printed beside its count and never without it.
+		 *
+		 * `GetNumWantingResourcesID()` moves only when the streaming system updates. If it has never
+		 * moved, a zero backlog means "nothing is feeding this readout", which is a completely different
+		 * statement from "the streamer was never behind" — and it is the statement that would otherwise
+		 * be silently mistaken for the good news.
+		 */
+		if (!bStreamingIdEverMoved)
+		{
+			Head += FString::Printf(
+				TEXT(" [⚠ streaming bucket UNPROVEN: GetNumWantingResourcesID has never moved, so its %d "
+				     "is 'not measured', not 'never behind']"), HitchesWithStreaming);
+		}
+		else
+		{
+			Head += FString::Printf(
+				TEXT(" [streaming live, worst backlog %d resource(s), behind on %d frame(s)]"),
+				StreamingWantingWorst, FramesDuringStreaming);
+		}
 
 		/*
 		 * ★ THE UNATTRIBUTED SHARE IS THE NUMBER THIS WIDENING LIVES OR DIES BY, so it is printed as a
@@ -1274,11 +1329,17 @@ static FAutoConsoleCommand GHitchReportCmd(
  * happened in this window"; this asks "is the PSO measurement alive, and what has it seen all session".
  * The second question is the one that has to be settled before any PSO number is worth reading.
  */
-static FAutoConsoleCommand GPsoReportCmd(
+/*
+ * ⚠ WithOutputDevice, NOT the plain form — this printed NOTHING in the console until 2026-08-10.
+ * See FPMConsoleEcho.h: a Display-level UE_LOG does not reach the console, so the whole report was
+ * landing in FactoryGame.log while Ant watched a blank line and reasonably concluded it was broken.
+ */
+static FAutoConsoleCommandWithOutputDevice GPsoReportCmd(
 	TEXT("FPM.Pso.Report"),
 	TEXT("Print the PSO picture: whether each bucket can fire, cold creations this session, and current "
 	     "precompile/precache work in flight."),
-	FConsoleCommandDelegate::CreateStatic([]()
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMScopedConsoleEcho Echo(&Ar);
 		FFPMHitchMeter::Get().LogPsoReport();
 	}));

@@ -390,6 +390,55 @@ private:
 	int32 StallsWithPso = 0;
 
 	/**
+	 * ★ THE SEVENTH CAUSE BUCKET — THE ASSET STREAMER, added 2026-08-10 to attack a 100% number.
+	 *
+	 * Measured on Ant's save that evening, and it is why this exists:
+	 *
+	 *     hitch meter: world load | 9 hitch(es) ... worst 946.6 ms, mean 281.0 ms
+	 *       cause: 0 flush, 0 sync, 0 gc, 0 cold-pso, 0 pso-work, 0 pso-precompile
+	 *       9 UNATTRIBUTED (100% of hitches)
+	 *     session totals: 95 flush(es), 2973 sync load(s)
+	 *
+	 * EVERY world-load hitch matched none of the six existing buckets, in a session that logged 2973
+	 * sync loads. The meter had no way to ask the one question that obviously mattered: *was the
+	 * streaming system behind at the time*. A bucket that can only ever say "unattributed" is not an
+	 * answer, it is the absence of one.
+	 *
+	 * ⚠ THE IDEA CAME FROM MINING PreloadMap, AND NOTHING OF ITS CODE DID. That mod leans on
+	 * `IStreamingManager::Get()` to force-stream the map through a ghost viewer — a technique FPM
+	 * deliberately does NOT adopt, because it removes later spikes by paying the whole cost up front and
+	 * Ant confirmed by running it that the cost is severe. What travelled is the fact that the API is
+	 * there and public. See `RESEARCH-MINE-PRELOADMAP-TRAINROUTES-2026-08-10.md`.
+	 *
+	 * ══ WHY IT IS A LEVEL AND NOT AN EVENT ══
+	 *
+	 * `GetNumWantingResources()` (`ContentStreaming.h:321`, overridden at `:747`) is documented as *"the
+	 * number of resources that currently wants to be streamed in"* — a backlog depth, not a thing that
+	 * happens. So it is sampled per frame and the SPAN keeps the peak, exactly like `bPsoRunActive`, and
+	 * it carries its own denominator for the same reason: a level that is true for most of a session
+	 * would otherwise "explain" every hitch by being permanently on.
+	 */
+	int32 StreamingWantingPeakInSpan = 0;
+	int32 FramesDuringStreaming = 0;
+	int32 HitchesWithStreaming = 0;
+	int32 StallsWithStreaming = 0;
+	int32 StreamingWantingWorst = 0;
+
+	/**
+	 * ★ THE LIVENESS PROOF, AND THE ENGINE HANDED IT TO US.
+	 *
+	 * `GetNumWantingResourcesID()` (`:332`) is documented as *"incremented every time NumWantingResources
+	 * is updated by the streaming system (every few frames)"*. So the question "could this bucket ever
+	 * report a non-zero?" has a directly observable answer: **if the ID never moves, the streaming system
+	 * is not updating and every zero this bucket prints is meaningless.** The report says so in those
+	 * terms rather than printing a confident 0.
+	 *
+	 * -1 means never sampled, which is a third state distinct from "sampled and unchanged".
+	 */
+	int32 LastStreamingWantingId = -1;
+	bool bStreamingIdEverMoved = false;
+
+	/**
 	 * Cold PSO creations — an EVENT per newly-created pipeline, unlike the run flag above. See the long
 	 * note on `OnPsoCreated`. Consumed inside `ClassifySpan` rather than at its two call sites: the
 	 * signature already carries a `bool` wedged between two `int32`s, and a sixth positional scalar there
