@@ -5,9 +5,14 @@ A C++ mod for **Satisfactory 1.2.3.1 (CL 495413)**. It runs on [SML](https://fic
 FPM repairs known multiplayer, rendering and stutter bugs. Each repair is a narrow native hook. When a
 bug cannot be repaired yet, FPM measures it instead, so the cause can be named later.
 
-> **Status: pre-release (`0.y.z`).** FPM runs on a live dedicated server and a live client every day.
-> It is not on ficsit.app yet. **This build has no performance governor.** That work comes later. Today
-> the mod ships repairs, guards and diagnostics.
+> ## ⚠ ALPHA BUILD
+>
+> This mod is in active development. Expect bugs. Expect settings to move between versions. **Back up
+> your save before you run it, and do not use it on a world you cannot replace.**
+>
+> FPM does run on a live dedicated server and a live client every day, so it is not untested. It is
+> also not finished. **This build has no performance governor** — that work comes later. Today the mod
+> ships repairs, guards and diagnostics.
 
 ---
 
