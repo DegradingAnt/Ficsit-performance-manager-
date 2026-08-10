@@ -52,4 +52,18 @@ public:
 
 	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::StaticBase; }
 	virtual void Arm() override;
+
+	/**
+	 * Removes the movement hook.
+	 *
+	 * ⚠ WITHOUT IT, `FPMFixes::DisarmAll()` REPORTS THIS FIX DISARMED WHILE IT KEEPS REWRITING EVERY
+	 * CLIENT ADJUSTMENT. Harmless at process exit — the only place DisarmAll has ever been called from,
+	 * and why the omission survived — but it is what blocks P4.2's master OFF switch from meaning
+	 * anything.
+	 */
+	virtual void Disarm() override;
+
+private:
+	/** The handle from Arm(), so Disarm() can remove exactly this handler and nothing else. */
+	FDelegateHandle AdjustmentHookHandle;
 };

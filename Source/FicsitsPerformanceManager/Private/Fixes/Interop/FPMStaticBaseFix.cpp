@@ -105,5 +105,28 @@ void FFPMStaticBaseFix::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE_VIRTUAL("static-base", UCharacterMovementComponent::SendClientAdjustment, Sample, OnSendAdjustment);
+	AdjustmentHookHandle = FPM_SUBSCRIBE_VIRTUAL("static-base",
+		UCharacterMovementComponent::SendClientAdjustment, Sample, OnSendAdjustment);
+}
+
+void FFPMStaticBaseFix::Disarm()
+{
+	/*
+	 * ★ `UNSUBSCRIBE_METHOD` IS CORRECT HERE EVEN THOUGH THE SUBSCRIBE WAS _VIRTUAL, and that is worth
+	 * stating because SML ships no `UNSUBSCRIBE_METHOD_VIRTUAL` and its absence reads like a gap.
+	 *
+	 * Both macros drive the same template. `SUBSCRIBE_METHOD_VIRTUAL` differs only in handing
+	 * `InstallHook` a sample object so the vtable slot can be resolved; the handler itself goes into
+	 * `HookInvoker<decltype(&M), &M>`'s array either way, and `UNSUBSCRIBE_METHOD` removes from that
+	 * same array (`NativeHookManager.h:649-650`).
+	 *
+	 * ⚠ GUARDED ON IsValid() because the editor path installs nothing and hands back an invalid handle.
+	 * RemoveHandler would then walk arrays SML never allocated — the trap FPMBlueprintSweepGate
+	 * documents at its own unsubscribe site.
+	 */
+	if (AdjustmentHookHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UCharacterMovementComponent::SendClientAdjustment, AdjustmentHookHandle);
+		AdjustmentHookHandle.Reset();
+	}
 }

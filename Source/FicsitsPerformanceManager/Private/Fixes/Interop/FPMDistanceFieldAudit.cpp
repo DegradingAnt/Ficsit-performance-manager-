@@ -710,6 +710,21 @@ void FFPMDistanceFieldAudit::OnWorldLoad(UWorld* World)
 		/*Interval*/ 1.0f);
 }
 
+void FFPMDistanceFieldAudit::Disarm()
+{
+	/*
+	 * The sampler is a repeating ticker with world state captured in file-scope globals. Left running
+	 * past Disarm it keeps calling CountAndMaybeRepair against a module that is shutting down, and
+	 * FPMFixes::DisarmAll() would have reported this fix disarmed while it did so.
+	 */
+	if (GFPMDfTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(GFPMDfTicker);
+		GFPMDfTicker.Reset();
+	}
+	GFPMDfWorld.Reset();
+}
+
 void FFPMDistanceFieldAudit::AuditNow()
 {
 	UWorld* World = GFPMDfWorld.Get();

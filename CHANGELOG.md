@@ -63,6 +63,49 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 22:05 — CODE — 13 fixes could not be turned off, and DisarmAll would have lied about it
+
+- **What:** `0.11.7` → `0.11.8`. A new **warning** check, `check_disarm_coverage()`, plus the first two
+  repairs: `FFPMDistanceFieldAudit::Disarm()` (ticker) and `FFPMStaticBaseFix::Disarm()` (hook).
+  Backlog **13 → 11**.
+
+- **Why:** found while opening P4.2, the master ON/OFF switch. `IFPMFix::Disarm()` defaults to `{}`, and
+  **16 of 28 fixes never override it — 13 of those install a hook or a ticker.** `FPMFixes::DisarmAll()`
+  walks the armed list, calls `Disarm()`, and then RESETS the list. Wired to a master switch as-is it
+  would report FPM disabled while every one of those hooks stayed live, and the inventory would read
+  zero armed.
+
+  ⚠ **The inventory lying is the exact thing `FPMHookLedger` exists to prevent**, and *"leaves nothing
+  behind"* is a claim in this plugin's own Description. At process exit the omission is near-harmless,
+  which is precisely why nothing caught it: `DisarmAll` has only ever been called from
+  `ShutdownModule`.
+
+  ★ **`UNSUBSCRIBE_METHOD` is correct for a `_VIRTUAL` subscribe**, and that needed checking because SML
+  ships no `UNSUBSCRIBE_METHOD_VIRTUAL` and its absence reads like a gap. Both drive the same template:
+  the virtual macro only hands `InstallHook` a sample object to resolve the vtable slot, while the
+  handler lands in `HookInvoker<decltype(&M), &M>`'s array either way, and `UNSUBSCRIBE_METHOD` removes
+  from that same array (`NativeHookManager.h:649-650`). `FFPMStaticBaseFix` was repaired first for
+  exactly that reason — it is the virtual case, so it proves the pattern.
+
+- **⚠ WARNING, NOT ERROR, DELIBERATELY.** 11 known violations remain; a gate that fails the build on day
+  one gets switched off. It becomes an error when the count reaches zero, and the count is the progress
+  bar. A log-only fix legitimately has nothing to undo, so the check only fires when the `.cpp` actually
+  installs a hook, a ticker, or cvar writes.
+
+- **Remaining 11:** `FPMSaveSettingsInterceptor` (2 hooks + cvar writes — the biggest),
+  `FPMHologramNetGuard`, `FPMHudHookGuard`, `FPMInventoryInitGuard` (2), `FPMNoOwnerRpcGate`,
+  `FPMRailConnectionGuard`, `FPMRainOcclusionFix` (3), `FPMSchematicNullGuard`, `FPMSchematicProbe` (2),
+  `FPMZiplineVolume`, `FPMCloneSensor` (3).
+
+- **Files:** `tools/check_structure.py`, `Public|Private/Fixes/Interop/FPMDistanceFieldAudit.{h,cpp}`,
+  `Public|Private/Fixes/Interop/FPMStaticBaseFix.{h,cpp}`, `.uplugin`.
+
+- **Revert:** `git revert`. The gate is the part worth keeping regardless of the two repairs.
+
+- **Verified:** `Build.bat FactoryEditor Win64 Development` → `Result: Succeeded`, zero warnings.
+  `check_structure.py`: 28 fixes, **0 errors, 11 warnings** (was 13), exit 0. **NOT BOOTED** — Disarm
+  mid-session is untested in game, and P4.2 must not ship until the count is zero.
+
 ## 2026-08-10 21:45 — CODE — P4 opens with its instrument, before the thing it measures exists
 
 - **What:** `0.11.6` → `0.11.7`. `FFPMSettingsAudit` (`Core/`), a new `FPMDiag::EChannel::Settings`
@@ -92,7 +135,9 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 - **Files:** `Public/Core/FPMSettingsAudit.h`, `Private/Core/FPMSettingsAudit.cpp`,
   `Public/Core/FPMDiag.h`, `Private/Core/FPMDiag.cpp` (channel + cvar + `ChannelName` case),
   `Private/FicsitsPerformanceManager.cpp` (armed), `.uplugin`. Design:
-  `10-DOCS/satisfactory/DESIGN-P4-SETTINGS-SURFACE-2026-08-10.md`.
+  `_DESIGN-R2-2026-08-09.md` §PHASE 4 (the "BUILD NOTES" block) — **not a separate doc.** A standalone
+  P4 design was written first and deleted: the phase already had a section, and a second declaration
+  site for the same thing is the fault this project keeps paying for.
 
 - **Revert:** `git revert`. Nothing depends on it — it is a viewer.
 

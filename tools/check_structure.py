@@ -409,6 +409,57 @@ def check_nested_block_comments() -> None:
                 in_block = False
 
 
+def check_disarm_coverage() -> None:
+    """A fix that installs a hook and never removes it cannot be turned OFF.
+
+    Found 2026-08-10 while opening P4.2 (the master ON/OFF switch). `FPMFixes::DisarmAll()` walks the
+    armed list calling `Disarm()` and then RESETS the list — but `IFPMFix::Disarm()` defaults to `{}`,
+    and 13 fixes that install hooks or a ticker never override it.
+
+    Wired to a master switch as-is, that would report FPM disabled while every one of those hooks stayed
+    live, and the inventory would say zero armed. The inventory lying is the exact thing FPMHookLedger
+    exists to prevent, and 'leaves nothing behind' is a claim in the .uplugin Description.
+
+    At process shutdown the omission is mostly harmless, which is why nothing caught it: DisarmAll has
+    only ever been called from ShutdownModule.
+
+    ⚠ WARNING, NOT ERROR, AND DELIBERATELY SO. This is a known backlog with a real count, and a gate
+    that fails the build on day one gets switched off. It becomes an error when the count reaches zero —
+    the number below is the progress bar. A log-only fix legitimately has nothing to undo, so the check
+    only fires when the .cpp actually installs something.
+    """
+    for h in sorted(SRC.rglob("*.h")):
+        if h.name.endswith(".g.h"):
+            continue
+        text = read(h)
+        m = re.search(r"class\s+(FFPM\w+)[^:{]*:\s*public\s+IFPMFix", text)
+        if not m:
+            continue
+        if "virtual void Disarm() override" in text:
+            continue
+
+        cpp = next((p for p in SRC.rglob(h.stem + ".cpp")), None)
+        if cpp is None:
+            continue
+        body = read(cpp)
+        installs = []
+        if "FPM_SUBSCRIBE" in body:
+            installs.append(f"{body.count('FPM_SUBSCRIBE')} hook(s)")
+        if "AddTicker" in body:
+            installs.append("a ticker")
+        if "FPMCVarWriter" in body:
+            installs.append("cvar writes")
+        if not installs:
+            continue
+
+        warn(
+            f"{h.relative_to(REPO)} — {m.group(1)} installs {', '.join(installs)} but does not override "
+            "Disarm(). DisarmAll() would leave it running while reporting it disarmed, which blocks the "
+            "P4.2 master OFF switch. See FPMBlueprintSweepGate for the store-handle-then-UNSUBSCRIBE "
+            "pattern, including its editor-path IsValid() guard."
+        )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -428,6 +479,7 @@ def main() -> int:
     check_licence_headers()
     check_raw_subscribe()
     check_nested_block_comments()
+    check_disarm_coverage()
 
     for w in WARNINGS:
         print(f"WARN  {w}")

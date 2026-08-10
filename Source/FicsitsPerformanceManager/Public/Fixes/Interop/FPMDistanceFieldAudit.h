@@ -146,6 +146,16 @@ public:
 	/** Audits after the world has had time to finish lazy-loading. */
 	virtual void OnWorldLoad(UWorld* World) override;
 
+	/**
+	 * Removes the sample ticker.
+	 *
+	 * ⚠ WITHOUT THIS, `FPMFixes::DisarmAll()` REPORTS THIS FIX DISARMED WHILE ITS TICKER KEEPS FIRING —
+	 * into a module that is being torn down. Harmless at process exit, which is the only place
+	 * DisarmAll has ever been called from, and exactly why nobody noticed; fatal to P4.2's master OFF
+	 * switch, which needs Disarm to mean something mid-session.
+	 */
+	virtual void Disarm() override;
+
 	/** `FPM.DistanceField.Audit` — count now and report. */
 	static void AuditNow();
 
