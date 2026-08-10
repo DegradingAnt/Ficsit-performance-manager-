@@ -29,6 +29,7 @@
 #include "Core/FPMCrashStamp.h"
 #include "Fixes/Interop/FPMWeatherIndoorGate.h"
 #include "Fixes/Interop/FPMWwiseServerGate.h"
+#include "Fixes/ModFeatures/FPMGlassQuality.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 #include "Fixes/Vanilla/FPMPowerWarningProbe.h"
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
@@ -261,6 +262,23 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// Armed AFTER the map, because its arm-time self-test reports which source the map is answering
 	// from, and BEFORE anything can hold a cvar — the guard refuses to arm if a hold already exists.
 	FPMFixes::Arm(FFPMSaveSettingsInterceptor::Get());
+
+	/*
+	 * ★ BETTER GLASS, AND ⚠ IT MUST STAY BELOW THE LINE ABOVE.
+	 *
+	 * This is the first fix that HOLDS A CVAR AT ARM, and the save-settings interceptor immediately above
+	 * refuses to arm if any hold already exists — `FPMSaveSettingsInterceptor.cpp:127-136` reads
+	 * `GetHeldCVars` and calls `Fail()` on a non-empty result. `Fail()` LATCHES, so `IsHealthy()` is
+	 * false for the rest of the session and `FPMCVarWriter::Vet()` then refuses every US_*-backed write.
+	 * Moving this call above that one would disable clause 6 for the whole boot. It would not be silent
+	 * — Fail() logs at Error, ungated — but the mod would keep running and everything else would look
+	 * normal, which is how a latched Error gets scrolled past.
+	 *
+	 * Carried from FPM1 on Ant's ruling, 2026-08-10: "the glass should live and die with the mod. make it
+	 * so the mod turns it on and keeps it on." Runtime holds only — FPM1's Engine.ini half is dropped
+	 * because FPM2 is zero-residue, and the header states what that costs at the loading screen.
+	 */
+	FPMFixes::Arm(FFPMGlassQuality::Get());
 
 	// The debug feed, on by default while the mod is pre-release. Ant: "i want UI to show when and what
 	// the rain fix thing is doing so i can see that its working." It attaches as soon as a viewport

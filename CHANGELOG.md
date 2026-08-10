@@ -62,6 +62,83 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 15:55 — CODE — better glass, carried from FPM1 with the ini half removed and the poll removed
+
+- **What:** a new fix, `FFPMGlassQuality`, in a new `Fixes/ModFeatures/` folder. It holds
+  `r.Lumen.TranslucencyReflections.FrontLayer.Allow=1` **and** `.Enable=1` through `FPMCVarWriter`, so
+  glass and windows reflect properly at every reflection-quality level. `FPM.Glass.Enable` is the
+  toggle and defaults to ON. `FPM.Glass.Report` prints the state.
+- **Why:** Ant, 2026-08-02, *"glass looks bad always tho"*, and 2026-08-10, *"the glass should live and
+  die with the mod. make it so the mod turns it on and keeps it on... for now the main mod will just
+  have a 'better glass' toggle."* The feature existed in FPM1 and did not survive the rewrite.
+
+- **TWO cvars, not one, and that was the original bug.** The engine gate, read this session at
+  `LumenFrontLayerTranslucency.cpp:55-58`, is
+  `(PPV.LumenFrontLayerTranslucencyReflections || GLumen...Enabled) && GLumen...Allowed != 0 && ...`.
+  `BaseScalability.ini:393` sets `FrontLayer.Allow=0` under `[ReflectionQuality@2]` — High, the common
+  setting — so `.Enable=1` alone is ANDed out and does nothing. Both keys, or neither.
+
+- **NO INI, AND THAT COSTS SOMETHING.** FPM1 shipped this as an `Engine.ini [SystemSettings]` line plus
+  a runtime write, because an ini is read before mods exist. FPM2 is zero-residue, so the ini half is
+  gone, and the loading screen plus the first frames after it can render with vanilla glass. Stated in
+  the header rather than glossed. If that turns out to be visible in practice the answer is an earlier
+  arm point, not an ini.
+
+- **NO 2-SECOND RE-ASSERT LOOP, which is Ant's own question answered.** She asked *"but if it loops
+  every 2 s then wont it lag the main thread?"* It would, so it does not loop. Both cvars are
+  `ECVF_Scalability` (`LumenFrontLayerTranslucency.cpp:23`, `:40`), but the console manager refuses a
+  write below the priority in force — `FConsoleVariableBase::CanChange` is `NewPri >= OldPri`
+  (`ConsoleManager.cpp:267-272`). `FPMCVarWriter` holds at `ECVF_SetByPluginHighPriority` (0x07) and
+  scalability writes at `ECVF_SetByScalability` (0x01), so the hold wins by construction.
+
+- **⚠ EXPECT TWO `LogConsoleManager: Warning` LINES PER SETTINGS APPLY, AND THEY ARE OURS.** The engine
+  logs every refused write. Naming them here and in the arm line, because an unexplained warning in her
+  log is a cost the mod is imposing.
+
+- **★ THE ARGUMENT ABOVE IS AN ARGUMENT, SO IT IS ALSO MEASURED.** `FFPMTexturePoolGuard` holds a cvar
+  through the same writer and still logs "REPAIRED a scalability clobber", which means the priority
+  reasoning is not settled by reading. So the fix hooks
+  `UFGGameUserSettings::ApplyNonResolutionSettings` (`FGGameUserSettings.h:112`) with an `_AFTER`
+  handler and reads both values back. Event-driven, so it costs nothing between settings changes. The
+  counters settle it in one boot: 0 verifications prints as an UNRUN test rather than a clean one;
+  verifications with 0 repairs confirms the priority argument and licenses deleting the re-assert; any
+  repair proves the argument wrong and names which cvar lost.
+
+- **⚠ ARM ORDER IS LOAD-BEARING.** This is the first fix that holds a cvar at Arm, and
+  `FPMSaveSettingsInterceptor::Arm` refuses to arm when any hold already exists
+  (`FPMSaveSettingsInterceptor.cpp:127-136` reads `GetHeldCVars` and calls `Fail()`), and `Fail()`
+  latches for the session. Arming glass first would disable clause 6 for the whole boot. It is armed
+  immediately after the interceptor, and the reason is written at the call site.
+
+- **What is still left behind from FPM1, and why it is NOT in this commit.** FPM1's README named six
+  keys it wrote to `Engine.ini [SystemSettings]`. Two are the glass pair, now carried. The other four,
+  with their flags read from engine source this session:
+  | key | flags | runtime-writable |
+  |---|---|---|
+  | `r.Nanite.Streaming.MaxPageInstallsPerFrame` | `ECVF_RenderThreadSafe \| ECVF_ReadOnly` (`NaniteStreamingManager.cpp:104-107`) | **no** |
+  | `r.Nanite.Streaming.MaxPendingPages` | `ECVF_RenderThreadSafe \| ECVF_ReadOnly` (`:88-91`) | **no** |
+  | `r.ShaderPipelineCache.PreOptimizeEnabled` | `ECVF_ReadOnly \| ECVF_RenderThreadSafe` (`ShaderPipelineCache.cpp:139-142`) | **no** |
+  | `r.ShaderPipelineCache.PrecompileBatchTime` | `ECVF_Default \| ECVF_RenderThreadSafe` (`:91-94`) | yes |
+  Three of the four are `ECVF_ReadOnly`, so there is no runtime path and carrying them needs an ini
+  write, which zero-residue forbids. That is Ant's ruling to make, not a decision to take quietly —
+  the Nanite pair was ONE of FPM1's own recorded governance failures, shipped on the strength of an
+  existing exception's precedent. Raised as a question rather than built.
+
+- **Files:** `Public/Fixes/ModFeatures/FPMGlassQuality.h` (new),
+  `Private/Fixes/ModFeatures/FPMGlassQuality.cpp` (new), `Public/Core/FPMDiag.h`,
+  `Private/Core/FPMDiag.cpp` (new `GlassQuality` channel),
+  `Private/FicsitsPerformanceManager.cpp` (include + arm, after the interceptor),
+  `FicsitsPerformanceManager.uplugin` (0.9.2 → **0.10.0**, MINOR: she sees this with the console
+  closed, which is the player-notice test).
+- **Revert:** `FPM.Glass.Enable 0` disables it at runtime with no restart. To remove it, revert the
+  commit. Undo if front-layer reflections measure too expensive — and if so gate on `.Allow`, never on
+  `.Enable` alone, which is the same bug in the other direction.
+- **Verified:** build-only. `Build.bat FactoryEditor Win64 Development -Module=FicsitsPerformanceManager`
+  → `Result: Succeeded`; `check_structure.py` 25 fixes / 0 errors / 0 warnings. NOT-YET boot-tested.
+  The boot question is one line: run `FPM.Glass.Report`, press Apply in the settings menu, run it again.
+
+---
+
 ## 2026-08-10 15:10 — CODE — review fixes: a disarm that disarms, two inert friends, three honest readouts
 
 - **What:** the seven findings from the full-mod `vox-review` that were still open. No new capability.

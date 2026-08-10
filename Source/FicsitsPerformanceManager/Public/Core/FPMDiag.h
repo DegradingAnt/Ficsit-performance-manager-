@@ -82,6 +82,7 @@ public:
 		GCMeter,          // FPM.Diag.GCMeter — garbage-collection pauses, and the timer/forced split
 		StallSampler,     // FPM.Diag.StallSampler — WHICH MODULE the game thread was in during a hitch
 		BlueprintSweep,   // FPM.Diag.BlueprintSweep — inert blueprint recipe sweeps, cancelled
+		GlassQuality,     // FPM.Diag.GlassQuality — Lumen front-layer translucency, held on for glass
 		Count
 	};
 

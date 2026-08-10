@@ -200,6 +200,14 @@ static TAutoConsoleVariable<int32> CVarDiagStallSampler(
 	     "reporting, so turning it off hides the answer rather than stopping the work."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagGlassQuality(
+	TEXT("FPM.Diag.GlassQuality"), 1,
+	TEXT("Lumen front-layer translucency reflections, held on so glass reflects properly. 0 = silent, "
+	     "1 = the arm line and the state. A STOMPED hold is a Warning that this switch does not gate - "
+	     "it would mean the priority argument the fix rests on is wrong, and that must not be silenceable. "
+	     "FPM.Glass.Enable is the feature toggle; this only gates the talking."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -229,6 +237,7 @@ namespace
 		&CVarDiagGCMeter,
 		&CVarDiagStallSampler,
 		&CVarDiagBlueprintSweep,
+		&CVarDiagGlassQuality,
 	};
 
 	/*
@@ -272,6 +281,7 @@ namespace
 		case FPMDiag::EChannel::GCMeter:        return TEXT("FPM.Diag.GCMeter");
 		case FPMDiag::EChannel::StallSampler:   return TEXT("FPM.Diag.StallSampler");
 		case FPMDiag::EChannel::BlueprintSweep: return TEXT("FPM.Diag.BlueprintSweep");
+		case FPMDiag::EChannel::GlassQuality:   return TEXT("FPM.Diag.GlassQuality");
 		default:                                return TEXT("<unknown>");
 		}
 	}
