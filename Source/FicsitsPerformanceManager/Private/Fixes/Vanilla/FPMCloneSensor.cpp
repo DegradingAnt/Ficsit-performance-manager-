@@ -325,6 +325,24 @@ void FFPMCloneSensor::Arm()
 			(Bound && Bound->GetOwnedPawn()) ? TEXT("yes") : TEXT("NO"));
 	};
 
-	FPM_SUBSCRIBE_VIRTUAL("clone-sensor", AFGGameMode::FindInactivePlayer, Sample, OnBeforeMatch);
-	FPM_SUBSCRIBE_VIRTUAL_AFTER("clone-sensor", AFGGameMode::FindInactivePlayer, Sample, OnAfterMatch);
+	FindInactiveBeforeHandle = FPM_SUBSCRIBE_VIRTUAL("clone-sensor", AFGGameMode::FindInactivePlayer, Sample, OnBeforeMatch);
+	FindInactiveAfterHandle = FPM_SUBSCRIBE_VIRTUAL_AFTER("clone-sensor", AFGGameMode::FindInactivePlayer, Sample, OnAfterMatch);
+}
+
+void FFPMCloneSensor::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (FindInactiveBeforeHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(AFGGameMode::FindInactivePlayer, FindInactiveBeforeHandle);
+		FindInactiveBeforeHandle.Reset();
+	}
+	FindInactiveAfterHandle.Reset();   // same method as above - that call cleared both maps
 }

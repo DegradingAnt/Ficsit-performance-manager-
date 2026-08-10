@@ -423,10 +423,15 @@ def check_disarm_coverage() -> None:
     At process shutdown the omission is mostly harmless, which is why nothing caught it: DisarmAll has
     only ever been called from ShutdownModule.
 
-    ⚠ WARNING, NOT ERROR, AND DELIBERATELY SO. This is a known backlog with a real count, and a gate
-    that fails the build on day one gets switched off. It becomes an error when the count reaches zero —
-    the number below is the progress bar. A log-only fix legitimately has nothing to undo, so the check
-    only fires when the .cpp actually installs something.
+    ★ PROMOTED FROM WARNING TO ERROR THE SAME DAY, because the backlog reached zero.
+
+    It shipped as a warning with 13 violations, since a gate that fails the build on day one gets
+    switched off and then protects nothing. All 13 were repaired within the hour, so the count is now
+    the invariant rather than a progress bar, and a NEW fix that installs a hook without a Disarm is a
+    regression that must not compile past this point.
+
+    A log-only fix legitimately has nothing to undo, so this only fires when the .cpp actually installs
+    a hook, a ticker, or cvar writes.
     """
     for h in sorted(SRC.rglob("*.h")):
         if h.name.endswith(".g.h"):
@@ -452,11 +457,13 @@ def check_disarm_coverage() -> None:
         if not installs:
             continue
 
-        warn(
+        err(
             f"{h.relative_to(REPO)} — {m.group(1)} installs {', '.join(installs)} but does not override "
-            "Disarm(). DisarmAll() would leave it running while reporting it disarmed, which blocks the "
-            "P4.2 master OFF switch. See FPMBlueprintSweepGate for the store-handle-then-UNSUBSCRIBE "
-            "pattern, including its editor-path IsValid() guard."
+            "Disarm(). DisarmAll() would leave it running while reporting it disarmed, and the fix "
+            "inventory would then lie — which is the one thing FPMHookLedger exists to prevent. Store "
+            "the FDelegateHandle from FPM_SUBSCRIBE and UNSUBSCRIBE_METHOD it in Disarm(), guarded on "
+            "IsValid() because the editor path returns an invalid handle. FPMStaticBaseFix is the "
+            "worked example, including why UNSUBSCRIBE_METHOD is right for a _VIRTUAL subscribe."
         )
 
 

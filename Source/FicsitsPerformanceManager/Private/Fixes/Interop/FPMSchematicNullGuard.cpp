@@ -272,7 +272,7 @@ void FFPMSchematicNullGuard::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE("schematic-null-guard", UFGSchematic::CanGiveAccessToSchematic, OnCanGiveAccess);
+	CanGiveAccessHandle = FPM_SUBSCRIBE("schematic-null-guard", UFGSchematic::CanGiveAccessToSchematic, OnCanGiveAccess);
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] schematic-null-guard ARMED on UFGSchematic::CanGiveAccessToSchematic, AFTER the probe "
@@ -315,3 +315,20 @@ static FAutoConsoleCommand GFPMSchGuardStatusCmd(
 	TEXT("Print the schematic null-guard's counters: calls, null class, null CDO, refusals, and the "
 	     "eventless pass-throughs that would falsify the guard's narrowing."),
 	FConsoleCommandDelegate::CreateStatic([]() { FFPMSchematicNullGuard::LogStatus(); }));
+
+void FFPMSchematicNullGuard::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (CanGiveAccessHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UFGSchematic::CanGiveAccessToSchematic, CanGiveAccessHandle);
+		CanGiveAccessHandle.Reset();
+	}
+}

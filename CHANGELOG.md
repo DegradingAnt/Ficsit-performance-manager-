@@ -63,6 +63,50 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 22:30 — CODE — every fix can now be turned off, and the gate is an error
+
+- **What:** `0.11.8` → `0.11.9`. `Disarm()` + stored `FDelegateHandle`s added to the remaining **11**
+  fixes, covering **17 hooks**. `check_disarm_coverage()` promoted **WARNING → ERROR**. Backlog
+  **11 → 0**.
+
+- **Why:** finishing what 0.11.8 started. `FPMFixes::DisarmAll()` can now actually disarm, which is the
+  precondition for P4.2's master OFF switch and for the *"leaves nothing behind"* claim in this
+  plugin's own Description.
+
+  **Repaired:** `FPMHologramNetGuard` · `FPMHudHookGuard` · `FPMNoOwnerRpcGate` ·
+  `FPMRailConnectionGuard` · `FPMSchematicNullGuard` · `FPMZiplineVolume` (1 hook each) ·
+  `FPMSaveSettingsInterceptor` · `FPMInventoryInitGuard` · `FPMSchematicProbe` · `FPMCloneSensor`
+  (2 each) · `FPMRainOcclusionFix` (3).
+
+  ★ **One `UNSUBSCRIBE_METHOD` clears BOTH the before and after handler maps** —
+  `RemoveHandler` checks `HandlerBeforeReferences` and `HandlerAfterReferences` in turn and calls
+  `UninstallHook` once both are empty (`NativeHookManager.h:359-378`). So where a fix subscribes the
+  same method twice (`SaveSettings` before+after, `FindInactivePlayer` before+after) the second handle
+  is only `Reset()`, not unsubscribed again — a second call would search maps the first already emptied.
+
+  Verified against the real subscribe sites first: all 17 live inside `Arm()`, which runs once, so a
+  member handle is safe. Applied by a throwaway table-driven script that **refused any file it could
+  not match verbatim** rather than half-editing it — 11 edited, 0 refused, against a clean tree so the
+  whole pass reverts with one `git checkout`.
+
+- **The gate is now an ERROR.** It shipped as a warning at 13 violations because a gate that fails the
+  build on day one gets switched off. At zero, the count stops being a progress bar and becomes the
+  invariant: a new fix that installs a hook without a `Disarm()` no longer passes.
+
+- **Files:** `tools/check_structure.py`, and the `{h,cpp}` pair for each of the 11 fixes above,
+  `.uplugin`.
+
+- **Revert:** `git revert`. Note the gate would then refuse the tree it restores, which is the point.
+
+- **Verified:** `FactoryEditor Win64 Development`, `FactoryServer **Linux** Shipping`,
+  `FactoryGameSteam Win64 Shipping` — all `Result: Succeeded`, zero warnings. `check_structure.py`:
+  28 fixes, **0 errors, 0 warnings**, exit 0.
+  **The gate was verified in both directions, and the first attempt at the negative case was WRONG** —
+  it commented the declaration out with `//`, which still contains the substring the check greps for,
+  so the gate correctly stayed silent and the test proved nothing. Redone by deleting the line: error
+  raised at the right file, exit 1, then restored to clean.
+  **NOT BOOTED** — mid-session Disarm is still untested in game.
+
 ## 2026-08-10 22:05 — CODE — 13 fixes could not be turned off, and DisarmAll would have lied about it
 
 - **What:** `0.11.7` → `0.11.8`. A new **warning** check, `check_disarm_coverage()`, plus the first two

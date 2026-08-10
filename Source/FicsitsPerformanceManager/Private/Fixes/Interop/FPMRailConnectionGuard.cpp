@@ -123,11 +123,28 @@ void FFPMRailConnectionGuard::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE("rail-connection-guard", UFGRailroadTrackConnectionComponent::GetOpposite, OnGetOpposite);
+	GetOppositeHandle = FPM_SUBSCRIBE("rail-connection-guard", UFGRailroadTrackConnectionComponent::GetOpposite, OnGetOpposite);
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] rail guard ARMED - GetOpposite() on an unwired/hologram rail connection returns null "
 		     "instead of asserting. Measured in the field on the OLD mod: 1,900-2,550 averted asserts per "
 		     "server start, 23,450 across 11 sessions. A properly-wired connection is forwarded untouched, "
 		     "so live rail pathfinding is unchanged."));
+}
+
+void FFPMRailConnectionGuard::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (GetOppositeHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UFGRailroadTrackConnectionComponent::GetOpposite, GetOppositeHandle);
+		GetOppositeHandle.Reset();
+	}
 }

@@ -673,7 +673,34 @@ void FFPMRainOcclusionFix::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE_VIRTUAL("rain-occlusion", AFGBuildable::BeginPlay, Sample, OnBuildableBeginPlay);
-	FPM_SUBSCRIBE("rain-occlusion", URainOcclusionWorldSubsystem::AddShapeFromClass, OnAddShapeFromClass);
-	FPM_SUBSCRIBE("rain-occlusion", URainOcclusionWorldSubsystem::AddShapeFromBuildable, OnAddShapeFromBuildable);
+	BuildableBeginPlayHandle = FPM_SUBSCRIBE_VIRTUAL("rain-occlusion", AFGBuildable::BeginPlay, Sample, OnBuildableBeginPlay);
+	AddShapeFromClassHandle = FPM_SUBSCRIBE("rain-occlusion", URainOcclusionWorldSubsystem::AddShapeFromClass, OnAddShapeFromClass);
+	AddShapeFromBuildableHandle = FPM_SUBSCRIBE("rain-occlusion", URainOcclusionWorldSubsystem::AddShapeFromBuildable, OnAddShapeFromBuildable);
+}
+
+void FFPMRainOcclusionFix::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (BuildableBeginPlayHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(AFGBuildable::BeginPlay, BuildableBeginPlayHandle);
+		BuildableBeginPlayHandle.Reset();
+	}
+	if (AddShapeFromClassHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(URainOcclusionWorldSubsystem::AddShapeFromClass, AddShapeFromClassHandle);
+		AddShapeFromClassHandle.Reset();
+	}
+	if (AddShapeFromBuildableHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(URainOcclusionWorldSubsystem::AddShapeFromBuildable, AddShapeFromBuildableHandle);
+		AddShapeFromBuildableHandle.Reset();
+	}
 }

@@ -80,4 +80,17 @@ public:
 	/** Equips seen, and writes actually issued. A zero write count with a non-zero equip count means the
 	 *  lever is sitting at vanilla — which is the correct default, not a fault. */
 	static void GetCounts(int32& OutEquips, int32& OutWrites);
+
+	/**
+	 * Removes the hook.
+	 *
+	 * ⚠ Without this, `FPMFixes::DisarmAll()` reports this fix disarmed while its handler keeps
+	 * running. Near-harmless at process exit, which is the only place DisarmAll has ever been called
+	 * from and why the omission survived; it is what blocked P4.2's master OFF switch.
+	 */
+	virtual void Disarm() override;
+
+private:
+	/** Handle from Arm(), so Disarm() removes exactly this handler. */
+	FDelegateHandle EquipHandle;
 };

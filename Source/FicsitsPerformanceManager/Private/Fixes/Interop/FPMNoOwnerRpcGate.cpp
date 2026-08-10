@@ -153,5 +153,22 @@ void FFPMNoOwnerRpcGate::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE_VIRTUAL("no-owner-rpc-gate", UNetDriver::ProcessRemoteFunction, Sample, OnProcessRemoteFunction);
+	ProcessRemoteFunctionHandle = FPM_SUBSCRIBE_VIRTUAL("no-owner-rpc-gate", UNetDriver::ProcessRemoteFunction, Sample, OnProcessRemoteFunction);
+}
+
+void FFPMNoOwnerRpcGate::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (ProcessRemoteFunctionHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UNetDriver::ProcessRemoteFunction, ProcessRemoteFunctionHandle);
+		ProcessRemoteFunctionHandle.Reset();
+	}
 }

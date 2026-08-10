@@ -79,4 +79,17 @@ public:
 	 *  whole assets cancelled. The last number is the one to watch: it should be ZERO, and a non-zero
 	 *  value means some mod lost more than one descriptor. */
 	static void GetCounts(int32& OutSeen, int32& OutStripped, int32& OutAllowed, int32& OutCancelled);
+
+	/**
+	 * Removes the hook.
+	 *
+	 * ⚠ Without this, `FPMFixes::DisarmAll()` reports this fix disarmed while its handler keeps
+	 * running. Near-harmless at process exit, which is the only place DisarmAll has ever been called
+	 * from and why the omission survived; it is what blocked P4.2's master OFF switch.
+	 */
+	virtual void Disarm() override;
+
+private:
+	/** Handle from Arm(), so Disarm() removes exactly this handler. */
+	FDelegateHandle RegisterBlueprintHookHandle;
 };

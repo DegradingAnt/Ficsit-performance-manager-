@@ -130,7 +130,7 @@ void FFPMSchematicProbe::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE("schematic-probe", UFGSchematic::CanGiveAccessToSchematic, OnSchematicQuery);
+	SchematicQueryHandle = FPM_SUBSCRIBE("schematic-probe", UFGSchematic::CanGiveAccessToSchematic, OnSchematicQuery);
 
 	/*
 	 * HOOK 2 — `AFGSchematicManager::CanGiveAccessToSchematic`, FGSchematicManager.h:314:
@@ -156,7 +156,7 @@ void FFPMSchematicProbe::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE("schematic-probe", AFGSchematicManager::CanGiveAccessToSchematic, OnManagerQuery);
+	ManagerQueryHandle = FPM_SUBSCRIBE("schematic-probe", AFGSchematicManager::CanGiveAccessToSchematic, OnManagerQuery);
 
 	/*
 	 * ★ THE ARMED LINE — THE ONE THING THE OLD OVERRIDE NEVER HAD.
@@ -169,4 +169,26 @@ void FFPMSchematicProbe::Arm()
 		TEXT("[FPM] schematic-probe ARMED - LOG ONLY on both CanGiveAccessToSchematic entry points. It "
 		     "overrides nothing and refuses nothing; every answer is vanilla's. Watching for a null "
 		     "default object, which is the theory the retired guard rested on."));
+}
+
+void FFPMSchematicProbe::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (SchematicQueryHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UFGSchematic::CanGiveAccessToSchematic, SchematicQueryHandle);
+		SchematicQueryHandle.Reset();
+	}
+	if (ManagerQueryHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(AFGSchematicManager::CanGiveAccessToSchematic, ManagerQueryHandle);
+		ManagerQueryHandle.Reset();
+	}
 }

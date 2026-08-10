@@ -238,9 +238,9 @@ void FFPMSaveSettingsInterceptor::Arm()
 	};
 
 	const FDelegateHandle Before =
-		FPM_SUBSCRIBE_VIRTUAL("save-settings-guard", UFGGameUserSettings::SaveSettings, Sample, OnSaveBefore);
+		SaveBeforeHandle = FPM_SUBSCRIBE_VIRTUAL("save-settings-guard", UFGGameUserSettings::SaveSettings, Sample, OnSaveBefore);
 	const FDelegateHandle After =
-		FPM_SUBSCRIBE_VIRTUAL_AFTER("save-settings-guard", UFGGameUserSettings::SaveSettings, Sample, OnSaveAfter);
+		SaveAfterHandle = FPM_SUBSCRIBE_VIRTUAL_AFTER("save-settings-guard", UFGGameUserSettings::SaveSettings, Sample, OnSaveAfter);
 
 	/*
 	 * INVARIANT 1 — THE ARM-TIME SELF-TEST, and an honest statement of its reach.
@@ -272,4 +272,22 @@ void FFPMSaveSettingsInterceptor::Arm()
 		     "needs a boot with a real save, and clause 6 still refuses the whole set meanwhile."),
 		FPMUserSettingMap::Source() == FPMUserSettingMap::ESource::RuntimePlusTables
 			? TEXT("runtime + tables") : TEXT("tables only"));
+}
+
+void FFPMSaveSettingsInterceptor::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (SaveBeforeHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UFGGameUserSettings::SaveSettings, SaveBeforeHandle);
+		SaveBeforeHandle.Reset();
+	}
+	SaveAfterHandle.Reset();   // same method as above - that call cleared both maps
 }

@@ -232,5 +232,22 @@ void FFPMHologramNetGuard::Arm()
 			FString::Printf(TEXT("UNREPAIRABLE %s (#%d) - preview skipped"), *Actor->GetClass()->GetName(), N));
 	};
 
-	FPM_SUBSCRIBE("hologram-net", AActor::DispatchBeginPlay, OnDispatchBeginPlay);
+	DispatchBeginPlayHandle = FPM_SUBSCRIBE("hologram-net", AActor::DispatchBeginPlay, OnDispatchBeginPlay);
+}
+
+void FFPMHologramNetGuard::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (DispatchBeginPlayHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(AActor::DispatchBeginPlay, DispatchBeginPlayHandle);
+		DispatchBeginPlayHandle.Reset();
+	}
 }

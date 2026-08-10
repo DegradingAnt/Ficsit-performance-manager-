@@ -128,7 +128,7 @@ void FFPMInventoryInitGuard::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE_VIRTUAL_AFTER("inventory-init", UFGInventoryComponent::BeginPlay, Sample, OnBeginPlay);
+	BeginPlayHandle = FPM_SUBSCRIBE_VIRTUAL_AFTER("inventory-init", UFGInventoryComponent::BeginPlay, Sample, OnBeginPlay);
 
 	/*
 	 * HOOK 2 — THE BACKSTOP. Ant: "we still need a guard IF the source fix ever fails".
@@ -235,5 +235,27 @@ void FFPMInventoryInitGuard::Arm()
 				GInitialised.load(), N, GAuthoredZero.load(), GAuthorityObserved.load()));
 	};
 
-	FPM_SUBSCRIBE_VIRTUAL("inventory-init", UFGInventoryComponent::AddStack, Sample, OnAddStack);
+	AddStackHandle = FPM_SUBSCRIBE_VIRTUAL("inventory-init", UFGInventoryComponent::AddStack, Sample, OnAddStack);
+}
+
+void FFPMInventoryInitGuard::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (BeginPlayHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UFGInventoryComponent::BeginPlay, BeginPlayHandle);
+		BeginPlayHandle.Reset();
+	}
+	if (AddStackHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UFGInventoryComponent::AddStack, AddStackHandle);
+		AddStackHandle.Reset();
+	}
 }

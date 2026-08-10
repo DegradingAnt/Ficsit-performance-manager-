@@ -91,4 +91,19 @@ public:
 
 	virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::InventoryInit; }
 	virtual void Arm() override;
+
+	/**
+	 * Removes all 2 hooks.
+	 *
+	 * ⚠ Without this, `FPMFixes::DisarmAll()` reports this fix disarmed while its handler keeps
+	 * running. Near-harmless at process exit, which is the only place DisarmAll has ever been called
+	 * from and why the omission survived; it is what blocked P4.2's master OFF switch.
+	 */
+	virtual void Disarm() override;
+
+private:
+	/** Handle from Arm(), so Disarm() removes exactly this handler. */
+	FDelegateHandle BeginPlayHandle;
+	/** Handle from Arm(), so Disarm() removes exactly this handler. */
+	FDelegateHandle AddStackHandle;
 };

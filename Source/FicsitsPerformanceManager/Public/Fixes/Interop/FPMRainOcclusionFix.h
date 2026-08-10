@@ -83,4 +83,21 @@ public:
 	 * shipping a table also means we never distribute measurements of anyone else's geometry.
 	 */
 	virtual void OnWorldLoad(UWorld* World) override;
+
+	/**
+	 * Removes all 3 hooks.
+	 *
+	 * ⚠ Without this, `FPMFixes::DisarmAll()` reports this fix disarmed while its handler keeps
+	 * running. Near-harmless at process exit, which is the only place DisarmAll has ever been called
+	 * from and why the omission survived; it is what blocked P4.2's master OFF switch.
+	 */
+	virtual void Disarm() override;
+
+private:
+	/** Handle from Arm(), so Disarm() removes exactly this handler. */
+	FDelegateHandle BuildableBeginPlayHandle;
+	/** Handle from Arm(), so Disarm() removes exactly this handler. */
+	FDelegateHandle AddShapeFromClassHandle;
+	/** Handle from Arm(), so Disarm() removes exactly this handler. */
+	FDelegateHandle AddShapeFromBuildableHandle;
 };

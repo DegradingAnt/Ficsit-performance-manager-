@@ -170,7 +170,7 @@ void FFPMHudHookGuard::Arm()
 		Scope.Cancel();
 	};
 
-	FPM_SUBSCRIBE("hud-hook-guard", UBlueprintHookManager::RegisterBlueprintHook, OnRegisterHook);
+	RegisterBlueprintHookHandle = FPM_SUBSCRIBE("hud-hook-guard", UBlueprintHookManager::RegisterBlueprintHook, OnRegisterHook);
 
 	/*
 	 * ⚠ THE OLD MOD'S SECOND HOOK IS DELIBERATELY NOT CARRIED. It also subscribed to
@@ -185,4 +185,21 @@ void FFPMHudHookGuard::Arm()
 		     "else that hooks the HUD is allowed through and NAMED in the log. Two earlier versions of "
 		     "this guard were too broad and cost Ant real mod UI; this one removes one descriptor and "
 		     "lets the asset install."));
+}
+
+void FFPMHudHookGuard::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (RegisterBlueprintHookHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UBlueprintHookManager::RegisterBlueprintHook, RegisterBlueprintHookHandle);
+		RegisterBlueprintHookHandle.Reset();
+	}
 }

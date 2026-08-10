@@ -102,11 +102,28 @@ void FFPMZiplineVolume::Arm()
 		}
 	};
 
-	FPM_SUBSCRIBE_VIRTUAL("zipline-volume", AFGEquipmentZipline::Equip, Sample, OnEquip);
+	EquipHandle = FPM_SUBSCRIBE_VIRTUAL("zipline-volume", AFGEquipmentZipline::Equip, Sample, OnEquip);
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] zipline volume ARMED - FPM.Zipline.Volume (default 1.0 = vanilla, writes nothing "
 		     "until changed). Set per-actor on equip via the Wwise output bus; vanilla ships no "
 		     "per-zipline slider and no RTPC. Returning the value to 1.0 now genuinely restores vanilla, "
 		     "which the old implementation could not do."));
+}
+
+void FFPMZiplineVolume::Disarm()
+{
+	/*
+	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
+	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 *
+	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
+	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
+	 */
+	if (EquipHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(AFGEquipmentZipline::Equip, EquipHandle);
+		EquipHandle.Reset();
+	}
 }
