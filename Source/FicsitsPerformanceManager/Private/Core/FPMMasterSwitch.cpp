@@ -70,6 +70,16 @@ namespace
 				TEXT("[FPM] MASTER SWITCH: ON. Re-arming."));
 
 			FPMFixes::RearmAll();
+
+			/*
+			 * ★ AND THEN HONOUR THE PER-FIX TOGGLES AGAIN, which is not optional.
+			 *
+			 * `RearmAll` arms EVERYTHING in the registry — including fixes the user had individually
+			 * turned off before flipping the master switch. Without this line, `FPM.Enabled 0` followed
+			 * by `FPM.Enabled 1` would silently re-enable every fix the user had disabled, while their
+			 * toggles still read 0. The settings surface would then be lying about the running state.
+			 */
+			FPMFixToggles::ReapplyAll();
 		}
 	}
 }
@@ -92,6 +102,13 @@ void FPMMasterSwitch::Install()
 	CVarFPMEnabled.AsVariable()->SetOnChangedCallback(
 		FConsoleVariableDelegate::CreateStatic([](IConsoleVariable*) { ApplyMasterSwitch(); }));
 
+	/*
+	 * Toggles BEFORE the first ApplyMasterSwitch, because ApplyOneToggle asks the master switch whether
+	 * FPM is enabled — registering them after would mean a launch-time `FPM.Enabled 0` disarmed
+	 * everything while no toggle yet existed to record it.
+	 */
+	FPMFixToggles::Install();
+
 	// If the launch environment already asked for OFF, honour it now rather than at the first toggle.
 	ApplyMasterSwitch();
 
@@ -100,6 +117,139 @@ void FPMMasterSwitch::Install()
 		     "console variable FPM wrote - it does not just stop writing."),
 		CVarFPMEnabled.GetValueOnGameThread());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// P4.3 — per-fix toggles
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+	/** Fix name -> its generated cvar, so ReapplyAll and the listing never re-derive the mapping. */
+	TMap<FString, IConsoleVariable*> GFPMFixToggleCVars;
+
+	/**
+	 * `static-base` -> `StaticBase`.
+	 *
+	 * ⚠ NOT the fix name verbatim. No engine console variable contains a hyphen, and `ConsoleManager.cpp`
+	 * validates nothing — so a hyphenated name would be accepted at registration and might only misbehave
+	 * later, at the parser. Deriving a conventional name costs one loop and removes the guess entirely.
+	 */
+	FString ToCVarSuffix(const FString& FixName)
+	{
+		FString Out;
+		Out.Reserve(FixName.Len());
+		bool bUpperNext = true;
+		for (const TCHAR C : FixName)
+		{
+			if (C == TEXT('-') || C == TEXT('_') || C == TEXT(' '))
+			{
+				bUpperNext = true;
+				continue;
+			}
+			Out.AppendChar(bUpperNext ? FChar::ToUpper(C) : C);
+			bUpperNext = false;
+		}
+		return Out;
+	}
+
+	void ApplyOneToggle(IFPMFix* Fix, IConsoleVariable* Var)
+	{
+		if (Fix == nullptr || Var == nullptr) { return; }
+
+		const bool bWant = Var->GetInt() != 0;
+
+		/*
+		 * ★ THE MASTER SWITCH WINS, AND THE REFUSAL IS LOUD.
+		 *
+		 * Arming one fix while the user has FPM turned off would be a settings surface quietly doing the
+		 * opposite of what it says. The toggle keeps its value, so it takes effect on the next
+		 * FPM.Enabled 1 through ReapplyAll.
+		 */
+		if (bWant && !FPMMasterSwitch::IsEnabled())
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM] fix toggle '%s' = 1 REFUSED while FPM.Enabled is 0. The value is kept and "
+				     "will apply when the master switch goes back on."), Fix->Name());
+			return;
+		}
+
+		if (FPMFixes::SetArmed(*Fix, bWant))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] fix '%s' %s by toggle."), Fix->Name(), bWant ? TEXT("ARMED") : TEXT("DISARMED"));
+		}
+	}
+}
+
+void FPMFixToggles::Install()
+{
+	IConsoleManager& Console = IConsoleManager::Get();
+
+	for (IFPMFix* Fix : FPMFixes::Registered())
+	{
+		if (Fix == nullptr) { continue; }
+
+		const FString FixName = Fix->Name();
+		const FString VarName = FString::Printf(TEXT("FPM.Fix.%s"), *ToCVarSuffix(FixName));
+
+		IConsoleVariable* Var = Console.RegisterConsoleVariable(
+			*VarName, 1,
+			*FString::Printf(
+				TEXT("Arm or disarm the '%s' fix. 1 = armed (default), 0 = disarmed and its hooks "
+				     "removed. Subordinate to FPM.Enabled: while that is 0, setting this to 1 is "
+				     "refused and the value applies when the master switch returns."), *FixName),
+			ECVF_Default);
+
+		if (Var == nullptr)
+		{
+			// A name collision is the only realistic cause, and it must not pass silently — the toggle
+			// would simply not exist while the listing implied it did.
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM] could not register toggle '%s' for fix '%s'. That fix has NO toggle."),
+				*VarName, *FixName);
+			continue;
+		}
+
+		GFPMFixToggleCVars.Add(FixName, Var);
+		Var->SetOnChangedCallback(FConsoleVariableDelegate::CreateLambda(
+			[Fix](IConsoleVariable* Changed) { ApplyOneToggle(Fix, Changed); }));
+	}
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] %d per-fix toggle(s) registered from the fix registry - no hand-written list. "
+		     "FPM.Fix.List prints each fix name beside its generated cvar."), GFPMFixToggleCVars.Num());
+}
+
+void FPMFixToggles::ReapplyAll()
+{
+	for (IFPMFix* Fix : FPMFixes::Registered())
+	{
+		if (Fix == nullptr) { continue; }
+		if (IConsoleVariable** Var = GFPMFixToggleCVars.Find(FString(Fix->Name())))
+		{
+			ApplyOneToggle(Fix, *Var);
+		}
+	}
+}
+
+static FAutoConsoleCommandWithOutputDevice GFPMFixListCmd(
+	TEXT("FPM.Fix.List"),
+	TEXT("List every fix, its generated toggle cvar, and whether it is armed right now."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		Ar.Logf(TEXT("[FPM] master: FPM.Enabled %d"), FPMMasterSwitch::IsEnabled() ? 1 : 0);
+		for (IFPMFix* Fix : FPMFixes::Registered())
+		{
+			if (Fix == nullptr) { continue; }
+			Ar.Logf(TEXT("[FPM]   %-28s  %-34s  %s"),
+				Fix->Name(),
+				*FString::Printf(TEXT("FPM.Fix.%s"), *ToCVarSuffix(FString(Fix->Name()))),
+				FPMFixes::IsArmed(*Fix) ? TEXT("armed") : TEXT("DISARMED"));
+		}
+		Ar.Logf(TEXT("[FPM]   %d registered. Names are DERIVED - hyphens removed, next letter "
+		             "capitalised - because no engine cvar uses a hyphen."),
+			FPMFixes::Registered().Num());
+	}));
 
 bool FPMMasterSwitch::IsEnabled()
 {

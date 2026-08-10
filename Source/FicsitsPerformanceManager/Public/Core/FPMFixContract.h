@@ -259,6 +259,23 @@ namespace FPMFixes
 	FICSITSPERFORMANCEMANAGER_API void RearmAll();
 
 	/**
+	 * Arms or disarms ONE registered fix. The P4.3 per-fix toggles run through this.
+	 *
+	 * Same reason `RearmAll` exists: the armed state is the registry's, not the fix's, so this can never
+	 * double-subscribe a fix whose `Arm()` is not idempotent.
+	 *
+	 * @return true if the state actually CHANGED. False means it was already in that state — which the
+	 *         caller must not report as a toggle, or a log fills with disarms that disarmed nothing.
+	 */
+	FICSITSPERFORMANCEMANAGER_API bool SetArmed(IFPMFix& Fix, bool bWantArmed);
+
+	/** Every fix that passed the side gate, armed or not. The toggles enumerate this. */
+	FICSITSPERFORMANCEMANAGER_API const TArray<IFPMFix*>& Registered();
+
+	/** True when this fix is armed right now. */
+	FICSITSPERFORMANCEMANAGER_API bool IsArmed(const IFPMFix& Fix);
+
+	/**
 	 * Dispatches OnWorldLoad to every armed fix, in arm order.
 	 *
 	 * The root game world module calls this. It goes through the registry rather than the module

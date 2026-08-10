@@ -63,6 +63,46 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 23:20 — CODE — P4.3: per-fix toggles, generated from the registry
+
+- **What:** `0.11.10` → `0.11.11`. One `FPM.Fix.<Name>` cvar per registered fix, plus `FPM.Fix.List`.
+  `FPMFixes` gains `SetArmed()`, `Registered()`, `IsArmed()`. **PATCH** — console-only.
+
+- **Why:** P4.3. ★ **No hand-written list.** The toggles enumerate `FPMFixes::Registered()` and key off
+  `IFPMFix::Name()`, which every fix already declares. A second declaration site is a bug by
+  construction, and this project has paid for one — `MenuInjector` was `true` in a header and `false` in
+  a config, and the config won.
+
+  ⚠ **The cvar name is DERIVED, not the fix name verbatim.** Fix names are hyphenated (`static-base`),
+  and searching the engine found **no console variable containing a hyphen** and **no name validation in
+  `ConsoleManager.cpp` at all** — so a hyphenated name would register happily and might only misbehave
+  later at the parser. Hyphens are removed and the next letter capitalised: `static-base` →
+  `FPM.Fix.StaticBase`. `FPM.Fix.List` prints both names side by side so nobody has to infer it.
+
+  ★ **Three interactions that would otherwise be silent bugs:**
+  1. **The master switch wins.** With `FPM.Enabled 0`, setting a per-fix toggle to 1 is REFUSED and says
+     so. The value is kept and applies when the master returns.
+  2. **`RearmAll` had to be followed by `ReapplyAll`.** `RearmAll` arms *everything* in the registry, so
+     `FPM.Enabled 0` then `1` would have silently re-enabled every fix the user had individually turned
+     off — while their toggles still read 0.
+  3. **A side-gated fix is not armable through a toggle.** `SetArmed` refuses anything absent from the
+     registry, so a dedicated server cannot back-door a client-only fix.
+
+  `SetArmed` returns whether the state actually changed, so a no-op set never logs a toggle that toggled
+  nothing.
+
+- **Files:** `Public|Private/Core/FPMMasterSwitch.{h,cpp}`, `Public/Core/FPMFixContract.h`,
+  `Private/Core/FPMFixContract.cpp`, `.uplugin`.
+
+- **Revert:** `git revert`. The master switch survives without it.
+
+- **Verified:** `FactoryEditor Win64 Development`, `FactoryServer **Linux** Shipping`,
+  `FactoryGameSteam Win64 Shipping` — all `Result: Succeeded`, zero warnings. `check_structure.py`:
+  28 fixes, 0 errors, 0 warnings, exit 0.
+  ⚠ **NOT BOOTED.** Untested in game: the generated names against the real console parser, the
+  master-off refusal, and the `RearmAll` → `ReapplyAll` sequence. `FPM.Fix.List` on one boot answers the
+  first of those on its own.
+
 ## 2026-08-10 22:55 — CODE — P4.2: the master switch, where OFF means RELEASED
 
 - **What:** `0.11.9` → `0.11.10`. `FPMMasterSwitch` + the `FPM.Enabled` cvar (default 1), and

@@ -142,6 +142,51 @@ void FPMFixes::DisarmAll()
 	// GRegisteredFixes is deliberately untouched — see its comment. This is what lets RearmAll replay.
 }
 
+const TArray<IFPMFix*>& FPMFixes::Registered()
+{
+	return GRegisteredFixes;
+}
+
+bool FPMFixes::IsArmed(const IFPMFix& Fix)
+{
+	// const_cast only to compare identity — nothing here calls a non-const member.
+	return GArmedFixes.Contains(const_cast<IFPMFix*>(&Fix));
+}
+
+bool FPMFixes::SetArmed(IFPMFix& Fix, bool bWantArmed)
+{
+	/*
+	 * ⚠ A FIX THE SIDE GATE REFUSED IS NOT IN THE REGISTRY, and must not be armable through here.
+	 * Otherwise a per-fix toggle becomes a back door that arms a client-only fix on a dedicated server,
+	 * which the gate in `Arm()` exists specifically to prevent.
+	 */
+	if (!GRegisteredFixes.Contains(&Fix))
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] refusing to arm '%s': it is not registered, which means the side gate refused it "
+			     "on this machine. That refusal is not overridable by a toggle."), Fix.Name());
+		return false;
+	}
+
+	const bool bIsArmed = GArmedFixes.Contains(&Fix);
+	if (bIsArmed == bWantArmed)
+	{
+		return false; // no change — the caller must not log a toggle
+	}
+
+	if (bWantArmed)
+	{
+		Fix.Arm();
+		GArmedFixes.Add(&Fix);
+	}
+	else
+	{
+		Fix.Disarm();
+		GArmedFixes.Remove(&Fix);
+	}
+	return true;
+}
+
 void FPMFixes::RearmAll()
 {
 	/*
