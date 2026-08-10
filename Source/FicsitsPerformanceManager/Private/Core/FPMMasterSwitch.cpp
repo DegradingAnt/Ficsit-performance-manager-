@@ -109,6 +109,15 @@ void FPMMasterSwitch::Install()
 	 */
 	FPMFixToggles::Install();
 
+	/*
+	 * ★ PROVE THE REGISTRY BEFORE THE SWITCH IS ALLOWED TO USE IT.
+	 *
+	 * Same discipline as `FPMCVarWriter::SelfTest()` at the top of StartupModule: the switch's whole
+	 * safety rests on SetArmed refusing unregistered fixes and on the three accessors agreeing, and
+	 * neither is worth asserting when both can be checked in microseconds every boot.
+	 */
+	FPMFixes::SelfTest();
+
 	// If the launch environment already asked for OFF, honour it now rather than at the first toggle.
 	ApplyMasterSwitch();
 

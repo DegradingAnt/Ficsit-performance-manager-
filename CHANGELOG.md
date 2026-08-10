@@ -63,6 +63,51 @@ Entries since the last `VERSION` line are the draft release notes for the next f
 
 ---
 
+## 2026-08-10 23:40 — CODE — the fix registry proves itself at boot instead of being trusted
+
+- **What:** `0.11.11` → `0.11.12`. `FPMFixes::SelfTest()`, run from `FPMMasterSwitch::Install()`.
+  **PATCH** — one log line.
+
+- **Why:** five versions of new surface (0.11.7–0.11.11) have shipped without a boot, and the master
+  switch's safety rests entirely on registry invariants that were asserted rather than checked. Same
+  discipline as `FPMCVarWriter::SelfTest()`, which has proved its release path on a probe cvar at every
+  boot since P1.2 rather than claiming it works.
+
+  **Three invariants, all checked in microseconds:**
+  1. **`SetArmed` refuses an unregistered fix.** That is the side gate's back door — if it opens, a
+     per-fix toggle can arm a client-only fix on a dedicated server.
+  2. **A no-op set reports NO CHANGE.** Otherwise every redundant set logs a toggle that toggled
+     nothing, and `Arm()` may have run twice, installing a second handler on the same method.
+  3. **`Armed()`, `Registered()` and `IsArmed()` agree.** Two arrays behind three readers is exactly how
+     an inventory starts lying, and the inventory lying is what `FPMHookLedger` exists to prevent.
+
+  ★ **Every check is NON-MUTATING.** It never arms, disarms or cycles a real fix — a self-test that
+  changes the thing it measures is a side effect with a log line attached. An earlier sketch registered
+  a probe fix and cycled it; that would have added a 29th entry to a list whose entire job is being an
+  accurate census of what is running. The probe used for check 1 is a stack local that is never
+  registered and never appears anywhere.
+
+  ⚠ **Stated in the PASS line itself: this does NOT prove a real arm/disarm cycle works.** That still
+  needs a boot. A self-test that let its pass be read as full verification would be worse than none.
+
+- **Files:** `Public/Core/FPMFixContract.h`, `Private/Core/FPMFixContract.cpp`,
+  `Private/Core/FPMMasterSwitch.cpp`, `.uplugin`.
+
+- **Revert:** `git revert`. Nothing depends on it.
+
+- **Verified:** `FactoryEditor Win64 Development`, `FactoryServer **Linux** Shipping`,
+  `FactoryGameSteam Win64 Shipping` — all `Result: Succeeded`, zero warnings. `check_structure.py`:
+  28 fixes, 0 errors, 0 warnings, exit 0 — the probe class lives in a `.cpp` anonymous namespace, so it
+  is correctly absent from the fix census.
+  ⚠ **NOT BOOTED.** The self-test has never run; it is a claim about what WILL be checked, not a result.
+
+- **⚠ P4.4 IS BLOCKED ON A DESIGN CONTRADICTION, not on effort.** `_DESIGN-R2:1570` and `:1605` schedule
+  a "priority-mode selector", while `:2225` rules **"NOT A MODE PICKER — the fourth ruling replaced it
+  with a FIXED VALUE HIERARCHY + a WORKLOAD-ADAPTIVE ALLOCATOR"** and records the per-save priority
+  setting as **WITHDRAWN**. Read in context that ruling sits in §12, the SERVER section, so it may not
+  govern the client surface — but "may not" is not a basis for building a user-facing picker. Ant's
+  call. P4.5 was skipped with it: both lean on `UFGUserSetting` rows that do not exist yet.
+
 ## 2026-08-10 23:20 — CODE — P4.3: per-fix toggles, generated from the registry
 
 - **What:** `0.11.10` → `0.11.11`. One `FPM.Fix.<Name>` cvar per registered fix, plus `FPM.Fix.List`.

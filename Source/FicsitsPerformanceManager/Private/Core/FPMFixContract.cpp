@@ -187,6 +187,79 @@ bool FPMFixes::SetArmed(IFPMFix& Fix, bool bWantArmed)
 	return true;
 }
 
+namespace
+{
+	/**
+	 * A fix that is never registered, used only to prove `SetArmed` refuses one.
+	 *
+	 * ⚠ IT IS DELIBERATELY NOT ARMED AND NOT REGISTERED, so it never appears in the inventory. An
+	 * earlier sketch of this test registered a probe fix and cycled it, which would have added a 29th
+	 * entry to a list whose whole job is to be an accurate census of what is running.
+	 */
+	class FFPMUnregisteredProbe final : public IFPMFix
+	{
+	public:
+		virtual const TCHAR* Name() const override { return TEXT("selftest-unregistered-probe"); }
+		virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
+		virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::Guard; }
+		virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::Settings; }
+		virtual void Arm() override { bArmWasCalled = true; }
+		bool bArmWasCalled = false;
+	};
+}
+
+bool FPMFixes::SelfTest()
+{
+	bool bOk = true;
+
+	// 1. An unregistered fix must be refused. This is the side gate's back door.
+	FFPMUnregisteredProbe Probe;
+	if (SetArmed(Probe, true) || Probe.bArmWasCalled)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM] fix-registry self-test FAILED: SetArmed armed a fix that was never registered. "
+			     "A per-fix toggle can now arm something the side gate refused - on a dedicated server "
+			     "that means arming a client-only fix."));
+		bOk = false;
+	}
+
+	// 2. Asking for the state a fix is already in must report NO CHANGE.
+	if (GArmedFixes.Num() > 0)
+	{
+		IFPMFix* First = GArmedFixes[0];
+		if (SetArmed(*First, true))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] fix-registry self-test FAILED: SetArmed reported a CHANGE when re-arming '%s', "
+				     "which is already armed. Every no-op set will now log a toggle that toggled nothing, "
+				     "and Arm() may have run twice - installing a second handler on the same method."),
+				First->Name());
+			bOk = false;
+		}
+	}
+
+	// 3. The three accessors must agree. Two arrays behind three readers is how an inventory drifts.
+	for (IFPMFix* Fix : GArmedFixes)
+	{
+		if (!GRegisteredFixes.Contains(Fix) || !IsArmed(*Fix))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] fix-registry self-test FAILED: '%s' is in the ARMED list but disagrees with "
+				     "the registry or with IsArmed(). The fix inventory is lying."), Fix->Name());
+			bOk = false;
+			break;
+		}
+	}
+
+	UE_CLOG(bOk, LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] fix-registry self-test PASSED: unregistered fixes refused, no-op sets report no "
+		     "change, and %d armed of %d registered agree across all three accessors. ⚠ This does NOT "
+		     "prove a real arm/disarm CYCLE works - that still needs a boot."),
+		GArmedFixes.Num(), GRegisteredFixes.Num());
+
+	return bOk;
+}
+
 void FPMFixes::RearmAll()
 {
 	/*

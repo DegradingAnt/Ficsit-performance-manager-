@@ -276,6 +276,27 @@ namespace FPMFixes
 	FICSITSPERFORMANCEMANAGER_API bool IsArmed(const IFPMFix& Fix);
 
 	/**
+	 * Proves the registry's own invariants at boot, the way `FPMCVarWriter::SelfTest` proves the write
+	 * path on a probe cvar instead of asserting it works.
+	 *
+	 * ★ EVERY CHECK IS NON-MUTATING. It does not arm, disarm or cycle a real fix — a self-test that
+	 * changes the thing it measures is not a test, it is a side effect with a log line. What it can
+	 * prove without touching state is the part that would otherwise fail silently:
+	 *
+	 *   1. `SetArmed` REFUSES a fix that is not registered. That is the side gate's back door, and if it
+	 *      ever opens, a dedicated server can arm a client-only fix through a toggle.
+	 *   2. `SetArmed` reports NO CHANGE when asked for the state a fix is already in, so a no-op set
+	 *      never logs a toggle that toggled nothing.
+	 *   3. `Armed()`, `Registered()` and `IsArmed()` AGREE. Three accessors over two arrays is exactly
+	 *      how an inventory starts lying, and the inventory lying is what `FPMHookLedger` exists to stop.
+	 *
+	 * ⚠ WHAT IT DOES NOT PROVE, said out loud: that a real arm/disarm CYCLE works. That needs a boot.
+	 *
+	 * @return true if every check passed.
+	 */
+	FICSITSPERFORMANCEMANAGER_API bool SelfTest();
+
+	/**
 	 * Dispatches OnWorldLoad to every armed fix, in arm order.
 	 *
 	 * The root game world module calls this. It goes through the registry rather than the module
