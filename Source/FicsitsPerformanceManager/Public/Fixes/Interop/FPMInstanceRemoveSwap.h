@@ -105,6 +105,24 @@ public:
 	virtual void Arm() override;
 	virtual void Disarm() override;
 
+	/**
+	 * ★ OFF UNTIL THE A/B PASSES — Ant's ruling, 2026-08-11, on the day this shipped.
+	 *
+	 * This fix changes how buildable instances are REMOVED, on a live save, and it has never run once.
+	 * The reasoning she picked: untested code changing removal semantics is exactly what bit her earlier
+	 * the same day, when three fixes that reported themselves armed and healthy were doing nothing or
+	 * doing harm. `DefaultArmed()` existed by then and off-by-default costs nothing.
+	 *
+	 * ⚠ THIS IS NOT DOUBT ABOUT THE DIAGNOSIS. The root cause is Tier 1, read from source in both trees
+	 * (board m6147739), and the mismatch is not in question. What is untested is THIS CODE, on HER save.
+	 *
+	 * TO TURN IT ON: `FPM.Fix.InstanceRemoveSwap 1`. The A/B that promotes it to default-on is in
+	 * m6147739 — count with `FPM.InstanceSwap.Enabled 0`, dismantle ten pieces watching the FIELD, then
+	 * enable, RELOAD THE WORLD, and repeat. The reload is not optional: the flag only affects removals
+	 * made after it arms, so instances already mis-bound stay mis-bound and would read as a failure.
+	 */
+	virtual bool DefaultArmed() const override { return false; }
+
 	/** Sweeps existing components, then re-sweeps to catch ones created after the world loaded. */
 	virtual void OnWorldLoad(UWorld* World) override;
 
