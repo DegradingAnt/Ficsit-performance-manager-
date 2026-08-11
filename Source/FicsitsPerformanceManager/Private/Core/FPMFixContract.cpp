@@ -60,6 +60,23 @@ void FPMFixes::Arm(IFPMFix& Fix)
 		return;
 	}
 
+	if (!Fix.DefaultArmed())
+	{
+		/*
+		 * REGISTERED BUT NOT INSTALLED. It still appears in FPM.Fix.List and still has a toggle, so it is
+		 * one cvar away — the difference from "not shipped" is visible rather than implied.
+		 *
+		 * Said out loud for the same reason as the dedicated-server gate above: a reader must be able to
+		 * tell "this fix does not exist" from "this fix is deliberately off", and silence cannot.
+		 */
+		GRegisteredFixes.AddUnique(&Fix);
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] fix '%s' registered but NOT armed: it opts out of arming by default, because it "
+			     "was measured doing no work while costing a hook. Turn it on with FPM.Fix.<Name> 1 - "
+			     "see the fix's header for the measurement."), Fix.Name());
+		return;
+	}
+
 	Fix.Arm();
 	GArmedFixes.Add(&Fix);
 	GRegisteredFixes.AddUnique(&Fix);

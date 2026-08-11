@@ -63,6 +63,23 @@ public:
 	 */
 	virtual void Disarm() override;
 
+	/**
+	 * ★ NET-MODE GATE, ADDED 2026-08-11. The handler cannot do anything on a joined client — it returns
+	 * on `GetLocalRole() != ROLE_Authority`, and a joined client's own pawn is `ROLE_AutonomousProxy` —
+	 * yet `Arm()` still installed a funchook detour on `SendClientAdjustment`, which the engine calls
+	 * per movement correction. Pure overhead on the one machine that cannot benefit.
+	 *
+	 * Ant measured `FPM.Fix.StaticBase 0` restoring her movement on a dedicated-server client. This is
+	 * the registration-time guard that makes that the default, and it is the same pattern
+	 * `FFPMWwiseServerGate` already uses for the mirror-image case.
+	 *
+	 * It cannot live in `Arm()`: there is no world at startup, so the net mode is not knowable yet.
+	 */
+	virtual void OnWorldLoad(UWorld* World) override;
+
+	/** `FPM.StaticBase.Report` — how many adjustments were rewritten, and how many were declined. */
+	static void ReportNow();
+
 private:
 	/** The handle from Arm(), so Disarm() can remove exactly this handler and nothing else. */
 	FDelegateHandle AdjustmentHookHandle;

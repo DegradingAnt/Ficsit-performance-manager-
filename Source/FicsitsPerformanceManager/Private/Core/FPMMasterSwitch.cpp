@@ -201,12 +201,17 @@ void FPMFixToggles::Install()
 		const FString FixName = Fix->Name();
 		const FString VarName = FString::Printf(TEXT("FPM.Fix.%s"), *ToCVarSuffix(FixName));
 
+		// ONE DECLARATION SITE for the default: FPMFixes::Arm reads the same predicate for the initial
+		// install. A second copy here would be the two-defaults bug this project has already shipped once.
+		const int32 DefaultValue = Fix->DefaultArmed() ? 1 : 0;
+
 		IConsoleVariable* Var = Console.RegisterConsoleVariable(
-			*VarName, 1,
+			*VarName, DefaultValue,
 			*FString::Printf(
-				TEXT("Arm or disarm the '%s' fix. 1 = armed (default), 0 = disarmed and its hooks "
-				     "removed. Subordinate to FPM.Enabled: while that is 0, setting this to 1 is "
-				     "refused and the value applies when the master switch returns."), *FixName),
+				TEXT("Arm or disarm the '%s' fix. 1 = armed, 0 = disarmed and its hooks removed. "
+				     "Default for this fix is %d. Subordinate to FPM.Enabled: while that is 0, setting "
+				     "this to 1 is refused and the value applies when the master switch returns."),
+				*FixName, DefaultValue),
 			ECVF_Default);
 
 		if (Var == nullptr)

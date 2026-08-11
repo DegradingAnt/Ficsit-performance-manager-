@@ -81,8 +81,29 @@ namespace
 	/** Cadence cap while moving. The effects downstream fade over ~0.5 s, so 4 Hz is already generous. */
 	constexpr double GFPMMinIntervalSec = 0.25;
 
-	/** Symmetric damping. 3 readings each way — see the header for why neither direction gets a break. */
-	constexpr int32 GFPMStreakToFlip = 3;
+	/**
+	 * Symmetric damping. 3 readings each way — see the header for why neither direction gets a break.
+	 *
+	 * ★ MEASURED TOO WEAK, BUT NOT RETUNED BLIND. Ant's client log, 2026-08-11, while she was standing
+	 * still inside her factory:
+	 *     weather gate: sealed room = YES  11.04.43
+	 *     weather gate: sealed room = no   11.04.46
+	 *     weather gate: sealed room = YES  11.04.49
+	 * Three flips in six seconds. At `GFPMMinIntervalSec` 0.25 s a streak of 3 can flip in under a
+	 * second, so genuinely marginal geometry — a doorway, a conveyor hole, an open bay — oscillates.
+	 * Each flip drives a hold/release on the weather parameters, which now reads as rain popping.
+	 *
+	 * ⚠ THE CONSTANT IS NOT BUMPED HERE, DELIBERATELY. What the right streak is depends on her actual
+	 * building, and picking 5 or 8 from an armchair is the guessing this project keeps paying for. It is
+	 * exposed as a cvar so ONE boot can answer it — raise it live, stand in the same spot, watch the flip
+	 * lines stop — and the answer then becomes the new default with a measurement behind it.
+	 */
+	TAutoConsoleVariable<int32> CVarEnclosureStreakToFlip(
+		TEXT("FPM.Enclosure.StreakToFlip"), 3,
+		TEXT("Consecutive agreeing samples needed to flip the sealed/under-roof verdict. Higher = steadier "
+		     "but slower to react. Default 3, measured to oscillate in a real factory; raise it and watch "
+		     "the 'sealed room =' lines to find the value that holds."),
+		ECVF_Default);
 
 	/** Sealed-room threshold, and a roof threshold. Both unmeasured; they become knobs when a boot says so. */
 	constexpr float GFPMSealedMin = 0.55f;
@@ -264,18 +285,21 @@ namespace
 		GLast = R;
 		GLastCompleteTime = FPlatformTime::Seconds();
 
-		// Symmetric streak damping, applied to both verdicts independently.
+		// Symmetric streak damping, applied to both verdicts independently. Read ONCE per batch so both
+		// verdicts use the same threshold even if the cvar changes mid-flight.
+		const int32 StreakToFlip = FMath::Max(1, CVarEnclosureStreakToFlip.GetValueOnAnyThread());
+
 		const bool bRoofRaw = (R.BuiltHits >= GFPMMinHits) && (R.BuiltOverhead >= GFPMOverheadMin);
 		if (bRoofRaw) { ++GRoofStreak; GNoRoofStreak = 0; } else { ++GNoRoofStreak; GRoofStreak = 0; }
-		if (!GbUnderRoof && GRoofStreak >= GFPMStreakToFlip) { GbUnderRoof = true; }
-		else if (GbUnderRoof && GNoRoofStreak >= GFPMStreakToFlip) { GbUnderRoof = false; }
+		if (!GbUnderRoof && GRoofStreak >= StreakToFlip) { GbUnderRoof = true; }
+		else if (GbUnderRoof && GNoRoofStreak >= StreakToFlip) { GbUnderRoof = false; }
 
 		// Only meaningful when the wall band was actually traced. Without it the sealed fraction is
 		// computed over the roof alone and would read as sealed inside any covered but open-sided area.
 		const bool bSealRaw = GNeedSealed && (R.BuiltHits >= GFPMMinHits) && (R.BuiltSealed >= GFPMSealedMin);
 		if (bSealRaw) { ++GSealStreak; GNoSealStreak = 0; } else { ++GNoSealStreak; GSealStreak = 0; }
-		if (!GbSealed && GSealStreak >= GFPMStreakToFlip) { GbSealed = true; }
-		else if (GbSealed && GNoSealStreak >= GFPMStreakToFlip) { GbSealed = false; }
+		if (!GbSealed && GSealStreak >= StreakToFlip) { GbSealed = true; }
+		else if (GbSealed && GNoSealStreak >= StreakToFlip) { GbSealed = false; }
 
 		GBatch.bInFlight = false;
 

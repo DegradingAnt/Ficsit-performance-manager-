@@ -109,6 +109,72 @@ From the whole-mod VOX review Ant asked for after `0.11.14`.
   server-only value and `Arm()` self-guards, exactly as its header already argues.
 - ⚠ `hooking.adoc:266-269` — *"Unhooking functionality has not been extensively tested."* Every `Disarm()`
   and the whole master switch now rest on it. Recorded as a standing risk, not a defect.
+## 2026-08-11 14:05 — CODE — a fix that did nothing turned off, a silent fix made observable
+
+Continuing the whole-mod review. Three of the six remaining findings were real; **three were mine being
+wrong**, and those are recorded below rather than quietly dropped.
+
+- **What:** (1) New `IFPMFix::DefaultArmed()`, read by BOTH `FPMFixes::Arm` and `FPMFixToggles::Install`.
+  (2) `no-owner-rpc-gate` overrides it to `false`. (3) `static-base` gains rewritten/declined counters,
+  `FPM.StaticBase.Report`, and an `OnWorldLoad` net-mode gate that removes its hook on `NM_Client`.
+  (4) `FPMEnclosure`'s flip streak becomes `FPM.Enclosure.StreakToFlip`.
+
+- **Why:**
+  1. **`no-owner-rpc-gate` did nothing, measurably.** Its own census printed nothing in Ant's client log
+     and nothing in her dedicated-server log — zero suppressions on either machine. The engine warning it
+     pre-empts, "No owning connection for actor", appeared **0** times server-side and **once**
+     client-side, on `Char_Player_C`, which its `IsA<AFGBuildable>` filter deliberately excludes. Likely
+     cause: its own multicast exemption retired it, since FPM1 measured ~166/s before that exemption
+     existed. Meanwhile it holds a detour on `UNetDriver::ProcessRemoteFunction` — every RPC in the game
+     — and she measured `FPM.Fix.NoOwnerRpcGate 0` restoring her hoverpack sound and animation. Zero
+     benefit, one measured cost. Registered and toggleable, not deleted: the Stats-sign flood is a
+     property of her mod set and can return.
+  2. **`static-base` had no counter, no log line and no report — grepping the file for `UE_LOG`, `Diag`
+     or a counter returned nothing.** There was no way to tell "rewrote 4,000 adjustments" from "never
+     fired once". On a joined client the second is the truth: the handler returns on
+     `GetLocalRole() != ROLE_Authority` and a joined client is never authority, so the detour on
+     `SendClientAdjustment` was pure overhead. `NM_Client` now removes the hook; standalone, listen-host
+     and dedicated keep it.
+  3. `FPMEnclosure` flipped `sealed = YES / no / YES` in six seconds while Ant stood still. It already
+     had streak damping at 3; that is too weak for real factory geometry. **The constant is not bumped
+     blind** — it becomes a cvar so one boot can find the right value instead of an armchair picking 5.
+
+- **Files:** `Public/Core/FPMFixContract.h` · `Private/Core/FPMFixContract.cpp` ·
+  `Private/Core/FPMMasterSwitch.cpp` · `Public/Fixes/Interop/FPMNoOwnerRpcGate.h` ·
+  `Private|Public/Fixes/Interop/FPMStaticBaseFix.*` · `Private/Core/FPMEnclosure.cpp` ·
+  `FicsitsPerformanceManager.uplugin` (0.11.15 → 0.11.16)
+
+- **Revert:** `FPM.Fix.NoOwnerRpcGate 1` restores the old behaviour without a rebuild — that is the point
+  of routing it through a default rather than deleting the fix.
+
+- **Verified:** build clean. Structure gate 28 fixes / 0 / 0. **Not boot-tested** — the static-base
+  net-mode gate and the RPC-gate default both need one boot each to confirm, and `FPM.StaticBase.Report`
+  is the instrument for the first.
+
+### THREE REVIEW FINDINGS THAT WERE WRONG, AND WHY
+
+Recorded because a wrong finding that is quietly dropped comes back as a fact.
+
+- **`wwise-server-gate` `Side() == Any`** — flagged as a side-gate defect. **Wrong.** `EFPMFixSide` has
+  no server-only value and `Arm()` self-guards on `IsRunningDedicatedServer()`. Its header argued exactly
+  this and I flagged it anyway.
+- **`FPM.Bisect` leaves console contamination** — flagged as a diagnostic that poisons its own session.
+  **Wrong.** `FPMBisectClearCandidate()` calls `V->Unset(ECVF_SetByConsole)`, and it runs both before
+  advancing to each next candidate (`:724`) and again from `FPMBisectStop` (`:556`). I read the comment
+  warning about the write and never read the cleanup path.
+- **`blueprint-sweep-gate` should arm on the dedicated server** — flagged from 180 server hitches at
+  51–61 ms. **Premature.** The header already ruled on it from `FGBlueprintSubsystem`'s own contract and
+  set the condition for widening: *"IF A SERVER BOOT SHOWS THIS SWEEP RUNNING THERE TOO, widen it — but
+  do that on evidence."* The hitches are consistent with the sweep and attributed to nothing. Getting
+  that evidence needs an observe-only arm on the server, which is not built.
+
+### STILL OPEN
+
+- Whether the server's 2 s blueprint sweep runs at all — needs the observe-only probe above.
+- 13,312 sync loads server-side, unexplained.
+- Five fixes bind only at `OnWorldLoad` (`FPMDistanceFieldAudit`, `FPMNavMeshCeiling`,
+  `FPMRainOcclusionFix`, `FPMPowerWarningProbe`, `FPMWireNullGuard`) — the shape that made the sweep gate
+  inert. Unaudited.
 
 ## 2026-08-11 13:15 — CODE — three fixes that were armed and doing nothing, or doing harm
 

@@ -68,6 +68,32 @@ public:
 	 */
 	virtual void Disarm() override;
 
+	/**
+	 * ★ OFF BY DEFAULT SINCE 0.11.16, ON MEASUREMENT — not on doubt.
+	 *
+	 * Ant's 2026-08-11 session, both logs read directly:
+	 *   · this gate's own census printed NOTHING in her client log and NOTHING in her dedicated-server
+	 *     log, so it suppressed zero dispatches on either machine;
+	 *   · the engine warning it pre-empts, "No owning connection for actor", appeared **0** times in the
+	 *     server log and **once** in the client log — on `Char_Player_C`, which the `IsA<AFGBuildable>`
+	 *     filter deliberately excludes.
+	 *
+	 * The condition it was built for does not occur in her stack any more. The likeliest reason is this
+	 * gate's OWN multicast exemption: FPM1 measured ~166 suppressions/second before that exemption
+	 * existed, and if what it was catching was mostly multicast, exempting them correctly removed nearly
+	 * all of it. That would make this a fix its own bug-fix retired.
+	 *
+	 * Meanwhile it holds a funchook detour on `UNetDriver::ProcessRemoteFunction` — the path EVERY RPC in
+	 * the game takes — and she measured `FPM.Fix.NoOwnerRpcGate 0` restoring her hoverpack's sound and
+	 * animation. Zero measured benefit against one measured cost.
+	 *
+	 * ⚠ NOT DELETED, DELIBERATELY. The Stats-sign flood was real, and it is a property of HER MOD SET
+	 * rather than of the game, so a mod update can bring it back. `FPM.Fix.NoOwnerRpcGate 1` arms it and
+	 * the census then reports within seconds whether it has anything to do — which is a better answer
+	 * than either keeping it on forever or dropping the capability.
+	 */
+	virtual bool DefaultArmed() const override { return false; }
+
 private:
 	/** Handle from Arm(), so Disarm() removes exactly this handler. */
 	FDelegateHandle ProcessRemoteFunctionHandle;

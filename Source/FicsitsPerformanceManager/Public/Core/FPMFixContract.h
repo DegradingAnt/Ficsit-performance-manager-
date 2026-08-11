@@ -203,6 +203,26 @@ public:
 
 	/** Undo. Optional — a log-only fix has nothing to undo. */
 	virtual void Disarm() {}
+
+	/**
+	 * ★ SHOULD THIS FIX BE ARMED WITHOUT THE PLAYER ASKING? Default yes. A fix answering NO is still
+	 * registered, listed and toggleable — it simply installs nothing until `FPM.Fix.<Name> 1`.
+	 *
+	 * Added 2026-08-11 because measurement forced it. `no-owner-rpc-gate` suppressed ZERO dispatches on
+	 * Ant's client AND on her dedicated server, and the engine warning it exists to pre-empt
+	 * ("No owning connection for actor") appeared 0 times server-side and once client-side — on an actor
+	 * class the gate deliberately skips. It cancelled nothing, while holding a funchook detour on
+	 * `UNetDriver::ProcessRemoteFunction`, which every RPC in the game passes through. She measured
+	 * `FPM.Fix.NoOwnerRpcGate 0` restoring her hoverpack audio and animation.
+	 *
+	 * A fix with no measurable work and a measured cost must not be on by default. This is NOT deletion:
+	 * the Stats-sign flood that motivated it was real and may come back, and it is one cvar away.
+	 *
+	 * ⚠ READ IN TWO PLACES, AND THEY MUST AGREE — `FPMFixes::Arm` for the initial install and
+	 * `FPMFixToggles::Install` for the cvar's default. Both call THIS, so there is one declaration site;
+	 * a second copy of the default is a bug by construction and this project has shipped that before.
+	 */
+	virtual bool DefaultArmed() const { return true; }
 };
 
 /**
