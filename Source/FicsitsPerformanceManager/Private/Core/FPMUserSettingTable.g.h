@@ -17,7 +17,7 @@
 
 namespace FPMUserSettingTable
 {
-	/** 66 vanilla cvar-backed user settings, sorted. COMPARE CASE-INSENSITIVELY: the
+	/** 67 vanilla cvar-backed user settings, sorted. COMPARE CASE-INSENSITIVELY: the
 	 *  assets are not consistently cased - r.screenpercentage here vs the engine's r.ScreenPercentage. */
 	inline constexpr const TCHAR* GDerivedUSBackedCVars[] =
 	{
@@ -46,6 +46,7 @@ namespace FPMUserSettingTable
 		TEXT("FG.GamepadRumbleStrength"),                      // US_GamepadRumbleStrength
 		TEXT("FG.GamepadSpeakerEnabled"),                      // US_GamepadSpeakerEnabled
 		TEXT("FG.GamepadSpeakerVolume"),                       // US_GamepadSpeakerVolume
+		TEXT("FG.HoldToCrouch"),                               // US_HoldToCrouch
 		TEXT("FG.HoldToSnap"),                                 // US_HoldToSnap
 		TEXT("FG.HoldToSprint"),                               // US_HoldToSprint
 		TEXT("FG.HoldZipline"),                                // US_HoldZipline
