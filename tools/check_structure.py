@@ -207,16 +207,31 @@ FPM1_DISPOSITION = {
 
 
 def check_predecessor_coverage() -> None:
-    fpm1 = (
-        REPO.parent.parent
-        / "FicsitPerformanceManager"
-        / "Source"
-        / "FicsitPerformanceManager"
-        / "Private"
-        / "FicsitPerformanceManager.cpp"
-    )
-    if not fpm1.exists():
-        warn(f"FPM1 source not found at {fpm1} — cannot re-check predecessor coverage")
+    """Compare FPM2's carried fixes against FPM1's register list.
+
+    ⚠ FPM1 MOVED ON 2026-08-11 AND THIS CHECK WENT BLIND FOR ONE RUN. It was archived out of the SML
+    tree to `C:/Modding/_archive/` because two mods sharing a source tree collide in UnrealHeaderTool
+    ("Two headers with the same name is not allowed" — FPM2's Configuration/FPMModConfiguration.h
+    against FPM1's). The move was correct; this check simply pointed at the old location and reported
+    that it could not run.
+
+    It DEGRADED HONESTLY, which is why the breakage was visible at all: it warned instead of silently
+    passing, so `0 error(s), 1 warning(s)` said out loud that predecessor coverage was unverified. A
+    check that had returned "all covered" on a missing input would have been the absence-claim
+    generator this file exists to avoid.
+
+    Both locations are searched now, so it keeps working wherever FPM1 lives — and if it is genuinely
+    gone, the warning stays truthful rather than becoming a pass.
+    """
+    tail = Path("Source") / "FicsitPerformanceManager" / "Private" / "FicsitPerformanceManager.cpp"
+    candidates = [
+        REPO.parent.parent / "FicsitPerformanceManager" / tail,          # in the SML tree (pre-archive)
+        Path("C:/Modding/_archive/FicsitPerformanceManager") / tail,     # archived 2026-08-11
+    ]
+    fpm1 = next((p for p in candidates if p.exists()), None)
+    if fpm1 is None:
+        warn("FPM1 source not found in any known location — cannot re-check predecessor coverage. "
+             "Looked in: " + " | ".join(str(p) for p in candidates))
         return
     # NB: matches Register<Anything>(), not Register<Anything>Fix(). Narrowing this pattern to
     # 'Fix()' is the exact grep that once reported "FPM1 has only 4 fixes" and hid the orphaned gate.

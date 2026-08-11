@@ -1,0 +1,299 @@
+// Copyright 2026 DegradingAnt. Licensed under GPL-3.0.
+
+#include "Configuration/FPMSettingsConfig.h"
+
+#include "FicsitsPerformanceManager.h"
+
+#include "Configuration/ConfigProperty.h"
+#include "Configuration/Properties/ConfigPropertyBool.h"
+#include "Configuration/Properties/ConfigPropertyInteger.h"
+#include "Configuration/Properties/ConfigPropertySection.h"
+#include "Configuration/Properties/WidgetExtension/CP_Integer.h"
+#include "Configuration/Properties/WidgetExtension/CP_Section.h"
+
+#include "HAL/IConsoleManager.h"
+#include "UObject/ConstructorHelpers.h"
+
+#define LOCTEXT_NAMESPACE "FPMSettingsConfig"
+
+namespace
+{
+	/** Where SML keeps the Blueprint subclasses that can actually draw a row. See the header. */
+	const TCHAR* const GFPMSMLPropertyPath = TEXT("/SML/Interface/UI/Menu/Mods/ConfigProperties/");
+
+	/**
+	 * Resolve one of SML's `BP_ConfigProperty*` classes, falling back to the plain C++ class.
+	 *
+	 * The fallback is deliberately NOT silent: with the C++ class the config still registers, saves and
+	 * loads, and the page renders nothing — which looks identical to "the mod has no settings". FPM1
+	 * lost a whole boot cycle to that, so the failure is loud and says what the player will see.
+	 */
+	template <typename TBase>
+	UClass* ResolveSMLPropertyClass(const TCHAR* AssetName)
+	{
+		const FString Path = GFPMSMLPropertyPath + FString(AssetName);
+		ConstructorHelpers::FClassFinder<TBase> Finder(*Path);
+		if (Finder.Succeeded())
+		{
+			return Finder.Class;
+		}
+
+		UE_LOG(LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM] settings: SML widget class '%s' would not load. The config still saves and loads, "
+			     "but that part of the page will RENDER NOTHING - which looks exactly like FPM having no "
+			     "settings at all."), *Path);
+		return TBase::StaticClass();
+	}
+
+	/**
+	 * ★ THE NAME IS THE BINDING. A row's subobject name is its cvar with dots replaced by underscores,
+	 * so `FPM.Upscaler.DLSSPreset` becomes `FPM_Upscaler_DLSSPreset`. There is no mapping table to keep
+	 * in step with anything, because there is no mapping.
+	 */
+	FString SubobjectNameFor(const TCHAR* CVarName)
+	{
+		return FString(CVarName).Replace(TEXT("."), TEXT("_"));
+	}
+
+	FString CVarNameFor(const UObject* Row)
+	{
+		return Row->GetName().Replace(TEXT("_"), TEXT("."));
+	}
+}
+
+UFPMSettingsConfig::UFPMSettingsConfig()
+{
+	/*
+	 * ⚠ EMPTY CATEGORY IS LOAD-BEARING. The Mods menu looks a config up by mod reference with a blank
+	 * category; a non-empty one renders an empty page while registration, save and load all keep
+	 * working. FPM1 recorded this as boot-test bug 2.
+	 */
+	ConfigId.ModReference   = TEXT("FicsitsPerformanceManager");
+	ConfigId.ConfigCategory = FString();
+
+	DisplayName = LOCTEXT("ModDisplayName", "FICSIT's Performance Manager");
+	Description = LOCTEXT("ModDescription",
+		"Fixes for standing bugs in the game and in mod interactions, plus a few levers the game does "
+		"not expose. Everything here writes to a console variable and nothing else - no game setting is "
+		"modified, and uninstalling removes this file with it.");
+
+	UClass* const ClsSection = ResolveSMLPropertyClass<UConfigPropertySection>(TEXT("BP_ConfigPropertySection"));
+	UClass* const ClsInt     = ResolveSMLPropertyClass<UConfigPropertyInteger>(TEXT("BP_ConfigPropertyInteger"));
+	UClass* const ClsBool    = ResolveSMLPropertyClass<UConfigPropertyBool>   (TEXT("BP_ConfigPropertyBool"));
+
+	RootSection = static_cast<UConfigPropertySection*>(CreateDefaultSubobject(
+		TEXT("RootSection"), UConfigPropertySection::StaticClass(), ClsSection, true, false));
+
+	/*
+	 * Sections carry no usable default for these — the C++ stub leaves them zero-initialised and the
+	 * Blueprint CDO's values are not ours to rely on — so they are set outright.
+	 */
+	/*
+	 * ⚠ THE LAYOUT FIELDS LIVE ON UCP_Section, NOT ON UConfigPropertySection - and getting that wrong
+	 * is what the first build of this file did. The base class carries only SectionProperties; the
+	 * widget-extension subclass adds WidgetType and HasHeader
+	 * (Properties/WidgetExtension/CP_Section.h:17-21). FPM1's code casts to UCP_Section for exactly
+	 * this reason and I copied the field names without noticing the cast, which is the "read the
+	 * declaration, not the usage" lesson twice in one day.
+	 *
+	 * The cast can fail if SML's BP class did not resolve - the section still works, it just uses the
+	 * Blueprint CDO's layout instead of ours.
+	 */
+	if (UCP_Section* Root = Cast<UCP_Section>(RootSection))
+	{
+		Root->WidgetType = ECP_SectionWidgetType::CPS_Vertical;
+		Root->HasHeader  = false;   // the mod page already draws the title
+	}
+
+	auto AddSection = [this, ClsSection](const TCHAR* Key, const FText& Display) -> UConfigPropertySection*
+	{
+		UConfigPropertySection* S = static_cast<UConfigPropertySection*>(CreateDefaultSubobject(
+			*FString::Printf(TEXT("Sec_%s"), Key), UConfigPropertySection::StaticClass(), ClsSection, true, false));
+		S->DisplayName = Display;
+		if (UCP_Section* W = Cast<UCP_Section>(S))
+		{
+			W->WidgetType = ECP_SectionWidgetType::CPS_Vertical;
+			W->HasHeader  = true;
+		}
+		if (UConfigPropertySection* Root = Cast<UConfigPropertySection>(RootSection))
+		{
+			Root->SectionProperties.Add(Key, S);
+		}
+		return S;
+	};
+
+	/*
+	 * One helper per type. Each takes THE CVAR NAME and derives the subobject name from it, which is
+	 * what makes the binding unbreakable — see SubobjectNameFor.
+	 */
+	auto AddInt = [this, ClsInt](UConfigPropertySection* Sec, const TCHAR* CVarName,
+	                             const FText& Display, const FText& Tip, int32 Default,
+	                             int32 Min, int32 Max)
+	{
+		const FString SubName = SubobjectNameFor(CVarName);
+		UConfigPropertyInteger* P = static_cast<UConfigPropertyInteger*>(CreateDefaultSubobject(
+			*SubName, UConfigPropertyInteger::StaticClass(), ClsInt, true, false));
+		P->DisplayName   = Display;
+		P->Tooltip       = Tip;
+		P->DefaultValue  = Default;
+		P->Value         = Default;
+
+		/*
+		 * Min/Max and the widget choice live on UCP_Integer, the widget-extension subclass
+		 * (CP_Integer.h:22-28), not on UConfigPropertyInteger.
+		 *
+		 * ⚠ SPINBOX, NOT CPI_Enum, AND THAT IS A DELIBERATE HOLD. CP_Integer.h:11 offers
+		 * "CPI_Enum - A DropDown list of Enum Field Names", which would be far better for the DLSS
+		 * preset than a number line where 8 and 9 are invalid. But the DLSS values are NON-CONTIGUOUS
+		 * (0, 10, 11), and nothing in the header says whether the widget stores the enum's VALUE or its
+		 * INDEX. If it stores the index, a non-contiguous enum silently writes the wrong number - a
+		 * control that looks right and does something else. Settle that with one look at
+		 * UCP_Integer::GetEnumNames' consumer before switching.
+		 */
+		if (UCP_Integer* W = Cast<UCP_Integer>(P))
+		{
+			W->WidgetType = ECP_IntegerWidgetType::CPI_Spinbox;
+			W->MinValue   = Min;
+			W->MaxValue   = Max;
+		}
+		Sec->SectionProperties.Add(SubName, P);
+		BoundRows.Add(P);
+	};
+
+	auto AddBool = [this, ClsBool](UConfigPropertySection* Sec, const TCHAR* CVarName,
+	                               const FText& Display, const FText& Tip, bool Default)
+	{
+		const FString SubName = SubobjectNameFor(CVarName);
+		UConfigPropertyBool* P = static_cast<UConfigPropertyBool*>(CreateDefaultSubobject(
+			*SubName, UConfigPropertyBool::StaticClass(), ClsBool, true, false));
+		P->DisplayName  = Display;
+		P->Tooltip      = Tip;
+		P->DefaultValue = Default;
+		P->Value        = Default;
+		Sec->SectionProperties.Add(SubName, P);
+		BoundRows.Add(P);
+	};
+
+	// ── UPSCALER ────────────────────────────────────────────────────────────────────────────────────
+	UConfigPropertySection* Upscaler = AddSection(TEXT("Upscaler"),
+		LOCTEXT("SecUpscaler", "Upscaler"));
+
+	AddInt(Upscaler, TEXT("FPM.Upscaler.DLSSPreset"),
+		LOCTEXT("DLSSPreset", "DLSS preset"),
+		LOCTEXT("DLSSPresetTip",
+			"0 leaves the game's own choice alone - it asks for Preset C, the old model, which smears "
+			"things that move across other surfaces. 10 and 11 are the newer transformer presets J and "
+			"K. Which of the two looks better is a matter of taste; try both. Only affects DLSS."),
+		0, 0, 11);
+
+	AddInt(Upscaler, TEXT("FPM.Reflex.Mode"),
+		LOCTEXT("ReflexMode", "NVIDIA Reflex"),
+		LOCTEXT("ReflexModeTip",
+			"0 leaves it alone, 1 is low latency, 2 adds Boost. The game ships Reflex switched off. "
+			"1 costs up to 4% of your frame rate when the graphics card is the bottleneck and is close "
+			"to free otherwise. 2 can cost frames AND power, so it is not a sensible default."),
+		1, 0, 2);
+
+	// ── WEATHER ─────────────────────────────────────────────────────────────────────────────────────
+	UConfigPropertySection* Weather = AddSection(TEXT("Weather"),
+		LOCTEXT("SecWeather", "Weather and particles"));
+
+	AddBool(Weather, TEXT("FPM.Weather.Gate"),
+		LOCTEXT("WeatherGate", "Quieten weather indoors"),
+		LOCTEXT("WeatherGateTip",
+			"Scales rain and wind particles down while you are inside a sealed room. It is not "
+			"collision - three of the game's five weather systems ship with no collision at all - so "
+			"this is the cheap half of the problem, not the whole of it."),
+		true);
+
+	// ── DIAGNOSTICS ─────────────────────────────────────────────────────────────────────────────────
+	UConfigPropertySection* Diag = AddSection(TEXT("Diagnostics"),
+		LOCTEXT("SecDiag", "Diagnostics"));
+
+	AddInt(Diag, TEXT("FPM.Diag"),
+		LOCTEXT("DiagMaster", "Log detail"),
+		LOCTEXT("DiagMasterTip",
+			"-1 leaves each area at its own setting, 0 silences everything FPM prints, 1 is normal and "
+			"2 is verbose. This only changes what is written to the log - it never changes what the mod "
+			"does. If you are sending a log to someone, leave it at -1."),
+		-1, -1, 2);
+
+	AddBool(Diag, TEXT("FPM.Diag.Overlay"),
+		LOCTEXT("Overlay", "On-screen readout"),
+		LOCTEXT("OverlayTip",
+			"The developer feed in the corner. F8 toggles it in game."),
+		false);
+}
+
+void UFPMSettingsConfig::SyncAllToCVars()
+{
+	IConsoleManager& Console = IConsoleManager::Get();
+
+	int32 Written = 0, Missing = 0, Mismatched = 0;
+
+	for (UConfigProperty* Row : BoundRows)
+	{
+		if (Row == nullptr) { continue; }
+
+		const FString CVarName = CVarNameFor(Row);
+		IConsoleVariable* Var = Console.FindConsoleVariable(*CVarName);
+
+		/*
+		 * ⚠ A MISSING CVAR IS A LOUD FAILURE, NOT A SKIP. The row's name IS the cvar name, so this can
+		 * only mean a typo in the row or a cvar that was renamed out from under it - and in both cases
+		 * the player has a control that silently does nothing. That is the exact shape this page's
+		 * design was chosen to prevent, so it must never pass quietly.
+		 */
+		if (Var == nullptr)
+		{
+			++Missing;
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] settings: row '%s' maps to cvar '%s', which does not exist. That control does "
+				     "NOTHING. Either the row is misnamed or the cvar was renamed."),
+				*Row->GetName(), *CVarName);
+			continue;
+		}
+
+		int32 Want = 0;
+		if (const UConfigPropertyInteger* AsInt = Cast<UConfigPropertyInteger>(Row))
+		{
+			Want = AsInt->Value;
+		}
+		else if (const UConfigPropertyBool* AsBool = Cast<UConfigPropertyBool>(Row))
+		{
+			Want = AsBool->Value ? 1 : 0;
+		}
+		else
+		{
+			continue;   // no other row types on this page yet
+		}
+
+		/*
+		 * ECVF_SetByCode, NOT the writer's tagged hold. These are the PLAYER'S choices, expressed
+		 * through FPM's own cvars, and the fixes that consume them do their own holding of GAME cvars
+		 * through FPMCVarWriter. Writing our own settings through the release-tracked path would put
+		 * the player's preferences into the ledger that ReleaseAll empties.
+		 */
+		Var->Set(Want, ECVF_SetByCode);
+		++Written;
+
+		/*
+		 * ★ READ IT BACK. Several of the values these rows ultimately drive are owned by FactoryGame,
+		 * and a page that reports success while the write was refused is worth nothing. This checks the
+		 * FPM cvar itself, which is the part this page is responsible for.
+		 */
+		if (Var->GetInt() != Want)
+		{
+			++Mismatched;
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM] settings: wrote %d to '%s' and read back %d. Something outranks this write."),
+				Want, *CVarName, Var->GetInt());
+		}
+	}
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] settings applied: %d row(s) written, %d missing cvar(s), %d that did not stick."),
+		Written, Missing, Mismatched);
+}
+
+#undef LOCTEXT_NAMESPACE

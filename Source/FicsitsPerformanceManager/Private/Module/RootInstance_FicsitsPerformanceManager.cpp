@@ -3,6 +3,7 @@
 #include "Module/RootInstance_FicsitsPerformanceManager.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Configuration/FPMSettingsConfig.h"
 
 URootInstance_FicsitsPerformanceManager::URootInstance_FicsitsPerformanceManager()
 {
@@ -15,11 +16,19 @@ URootInstance_FicsitsPerformanceManager::URootInstance_FicsitsPerformanceManager
 	// BlueprintHooks, GlobalItemTooltipProviders, WidgetBlueprintHooks, GameMaps, SessionSettings and
 	// RemoteCallObjects (GameInstanceModule.h). FPM registers none of them yet, deliberately:
 	//
-	//   ModConfigurations - NOT USED. Settings ship as UFGUserSetting assets in the
-	//   FicsitsPerformanceManager_Settings GameFeature so they land in the game's own options menu.
-	//   SML's config system is Blueprint-first (its C++ CreateEditorWidget returns null), so a
-	//   C++-only UModConfiguration registers and saves correctly while rendering an EMPTY page — the
-	//   old mod proved that on a boot test.
+	//   ModConfigurations - NOW USED, and the note that used to sit here was half right for the wrong
+	//   reason. It said settings would ship as UFGUserSetting assets "so they land in the game's own
+	//   options menu", and warned that SML's config system is Blueprint-first.
+	//
+	//   The Blueprint-first part is TRUE and is handled: UFPMSettingsConfig creates every node as
+	//   SML's BP_ConfigProperty* subclass, which is exactly what the old mod's boot test taught.
+	//
+	//   The rest was overturned by Ant on 2026-08-11 - "also the mod settings need to be through sml" -
+	//   and by what a vanilla row actually costs: its StrId lands in UFGGameUserSettings::mIntValues,
+	//   which is UPROPERTY(Config), so it persists into GameUserSettings.ini and SURVIVES UNINSTALL.
+	//   SML writes to Configs/FicsitsPerformanceManager.cfg instead (ConfigManager.cpp:309-317) - one
+	//   file, named after the mod, gone when the mod goes. Zero residue stays literally true.
+	ModConfigurations.Add(UFPMSettingsConfig::StaticClass());
 }
 
 void URootInstance_FicsitsPerformanceManager::DispatchLifecycleEvent(ELifecyclePhase Phase)
