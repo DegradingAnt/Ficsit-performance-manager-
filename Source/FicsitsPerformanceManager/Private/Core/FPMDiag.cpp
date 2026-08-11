@@ -230,6 +230,20 @@ static TAutoConsoleVariable<int32> CVarDiagSettings(
 	     "the asset scan is broken and no count from it means anything."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagReflex(
+	TEXT("FPM.Diag.Reflex"), 1,
+	TEXT("NVIDIA Reflex mode. 0 = silent, 1 = one line per mode change naming the route used. The "
+	     "'COULD NOT REACH REFLEX' warning is NOT gated by this - that line means the fix is armed and "
+	     "doing nothing, which a verbosity setting must never be able to hide."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagUpscalerPreset(
+	TEXT("FPM.Diag.UpscalerPreset"), 1,
+	TEXT("DLSS preset hold. 0 = silent, 1 = one line when the held preset changes. The 'DLSS is not the "
+	     "active upscaler' warning and the report's MISMATCH line are NOT gated by this - both mean the "
+	     "fix is doing nothing while looking healthy."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarDiagInstanceSwap(
 	TEXT("FPM.Diag.InstanceSwap"), 1,
 	TEXT("AbstractInstance mesh components put back on RemoveAtSwap. 0 = silent, 1 = one line per sweep "
@@ -271,6 +285,8 @@ namespace
 		&CVarDiagNaniteStreaming,
 		&CVarDiagMaterialEffect,
 		&CVarDiagSettings,
+		&CVarDiagReflex,
+		&CVarDiagUpscalerPreset,
 		&CVarDiagInstanceSwap,
 	};
 
@@ -319,6 +335,8 @@ namespace
 		case FPMDiag::EChannel::NaniteStreaming: return TEXT("FPM.Diag.NaniteStreaming");
 		case FPMDiag::EChannel::MaterialEffect: return TEXT("FPM.Diag.MaterialEffect");
 		case FPMDiag::EChannel::Settings:       return TEXT("FPM.Diag.Settings");
+		case FPMDiag::EChannel::Reflex:         return TEXT("FPM.Diag.Reflex");
+		case FPMDiag::EChannel::UpscalerPreset: return TEXT("FPM.Diag.UpscalerPreset");
 		case FPMDiag::EChannel::InstanceSwap:   return TEXT("FPM.Diag.InstanceSwap");
 		default:                                return TEXT("<unknown>");
 		}

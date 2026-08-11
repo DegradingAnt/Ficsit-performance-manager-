@@ -86,6 +86,8 @@ public:
 		NaniteStreaming,  // FPM.Diag.NaniteStreaming — geometry dropping detail when the pool overcommits
 		MaterialEffect,   // FPM.Diag.MaterialEffect — who calls SetMeshes after PreStarted
 		Settings,         // FPM.Diag.Settings — are FPM's own UFGUserSetting rows reachable at all?
+		Reflex,           // FPM.Diag.Reflex - NVIDIA Reflex mode, and WHICH route reached it
+		UpscalerPreset,   // FPM.Diag.UpscalerPreset - DLSS preset held against the game's own choice
 		InstanceSwap,     // FPM.Diag.InstanceSwap — AbstractInstance mesh components put back on RemoveAtSwap
 		Count
 	};

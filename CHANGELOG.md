@@ -233,6 +233,97 @@ The first build failed: I called `SupportsRemoveAtSwap()`, lifted from the local
 `InstancedStaticMesh.cpp:3801`. The real accessor is `SupportsRemoveSwap()`. Worth recording because the
 engine's own doc comment at `:460` is ALSO wrong — it names `SetRemoveSwapEnabled()`, which does not
 exist. Read the declaration, not the prose beside it, and not a variable that merely sounds like it.
+## 2026-08-11 16:40 — CODE — the upscaler layer starts coming back to FPM2
+
+Ant, 2026-08-11: *"we need that back in fpm2"* and *"do reflex too"*. FPM1 carried an upscaler layer —
+`Gfx_ReflexMode`, `Res_UpscalerAutoSelect`, `Res_ForceUpscalerIfNone`, per-GPU guards — and the rewrite
+shipped without any of it. This is the first three pieces. 29 fixes → 31.
+
+- **What:** (1) `Core/FPMUpscaler` — shared detection, no policy. (2) `FFPMUpscalerPreset`
+  (`upscaler-preset`) — forces a DLSS super-resolution preset through the writer.
+  (3) `FFPMReflexMode` (`reflex-mode`) — NVIDIA Reflex, carried back from FPM1. Two new diag channels.
+
+### THE ONE THAT ANSWERS A LIVE COMPLAINT
+
+Ant, on why she asked at all: *"ive seen so much ghosting in the game that i have reason to believe dlss
+is busted somehow"*, and *"id like to keep the performance of dlss and see if we can use a better pre-set
+to make it look less bad."*
+
+**The game pins the ghosting-prone preset, and its own log says so.** `FactoryGame.log:6048` —
+`NGXDLSSPreset=Preset C(3)` (`CVAR-VERDICTS-2026-08-08.md:414`, CONFIRMED). C is the old CNN model. The
+lever was byte-verified out of the DLSS DLL's UTF-16 cvar table (`:100`):
+
+    "DLSS-SR/DLAA preset setting…  8,9: Unsupported preset / 10: Force preset J / 11: Force preset K"
+
+⚠ There is a DECOY: `r.NGX.DLSSRR.Preset` has a near-identical help string but is RAY RECONSTRUCTION,
+and `r.NGX.DLSS.DLSSPreset` exists only as an ASCII error literal, never as a cvar. Both checked.
+
+**Why this needed FPM and not an ini line.** `R4` (`:123`) demoted this lever because **FactoryGame owns
+the cvar** — the string sits in FG's upscaler-switching path beside `r.XeSS.Enabled` and
+`r.FidelityFX.FSR.Enabled`, and `GameUserSettings.ini:13` proves FG persists raw cvars into `mIntValues`.
+So a naive write gets clobbered on Apply AND risks becoming a permanent ini entry. Both halves are
+already solved in FPM2 and were simply never connected to this lever:
+  · `FPMCVarWriter::Hold` writes tagged at `SetByPluginHighPriority` — above scalability and the options
+    menu, below the console, so the player keeps their console;
+  · re-asserted after `ApplyNonResolutionSettings`, the same hook `FFPMGlassQuality` already uses for the
+    identical problem;
+  · `FFPMSaveSettingsInterceptor` stands FPM's holds down across `SaveSettings`, so nothing of ours is
+    what FG serialises. **That is R4's persistence half, closed.**
+
+**What it does NOT fix, stated at the call site and in the report.** The particle-over-surface smear is
+the absence of a reactive mask: `DefaultEngine.ini:1052` ships `r.FidelityFX.FSR3.CreateReactiveMask=False`
+and CSS authored no DLSS stencil value, so no upscaler is told which pixels are reactive. A newer preset
+reduces it; only a mask removes it.
+
+### `Core/FPMUpscaler` — and why vendor is the wrong question
+
+FPM1's own setting text had it right: *"Tune for whichever upscaler is actually live (DLSS/XeSS/FSR/TSR)
+instead of guessing by GPU vendor."* An NVIDIA card can be running TSR — a mod that infers otherwise
+holds a DLSS preset that changes nothing while reporting success.
+
+`FG.UpScalingMethod == 2` is DLSS, confirmed independently twice from Ant's own config
+(`FPM-AUDIT-FINDINGS-2026-07-24.md:35`, `FPM-CVAR-RESEARCH…:373`) and it is the gate the banked governor
+rule already states (`…:450`). ⚠ **Only the value 2 is verified** — FG's own fallback string proves the
+enum has more members and nothing says which. So the probe reports DLSS or NOT-DLSS with confidence,
+UNKNOWN otherwise, and never invents a mapping. `Describe()` prints the raw inputs beside the verdict,
+because a verdict alone cannot be checked by whoever reads a support dump.
+
+The first version of the preset fix read `r.NGX.DLSS.Enable` instead. That is an ARTEFACT of FG's
+switching path — a flag left set from a previous choice answers YES for an upscaler no longer live.
+Corrected to use the probe.
+
+### Reflex — and the fix DISCOVERS its own route
+
+`FPG-REBUILD-SPEC.md:76`: mode 1 (`eLowLatency`) helps when GPU-bound, costs **≤4% FPS**, near-free
+otherwise; mode 2 (Boost) *"can cost FPS/power"* and *"never Boost as baseline"*; drive it via
+`UStreamlineLibraryReflex::SetReflexMode` because *"literal `t.Streamline.Reflex.*` names are UNVERIFIED"*.
+
+⚠ **BOTH obvious routes have a hole, checked today:**
+  · **No headers.** The SML tree's `Plugins/` holds AbstractInstance, FactoryGameUbtPlugin,
+    GameplayEvents, Online, RainRendering, ReliableMessaging, SignificanceISPC, Wwise, WwiseNiagara —
+    no Streamline, no DLSS. `UStreamlineLibraryReflex` cannot be linked against.
+  · **No verified cvar names.** Ant's client log carries 336 Streamline mentions and **zero**
+    `t.Streamline.*` strings.
+
+What IS established, from that same log: `Mounting Project plugin StreamlineReflex` and
+`sl::ReflexState::lowLatencyAvailable=1`. The capability is real; only the handle on it is uncertain.
+
+So the fix tries the cvar (its existence IS the test), falls back to reflection on the plugin's own
+`UFUNCTION`, and **names which route worked** — with a `COULD NOT REACH REFLEX` warning, ungated by the
+diag channel, for the case where neither does. ★ The reflection call writes its parameter by
+INTROSPECTION rather than assuming the enum's width: guessing wrong writes past a stack buffer.
+
+- **Files:** `Public|Private/Core/FPMUpscaler.*` (new) ·
+  `Public|Private/Fixes/ModFeatures/FPMUpscalerPreset.*` (new) ·
+  `Public|Private/Fixes/ModFeatures/FPMReflexMode.*` (new) · `Public/Core/FPMDiag.h` ·
+  `Private/Core/FPMDiag.cpp` · `Private/FicsitsPerformanceManager.cpp` · `.uplugin` (0.11.20 → 0.11.21)
+
+- **Revert:** both fixes are `DefaultArmed() == false`. `FPM.Fix.UpscalerPreset 1` and
+  `FPM.Fix.ReflexMode 1` arm them; `FPM.Upscaler.DLSSPreset 0` and `FPM.Reflex.Mode 0` are hands-off
+  without disarming.
+
+- **Verified:** build clean; structure gate **31 fixes, 0 errors, 0 warnings**. **NOT boot-tested** —
+  and for Reflex specifically, whether EITHER route reaches the plugin is unknown until one boot.
 
 ## 2026-08-11 15:05 — CODE — the navmesh raise now proves it survived the engine's recreate
 

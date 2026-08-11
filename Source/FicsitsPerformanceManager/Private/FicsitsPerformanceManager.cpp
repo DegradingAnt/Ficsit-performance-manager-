@@ -27,6 +27,8 @@
 #include "Fixes/Interop/FPMSchematicNullGuard.h"
 #include "Fixes/Interop/FPMSchematicProbe.h"
 #include "Fixes/Interop/FPMInstanceRemoveSwap.h"
+#include "Fixes/ModFeatures/FPMReflexMode.h"
+#include "Fixes/ModFeatures/FPMUpscalerPreset.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 #include "Fixes/Interop/FPMTexturePoolGuard.h"
 #include "Fixes/Interop/FPMZiplineVolume.h"
@@ -99,6 +101,19 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * of that class is constructed. Nothing here hooks, so arm order costs nothing else.
 	 */
 	FPMFixes::Arm(FFPMInstanceRemoveSwap::Get());
+
+	/*
+	 * The DLSS preset lever. Registered but NOT armed by default - which preset looks best is a visual
+	 * judgement and hers, not a default we can pick. FPM.Upscaler.DLSSPreset is the A/B.
+	 */
+	FPMFixes::Arm(FFPMUpscalerPreset::Get());
+
+	/*
+	 * Reflex, carried back from FPM1's Gfx_ReflexMode. Off by default until one boot proves it can
+	 * reach the plugin at all - neither the cvar names nor the headers are verified on this build, so
+	 * the fix discovers its own route and names it.
+	 */
+	FPMFixes::Arm(FFPMReflexMode::Get());
 
 	// The two join-crash repairs, carried from the old mod on 2026-08-08 and REBUILT rather than copied:
 	// both used to prevent their crash by cancelling the work, and both cost something real for it — an
