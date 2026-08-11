@@ -55,16 +55,49 @@ void FFPMBlueprintSweepGate::BindRecipeManager(UWorld* World)
 	AFGRecipeManager* Manager = AFGRecipeManager::Get(World);
 	if (Manager == nullptr)
 	{
-		// ⚠ Not silent. Without this delegate the gate has no "something changed" signal and would have
-		// to fall back to never cancelling. Saying so is the difference between a degraded fix and a
-		// broken one nobody noticed.
-		UE_LOG(LogFicsitsPerformanceManager, Warning,
-			TEXT("[FPM] blueprint gate: no AFGRecipeManager for this world, so recipe unlocks cannot be "
-			     "observed. The gate will NOT cancel any sweep - vanilla behaviour, no stutter fix."));
+		/*
+		 * ⚠ Not silent, and LATCHED — the retry below calls this every sweep, so an unlatched warning
+		 * would be the log spam this mod exists to remove.
+		 *
+		 * Without the manager the gate has no "something changed" signal and falls back to never
+		 * cancelling. Saying so is the difference between a degraded fix and a broken one nobody noticed.
+		 */
+		if (!bReportedMissingManager)
+		{
+			bReportedMissingManager = true;
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM] blueprint gate: no AFGRecipeManager for this world YET, so recipe unlocks "
+				     "cannot be observed and no sweep will be cancelled. This is expected during world "
+				     "load; the gate retries on every sweep and will say so if it binds later. If no "
+				     "'bound late' line follows, the gate really is doing nothing."));
+		}
 		return;
 	}
 
 	if (BoundRecipeManager.Get() == Manager) { return; }
+
+	/*
+	 * ★ THE BIND THAT NEVER HAPPENED, AND THE WHOLE FIX RESTING ON IT.
+	 *
+	 * Measured on Ant's 2026-08-11 session, 0.11.13, dedicated-server client:
+	 *     blueprint sweep gate: 0 of 962 sweep(s) cancelled (0%), 962 allowed, library 253.
+	 * Zero. For 28 minutes. Her words: *"you said you fixed that"* — and she was right.
+	 *
+	 * Cause: BindRecipeManager was reachable ONLY from OnWorldLoad. On a client joining a dedicated
+	 * server the recipe manager has not replicated in at that instant, so the lookup returned null, the
+	 * warning printed once, and NOTHING EVER LOOKED AGAIN. The gate stayed armed, hooked, and inert for
+	 * the rest of the session while vanilla ran its O(253) sweep 962 times on the game thread.
+	 *
+	 * That is the fail-safe-into-useless shape: it degraded correctly and permanently, on the one code
+	 * path where the dependency was merely LATE rather than absent.
+	 *
+	 * The retry lives in ShouldCancelSweep because the sweep is itself the cadence — every ~2 s, exactly
+	 * when a rebind could start paying off, and costing one weak-pointer test on a path that was about
+	 * to walk the whole blueprint library anyway. No timer, no extra tick.
+	 */
+	UE_CLOG(bReportedMissingManager, LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] blueprint gate: AFGRecipeManager bound LATE - it was absent at world load and has "
+		     "appeared since. The gate is live from now on; sweeps before this point all ran."));
 
 	BoundRecipeManager = Manager;
 
@@ -160,6 +193,13 @@ void FFPMBlueprintSweepGate::OnWorldLoad(UWorld* World)
 
 bool FFPMBlueprintSweepGate::ShouldCancelSweep(AFGBlueprintSubsystem* Subsystem)
 {
+	// THE RETRY. See BindRecipeManager: binding only at world load left this gate inert for a whole
+	// session because the manager had not replicated in yet. One weak-pointer test per sweep buys it back.
+	if (!BoundRecipeManager.IsValid())
+	{
+		BindRecipeManager(Subsystem->GetWorld());
+	}
+
 	TArray<UFGBlueprintDescriptor*> Descriptors;
 	Subsystem->GetBlueprintDescriptors_Internal(Descriptors);
 	const int32 LibrarySize = Descriptors.Num();

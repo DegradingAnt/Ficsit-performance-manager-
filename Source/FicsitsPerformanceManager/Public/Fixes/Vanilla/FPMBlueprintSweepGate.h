@@ -112,11 +112,23 @@ private:
 	/** Recompute every answer and compare against the cache. Returns the number of disagreements. */
 	int32 AuditAgainstCache(AFGBlueprintSubsystem* Subsystem, bool bLogEach);
 
-	/** Late-bound: the recipe manager is an actor and does not exist until a world does. */
+	/**
+	 * Late-bound: the recipe manager is an actor and does not exist until a world does — and on a client
+	 * joining a dedicated server it does not exist at world load EITHER, because it has not replicated in
+	 * yet. Retried from ShouldCancelSweep for exactly that reason; see the comment there.
+	 */
 	void BindRecipeManager(UWorld* World);
 
 	FDelegateHandle SweepHookHandle;
 	TWeakObjectPtr<class AFGRecipeManager> BoundRecipeManager;
+
+	/**
+	 * Latches the "no recipe manager yet" warning, because the bind is now retried on every sweep (~2 s)
+	 * and an unlatched warning there would be the log spam this mod exists to remove. It doubles as the
+	 * flag that makes a later successful bind announce itself as LATE — the line that proves the retry
+	 * did something, and whose ABSENCE proves the gate is still inert.
+	 */
+	bool bReportedMissingManager = false;
 
 	/** Forces the next sweep to be a real one. Set on world load and whenever the model is unsure. */
 	std::atomic<bool> bDirty{true};   // starts dirty: the first sweep after load must always run

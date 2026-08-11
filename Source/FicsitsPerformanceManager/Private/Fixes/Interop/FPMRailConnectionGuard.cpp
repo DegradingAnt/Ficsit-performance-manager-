@@ -22,6 +22,16 @@ namespace
 	 */
 	std::atomic<int32> GFPMRailAverted{0};
 	std::atomic<int32> GFPMRailPassed{0};
+
+	/**
+	 * Distinct owner classes seen on the NON-HOLOGRAM branch. Bounded, and game-thread only — a TSet is
+	 * not atomic, and this hook is explicitly documented as reachable from more than one thread.
+	 *
+	 * It exists so the throttle added on 2026-08-11 cannot hide the thing the unthrottled version was
+	 * protecting: a SECOND, different class turning up. Repeats of a known class are noise; a new class
+	 * is the finding.
+	 */
+	TSet<FName> GFPMRailNonHologramClasses;
 }
 
 FFPMRailConnectionGuard& FFPMRailConnectionGuard::Get()
@@ -96,16 +106,53 @@ void FFPMRailConnectionGuard::Arm()
 
 		if (!bHologram)
 		{
-			// Believed-unreachable ⇒ UNTHROTTLED, per the FPMLog policy's stated third tier.
-			if (FPMDiag::IsOn(FPMDiag::EChannel::RailGuard))
+			/*
+			 * ★ "BELIEVED-UNREACHABLE" WAS WRONG, AND THE MEASUREMENT IS WHAT SAYS SO.
+			 *
+			 * This branch was UNTHROTTLED on the stated reasoning that a non-hologram owner should be
+			 * impossible, and that throttling "could hide the only instance in a session". Ant's
+			 * dedicated-server log, 2026-08-11, 0.11.13:
+			 *
+			 *     2034  LogFicsitsPerformanceManager: Error: [FPM] rail guard
+			 *
+			 * 2,034 Error lines — the largest single FPM contributor in the whole server log, and all of
+			 * them this branch, all naming the same owner class (Build_RailroadTrack_C), most inside the
+			 * same millisecond during load. There was never "the only instance" to hide.
+			 *
+			 * The premise was an assumption presented as a boundary condition, and an unthrottled Error
+			 * resting on it made the log unreadable — the exact harm the guard's sibling fixes exist to
+			 * undo, committed by a guard. It is also the failure the arm line ALREADY predicted in the
+			 * next breath, quoting 1,900-2,550 averted asserts per server start as EXPECTED VOLUME.
+			 * Expected volume must never be one Error per occurrence.
+			 *
+			 * THE GOAL SURVIVES, THE FLOOD DOES NOT. The first few are still unthrottled and still Error,
+			 * so a genuinely rare instance cannot be lost. Then it throttles, and — because the original
+			 * worry was about missing a DISTINCT case rather than a repeat — every new owner class is
+			 * reported on sight regardless of count. A second class appearing is the thing worth knowing;
+			 * the two-thousandth repeat of the first is not.
+			 */
+			constexpr int32 UnthrottledHead = 5;
+			const FName OwnerClass = Owner ? Owner->GetClass()->GetFName() : FName(TEXT("<none>"));
+
+			bool bNewClass = false;
+			if (IsInGameThread() && GFPMRailNonHologramClasses.Num() < 16)
+			{
+				bNewClass = !GFPMRailNonHologramClasses.Contains(OwnerClass);
+				if (bNewClass) { GFPMRailNonHologramClasses.Add(OwnerClass); }
+			}
+
+			const bool bSay = N <= UnthrottledHead || bNewClass || (N % FPMLog::ThrottleRoutine) == 0;
+			if (bSay && FPMDiag::IsOn(FPMDiag::EChannel::RailGuard))
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Error,
 					TEXT("[FPM] rail guard: an unwired connection on a NON-HOLOGRAM owner (%s) - averted "
-					     "assert #%d. This is NOT the expected blueprint-preview case: a placed buildable's "
-					     "rail connection is not wired to its own track. The guard returned null and the "
-					     "server survived, but something is wrong with real track and this line is the only "
-					     "evidence of it."),
-					Owner ? *Owner->GetClass()->GetName() : TEXT("<none>"), N);
+					     "assert #%d%s. This is NOT the expected blueprint-preview case: a placed "
+					     "buildable's rail connection is not wired to its own track. The guard returned "
+					     "null and the server survived, but something is wrong with real track. Repeats "
+					     "are throttled - every DISTINCT owner class is still reported on sight, and "
+					     "FPM.Rail.Report has the totals."),
+					*OwnerClass.ToString(), N,
+					bNewClass && N > UnthrottledHead ? TEXT(" [FIRST OF THIS CLASS]") : TEXT(""));
 			}
 			return;
 		}

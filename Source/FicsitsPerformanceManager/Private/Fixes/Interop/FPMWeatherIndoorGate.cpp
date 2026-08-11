@@ -117,10 +117,58 @@ namespace
 		return Name.StartsWith(TEXT("NS_Rain")) || Name.Contains(TEXT("Wind"));
 	}
 
+	/** Defined below. Declared here because Rescan MUST release before it re-baselines — see there. */
+	void Release();
+
 	void Rescan(UWorld* World)
 	{
+		/*
+		 * ★ RELEASE BEFORE RE-BASELINING, OR THIS FUNCTION IS A RATCHET THAT ZEROES THE WEATHER.
+		 *
+		 * Ant, 2026-08-11, on 0.11.13: *"rain isnt visible at all now. it makes sound and shows up on
+		 * the HUD visor but it doesnt show in world."*
+		 *
+		 * The tick loop guards the baseline carefully — while `bHolding` it refuses to read `Live` back
+		 * into `GameValue`, because that would latch our own write. `Reset()` below threw that guard
+		 * away wholesale: it discards `bHolding` for every target, and the fresh `T.GameValue = Current`
+		 * a few lines down then reads whatever is live RIGHT NOW. Inside a sealed room that is our own
+		 * suppressed value, so every 15 s rescan multiplied by the scale again:
+		 *
+		 *     1.0 -> 0.05 -> 0.0025 -> 0.000125 -> ... zero, in about a minute indoors.
+		 *
+		 * Worse than the fade: dropping `bHolding` also disarms the restore. `else if (T.bHolding)` never
+		 * fires for a re-scanned target, so walking back outside restored nothing — and neither did
+		 * `Disarm()` nor `FPM.Weather.Gate 0`, because the suppressed value had BECOME the remembered
+		 * game value. Rain stayed invisible until the Niagara components respawned on a world reload.
+		 * That is exactly the shape she reported: the audio and the HUD visor effect are driven
+		 * elsewhere and kept working, so only the world particles went missing.
+		 *
+		 * There is no engine-side "reset this User parameter to its authored default" to lean on —
+		 * checked 2026-08-11 against the Niagara docs and `NiagaraComponent.h`. Storing the original and
+		 * writing it back IS the supported route, which makes the stored baseline load-bearing and makes
+		 * any path that corrupts it a correctness bug rather than a cosmetic one.
+		 *
+		 * Releasing first makes the read below see the game's real value again — the only value this
+		 * function was ever entitled to shadow. It also closes the second half of the bug: anything held
+		 * is handed back before its bookkeeping is destroyed.
+		 *
+		 * ⚠ The tick loop's comment claimed this protection for the whole fix. It only ever covered one
+		 * of the two paths that assign `GameValue`. A guard that does not do what its comment says is the
+		 * defect class this file's own header warns about.
+		 */
+		Release();
+
 		GFPMWeatherTargets.Reset();
 		if (World == nullptr) { return; }
+
+		/*
+		 * Counted, not merely skipped. See the report below: the number of Niagara systems this filter
+		 * REJECTED is what turns "we found 4" into an answerable question. Distinct names are collected
+		 * too, capped, because eight names identify the offender and two hundred are spam.
+		 */
+		int32 SkippedNiagara = 0;
+		TSet<FName> SkippedNames;
+		constexpr int32 GSkippedNameCap = 8;
 
 		for (TActorIterator<AActor> It(World); It; ++It)
 		{
@@ -128,7 +176,16 @@ namespace
 			It->GetComponents<UNiagaraComponent>(Comps);
 			for (UNiagaraComponent* Comp : Comps)
 			{
-				if (!IsWeatherSystem(Comp)) { continue; }
+				if (!IsWeatherSystem(Comp))
+				{
+					++SkippedNiagara;
+					const UNiagaraSystem* Sys = Comp ? Comp->GetAsset() : nullptr;
+					if (Sys && SkippedNames.Num() < GSkippedNameCap)
+					{
+						SkippedNames.Add(Sys->GetFName());
+					}
+					continue;
+				}
 
 				for (const FName& Param : GFPMWeatherParams)
 				{
@@ -144,11 +201,51 @@ namespace
 			}
 		}
 
+		/*
+		 * ★ NAME WHAT WAS MATCHED, AND NAME WHAT WAS REJECTED.
+		 *
+		 * Ant, 2026-08-11: *"dust and stuff is still inside of buildings"* — then, asked again with the
+		 * room actually closed: *"sealed this time"*. The log could not answer her. It said only
+		 * `tracking 4 weather parameter(s)`, sixteen times, which tells a reader NOTHING about whether
+		 * the dust she is looking at is one of those four.
+		 *
+		 * A bare count is the dead-instrument shape wearing a number: it cannot distinguish "we are
+		 * suppressing her dust and it is not working" from "her dust was never in the tracked set". Those
+		 * two have opposite fixes — one is a broken write, the other is a name filter that does not match
+		 * the system — and no amount of staring at `4` separates them.
+		 *
+		 * So print the matched system names, and the count of weather-ish systems the filter REJECTED.
+		 * The rejected count is the load-bearing half: `IsWeatherSystem` keys on asset name (`NS_Rain*`
+		 * or contains `Wind`) because these systems are spawned from Blueprint and expose no class to
+		 * key on, and a name filter is exactly the thing that silently under-matches.
+		 */
+		FString Matched;
+		for (const FFPMWeatherTarget& T : GFPMWeatherTargets)
+		{
+			const UNiagaraComponent* C = T.Comp.Get();
+			const UNiagaraSystem* Sys = C ? C->GetAsset() : nullptr;
+			Matched += FString::Printf(TEXT("%s%s.%s"), Matched.IsEmpty() ? TEXT("") : TEXT(", "),
+				Sys ? *Sys->GetName() : TEXT("<gone>"), *T.Param.ToString());
+		}
+
 		if (FPMDiag::IsOn(FPMDiag::EChannel::WeatherGate))
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,
-				TEXT("[FPM] weather gate: tracking %d weather parameter(s) across the world's Niagara "
-				     "components."), GFPMWeatherTargets.Num());
+				TEXT("[FPM] weather gate: tracking %d weather parameter(s): %s"),
+				GFPMWeatherTargets.Num(), Matched.IsEmpty() ? TEXT("(none)") : *Matched);
+
+			FString Skipped;
+			for (const FName& N : SkippedNames)
+			{
+				Skipped += FString::Printf(TEXT("%s%s"), Skipped.IsEmpty() ? TEXT("") : TEXT(", "), *N.ToString());
+			}
+
+			UE_CLOG(SkippedNiagara > 0, LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] weather gate: %d other Niagara system(s) in the world did NOT match the name "
+				     "filter (NS_Rain* or *Wind*). If the particles you can see indoors are not in the "
+				     "list above, they are one of these and this gate has never touched them. First %d "
+				     "distinct: %s"),
+				SkippedNiagara, SkippedNames.Num(), *Skipped);
 		}
 	}
 

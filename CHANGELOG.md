@@ -62,6 +62,49 @@ descriptor, so there is no second place to bump and no way for the log line to d
 Entries since the last `VERSION` line are the draft release notes for the next ficsit.app upload.
 
 ---
+## 2026-08-11 13:15 — CODE — three fixes that were armed and doing nothing, or doing harm
+
+Found by reading Ant's client and dedicated-server logs from the 0.11.13 session, after she reported
+invisible rain, constant animation stutter, and "you said you fixed that".
+
+- **What:** (1) `FPMWeatherIndoorGate::Rescan` now calls `Release()` before wiping its target list.
+  (2) The gate names the Niagara systems it matched, and counts + names the ones its filter rejected.
+  (3) `FPMBlueprintSweepGate` retries the `AFGRecipeManager` bind on every sweep instead of only at
+  world load. (4) `FPMRailConnectionGuard`'s non-hologram branch is throttled after an unthrottled head
+  of 5, with every distinct owner class still reported on sight.
+
+- **Why:**
+  1. **Rain went invisible and stayed invisible.** `Rescan()` ran every 15 s, did
+     `GFPMWeatherTargets.Reset()`, and re-read `T.GameValue` from whatever was live. Inside a sealed
+     room that is our own suppressed value, so it multiplied by the 0.05 scale again each pass:
+     `1.0 -> 0.05 -> 0.0025 -> ...` — zero in about a minute. `Reset()` also discarded `bHolding`, so
+     the release path never fired and neither `Disarm()` nor `FPM.Weather.Gate 0` restored anything.
+     The tick loop guards this exact ratchet and says so in a comment; `Rescan` walked past the guard.
+     Ant: *"rain isnt visible at all now. it makes sound and shows up on the HUD visor but it doesnt
+     show in world."*
+  2. The gate logged only `tracking 4 weather parameter(s)`, which cannot distinguish "we suppress her
+     dust and it fails" from "her dust was never matched". Those have opposite fixes.
+  3. **The sweep gate cancelled nothing for a whole session:** `0 of 962 sweep(s) cancelled (0%), 962
+     allowed, library 253`. `BindRecipeManager` was reachable only from `OnWorldLoad`; on a client
+     joining a dedicated server the manager has not replicated in by then, so it logged once and never
+     looked again. Vanilla's O(253) 2-second sweep ran 962 times on the game thread — matching the
+     50 ms game-thread-bound hitches that dominate her log (92% unattributed).
+  4. **2,034 `Error` lines in one dedicated-server log**, the largest single FPM contributor, all from
+     the branch marked "believed-unreachable ⇒ UNTHROTTLED". The arm line two lines below already
+     called 1,900–2,550 averted asserts per start EXPECTED. Expected volume must not be one Error each.
+
+- **Files:** `Private/Fixes/Interop/FPMWeatherIndoorGate.cpp` ·
+  `Private/Fixes/Vanilla/FPMBlueprintSweepGate.cpp` + `Public/Fixes/Vanilla/FPMBlueprintSweepGate.h` ·
+  `Private/Fixes/Interop/FPMRailConnectionGuard.cpp` · `FicsitsPerformanceManager.uplugin` (0.11.13 →
+  0.11.14)
+
+- **Revert:** each is independent. Revert the sweep-gate retry if a cancelled sweep ever turns out to
+  have mattered — its own 60 s self-audit reports disagreements and had 0 across 27 runs. Revert the
+  rail throttle if a second owner class ever needs full per-occurrence detail.
+
+- **Verified:** build-only (`FactoryEditor Win64 Development`, Result: Succeeded, three times). NOT yet
+  boot-tested. The sweep gate proves itself next boot by either printing `AFGRecipeManager bound LATE`
+  or a non-zero cancel count; if neither appears it is still inert and the diagnosis was wrong.
 
 ## 2026-08-11 00:05 — CODE — the save-settings guard called the editor gate a permanent failure
 
