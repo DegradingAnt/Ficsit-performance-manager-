@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "Core/FPMFixContract.h"
 
 /**
@@ -90,4 +91,22 @@ public:
 	/** Actors seen, actors actually raised, and actors whose write did NOT stick on read-back. The third
 	 *  number is the one that matters: it is how this fix proves it is not its predecessor. */
 	static void GetCounts(int32& OutSeen, int32& OutRaised, int32& OutFailedReadback);
+
+	/** Drops a pending delayed verify, so a disarm cannot leave a ticker firing into a dead world. */
+	virtual void Disarm() override;
+
+private:
+	/**
+	 * ★ THE READ-BACK AFTER THE ENGINE'S RECREATE — board m6333090's stated decider.
+	 *
+	 * The read-back inside the raise loop happens one line after the write, so it proves the assignment
+	 * landed in the UPROPERTY and nothing more. The engine then logs "Recreating dtNavMesh instance" and
+	 * rebuilds, and two OPPOSITE readings survive that evidence: it adopted the new headroom (306440 fits
+	 * under 524288), or it clamped back to the serialized 65536 and every "read back OK" line is
+	 * certifying a write the engine discarded. Only a later read separates them, and until this existed
+	 * the fix could not tell you which one it was — while logging twenty confident successes.
+	 */
+	void ScheduleDelayedVerify(UWorld* World);
+
+	FTSTicker::FDelegateHandle VerifyHandle;
 };

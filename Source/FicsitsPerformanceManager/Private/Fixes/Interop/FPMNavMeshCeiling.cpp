@@ -17,6 +17,13 @@ namespace
 	 */
 	constexpr int32 GFPMNavTileCeiling = 524288;
 
+	/**
+	 * How long after the raise to re-read. It only has to outlast the engine's dtNavMesh recreate, which
+	 * the 2026-08-11 server log shows firing ~100 ms after the write — so this is generous by two orders
+	 * of magnitude, and costs one actor iteration, once, per world load.
+	 */
+	constexpr float GFPMNavVerifyDelaySec = 20.f;
+
 	int32 GFPMNavSeen = 0;
 	int32 GFPMNavRaised = 0;
 	int32 GFPMNavFailedReadback = 0;
@@ -188,7 +195,111 @@ void FFPMNavMeshCeiling::OnWorldLoad(UWorld* World)
 		     "bits) vs calculated maxtiles (306440, 19 bits)'. 306440 fits under %d, so 'Recreating "
 		     "dtNavMesh instance' is most likely the engine ADOPTING the new headroom, not rejecting "
 		     "it - an earlier version of this line claimed the opposite and was probably wrong. What "
-		     "would actually settle it is a read-back AFTER the recreate, which this fix does not yet "
-		     "do (board m6333090)."),
+		     "would actually settle it is a read-back AFTER the recreate, which the delayed verify below "
+		     "now performs (board m6333090)."),
 		GFPMNavSeen, GFPMNavRaised, GFPMNavTileCeiling, GFPMNavFailedReadback, GFPMNavTileCeiling);
+
+	ScheduleDelayedVerify(World);
+}
+
+void FFPMNavMeshCeiling::ScheduleDelayedVerify(UWorld* World)
+{
+	/*
+	 * ★★★ THE READ-BACK AFTER THE RECREATE — the test board m6333090 says is the only thing that can
+	 * settle whether this fix works at all.
+	 *
+	 * THE PROBLEM IT SOLVES. The read-back in the raise loop happens one line after the WRITE, so it
+	 * proves the assignment landed in the UPROPERTY and nothing more. Moments later the engine logs
+	 * "Recreating dtNavMesh instance due mismatch ... serialized maxTiles (65536, 16 bits) vs calculated
+	 * maxtiles (306440, 19 bits)" and rebuilds the instance. Two readings survive that evidence and they
+	 * are opposites:
+	 *   · the engine ADOPTS the new headroom (306440 fits under 524288) -> the fix works;
+	 *   · the engine CLAMPS back to the serialized 65536 -> the raise is cosmetic and the 20 "read back
+	 *     OK" lines are a dead instrument certifying nothing.
+	 * The immediate read-back cannot separate them. Only a later one can.
+	 *
+	 * WHY A TIMER AND NOT A HOOK. The recreate happens inside the navigation system's own rebuild, which
+	 * exposes no completion delegate we can reach from a mod, and hooking the Recast internals to observe
+	 * a value would be far more invasive than sampling the public UPROPERTY once. The delay only has to
+	 * outlast the rebuild; the engine logged it ~100 ms after the write, so seconds is generous.
+	 *
+	 * ⚠ IT REPORTS A CLAMP AS A FINDING, NOT AS A FAILURE OF THIS FILE. If the value came back at 65536
+	 * the correct response is to stop claiming the ceiling is raised — in the log, in the design doc, and
+	 * on the board — not to write a louder retry loop against an engine that has already decided.
+	 */
+	if (GFPMNavRaised == 0 || World == nullptr) { return; }
+
+	TWeakObjectPtr<UWorld> WeakWorld(World);
+
+	VerifyHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda([WeakWorld](float) -> bool
+		{
+			UWorld* W = WeakWorld.Get();
+			if (W == nullptr)
+			{
+				// World gone before the check. Not a finding — say so rather than leaving silence, which
+				// would be indistinguishable from "the verify never ran".
+				UE_LOG(LogFicsitsPerformanceManager, Display,
+					TEXT("[FPM] navmesh ceiling: delayed verify skipped, the world was torn down first."));
+				return false;
+			}
+
+			int32 Checked = 0, Held = 0, Clamped = 0, LowestSeen = MAX_int32;
+			for (TActorIterator<ARecastNavMesh> It(W); It; ++It)
+			{
+				ARecastNavMesh* Nav = *It;
+				if (Nav == nullptr) { continue; }
+				++Checked;
+				const int32 Now = Nav->TileNumberHardLimit;
+				LowestSeen = FMath::Min(LowestSeen, Now);
+				if (Now >= GFPMNavTileCeiling) { ++Held; } else { ++Clamped; }
+			}
+
+			if (Checked == 0)
+			{
+				UE_LOG(LogFicsitsPerformanceManager, Warning,
+					TEXT("[FPM] navmesh ceiling: delayed verify found NO ARecastNavMesh actors, on a world "
+					     "that had %d at load. They were destroyed or replaced - which is itself the "
+					     "'recreate' question and means the raise did not survive."), GFPMNavSeen);
+				return false;
+			}
+
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] navmesh ceiling DELAYED VERIFY (%.0f s after the raise, i.e. AFTER the engine's "
+				     "dtNavMesh recreate): %d actor(s) checked, %d still at >= %d, %d CLAMPED BACK, lowest "
+				     "seen %d."),
+				GFPMNavVerifyDelaySec, Checked, Held, GFPMNavTileCeiling, Clamped, LowestSeen);
+
+			UE_CLOG(Clamped == 0, LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM]   NOTHING WAS CLAMPED - the raise SURVIVED the recreate. That settles board "
+				     "m6333090: 'Recreating dtNavMesh instance' is the engine adopting the new headroom, "
+				     "and the design doc's 'the warning should be ABSENT' criterion is backwards."));
+
+			UE_CLOG(Clamped > 0, LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM]   %d actor(s) CLAMPED BACK below %d. The raise is COSMETIC and every 'read "
+				     "back OK' line above is certifying a write the engine then discarded. Stop claiming "
+				     "the ceiling is raised - in this log, in the design doc, and on board m6333090 - "
+				     "before writing any more code against it."),
+				Clamped, GFPMNavTileCeiling);
+
+			return false;   // one shot
+		}),
+		GFPMNavVerifyDelaySec);
+}
+
+void FFPMNavMeshCeiling::Disarm()
+{
+	/*
+	 * The delayed verify is a one-shot ticker that captures a weak world pointer, so leaving it to fire
+	 * would be safe — but it would also print a navmesh verdict for a fix the master switch has just
+	 * reported as disarmed, and a log that contradicts FPM.Fix.List is exactly the inventory-lying
+	 * failure the ledger exists to prevent.
+	 *
+	 * There is no hook to remove: this fix acts at world load and installs no detour.
+	 */
+	if (VerifyHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(VerifyHandle);
+		VerifyHandle.Reset();
+	}
 }

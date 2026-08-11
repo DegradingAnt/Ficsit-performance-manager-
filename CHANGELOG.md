@@ -168,6 +168,53 @@ a build-menu widget on a machine with no viewport. ⚠ Only the `last=` asset of
 that sample says nothing about the other thousands. Banked as **m6449051**, deliberately NOT fixed: the
 server may need the widget CLASS for build validation, and gating it on shape alone is the
 "prove the blamed code runs" trap.
+## 2026-08-11 15:05 — CODE — the navmesh raise now proves it survived the engine's recreate
+
+Board **m6333090** has sat at priority 1 naming the one test that could settle it: *"read
+TileNumberHardLimit back from a placed actor AFTER the recreate (not just after the write)"*. Built it.
+
+- **What:** `FFPMNavMeshCeiling` schedules a one-shot ticker 20 s after a successful raise, re-iterates
+  every `ARecastNavMesh` in the world, and reports how many still hold the raised ceiling versus how many
+  were clamped back. Plus a `Disarm()` that drops the pending verify.
+
+- **Why:** the existing read-back happens **one line after the write**, so it proves the assignment landed
+  in the UPROPERTY and nothing else. Moments later the engine logs
+  `Recreating dtNavMesh instance due mismatch ... serialized maxTiles (65536, 16 bits) vs calculated
+  maxtiles (306440, 19 bits)` and rebuilds the instance. Two OPPOSITE readings survive that:
+    · the engine adopted the new headroom — 306440 fits under 524288 — and the fix works;
+    · the engine clamped back to the serialized 65536, the raise is cosmetic, and the twenty
+      "read back OK" lines are a dead instrument certifying a discarded write.
+  The immediate read-back cannot separate them, which means until now this fix logged twenty confident
+  successes without being able to say whether any of it stuck.
+
+- **Measured today, from the DatHost server's own log (0.11.13):** 20 `TileNumberHardLimit` raises,
+  4 `Recreating dtNavMesh` lines, and `Navmesh bounds are too large` = **0**. All consistent with the
+  adopt reading and none of it conclusive — which is the point.
+
+- **Files:** `Private|Public/Fixes/Interop/FPMNavMeshCeiling.*` · `FicsitsPerformanceManager.uplugin`
+  (0.11.17 → 0.11.18)
+
+- **Revert:** if the verify reports clamping, the correct response is to STOP CLAIMING the ceiling is
+  raised — in this log, in the design doc, and on the board — not to write a louder retry against an
+  engine that has already decided. The clamped branch says so in its own message.
+
+- **Verified:** build clean. Structure gate 28 / 0 / 0. **Not boot-tested** — one server boot now answers
+  m6333090 outright, in either direction, and both directions are spelled out in the log line.
+
+### ALSO: `navmesh-ceiling`'s client message was a Warning on the healthy path
+
+Same session, both machines: the server raised all four navmeshes with a read-back on each; the client
+correctly found none, because a joined client builds no navmesh. The client case printed at **Warning**
+on every world load. Now `Warning` only where a navmesh was expected (`!NM_Client`), `Display` otherwise.
+
+### ALSO: board m6142241 closed as ALREADY DONE
+
+*"FPM writes cvars at ECVF_SetByCode (0x0D)"* — priority 1, and true of **FPM1**. Its evidence cites
+`FPMPerfGovernor.cpp:3696`, a file that exists only in the superseded tree. FPM2 reads, from bytes:
+`FPMCVarWriter.cpp:22  constexpr EConsoleVariableFlags GFPMWriterPriority = ECVF_SetByPluginHighPriority;`
+and a tree-wide grep for `ECVF_SetByCode` returns nothing. ⚠ A board item pinned to `file:line` in a
+superseded tree cannot tell you it is stale — it just keeps looking urgent. Worth sweeping the other
+priority-1 items for the same shape.
 
 ## 2026-08-11 14:05 — CODE — a fix that did nothing turned off, a silent fix made observable
 
