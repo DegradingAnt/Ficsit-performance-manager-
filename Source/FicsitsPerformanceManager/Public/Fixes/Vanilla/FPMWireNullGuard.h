@@ -85,6 +85,13 @@ public:
 
 	virtual void Arm() override;
 
+	/**
+	 * Removes the save hook. Added 2026-08-11: without it `FPM.Fix.WireNullGuard 0` and `FPM.Enabled 0`
+	 * reported success and changed nothing. It stops future sweeps; it does NOT undo repairs already
+	 * made, and the implementation says why.
+	 */
+	virtual void Disarm() override;
+
 	/** The sweep point. A world load is when a save's dangling references become live objects. */
 	virtual void OnWorldLoad(UWorld* World) override;
 
@@ -98,6 +105,9 @@ public:
 	void SweepWorld(UWorld* World);
 
 private:
+	/** The SaveWorldEndOfFrame subscription. Invalid in the editor, where the ledger refuses the install. */
+	FDelegateHandle SaveHookHandle;
+
 	/** Components inspected, across every sweep this session. The denominator; never reported without it. */
 	int32 ComponentsScanned = 0;
 	int32 ComponentsWithNulls = 0;

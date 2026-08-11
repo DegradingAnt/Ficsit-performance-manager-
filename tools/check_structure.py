@@ -437,7 +437,19 @@ def check_disarm_coverage() -> None:
         if h.name.endswith(".g.h"):
             continue
         text = read(h)
-        m = re.search(r"class\s+(FFPM\w+)[^:{]*:\s*public\s+IFPMFix", text)
+        # ⚠ THE OPTIONAL `\w+_API` IS THE WHOLE POINT OF THIS LINE. Without it the pattern demanded the
+        # class name IMMEDIATELY after `class`, so every header written as
+        #     class FICSITSPERFORMANCEMANAGER_API FFPMWwiseServerGate final : public IFPMFix
+        # failed to match and was SILENTLY SKIPPED. Six fixes were invisible to this check on
+        # 2026-08-11 - FFPMAssetResidency, FFPMBlueprintSweepGate, FFPMHitchMeter, FFPMStallSampler,
+        # FFPMWireNullGuard, FFPMWwiseServerGate - and two of them genuinely had no Disarm at all while
+        # the gate printed "28 fixes, 0 error(s), 0 warning(s)".
+        #
+        # That is worse than having no check: `FPM.Fix.WwiseServerGate 0` and `FPM.Enabled 0` reported
+        # success while the hooks stayed installed, and this gate certified it. A filter that silently
+        # excludes is an absence-claim generator, and the exclusion here was invisible because a
+        # non-matching header is indistinguishable from a header with no fix class in it.
+        m = re.search(r"class\s+(?:\w+_API\s+)?(FFPM\w+)[^:{]*:\s*public\s+IFPMFix", text)
         if not m:
             continue
         if "virtual void Disarm() override" in text:

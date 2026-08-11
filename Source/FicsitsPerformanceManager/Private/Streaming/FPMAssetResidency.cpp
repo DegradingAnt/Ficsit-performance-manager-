@@ -23,15 +23,38 @@ namespace
 	 * ⚠ The name is prefixed because this module is a UNITY BUILD: file-local names are not file-local here,
 	 * and an anonymous namespace does not save you. FPMFixContract.h:166-171 records the C2374 this avoids.
 	 */
-	const TCHAR* const GFPMResidencyIconPaths[] =
+	const TCHAR* const GFPMResidencyPaths[] =
 	{
 		TEXT("/Game/FactoryGame/Interface/UI/Menu/Graphics/TXUI_Steam_128.TXUI_Steam_128"),
 		TEXT("/Game/FactoryGame/Interface/UI/Menu/Graphics/TXUI_Epic_128.TXUI_Epic_128"),
 		TEXT("/Game/FactoryGame/Interface/UI/Menu/Graphics/TXUI_XBOX_128.TXUI_XBOX_128"),
 		TEXT("/Game/FactoryGame/Interface/UI/Menu/Graphics/TXUI_PlayStation_128.TXUI_PlayStation_128"),
+
+		/*
+		 * ★ NOT AN ICON, AND THE MOST EXPENSIVE ENTRY IN THIS LIST. Added 2026-08-11 from Ant's own
+		 * client log — the asset is named by the hitch meter, not guessed:
+		 *
+		 *   HITCH 327.2 ms | GAME-THREAD BOUND | 2 SYNC LOAD(S),
+		 *     last='/Game/FactoryGame/Settings/OptionsMenu/UserInterface/US_ShowCreaturePerceptionIndicators'
+		 *
+		 * Twelve of those in one 90-minute session, 310-336 ms each, at irregular intervals - which fits a
+		 * creature-perception indicator being created when something notices the player, not a timer. It
+		 * is a `UFGUserSetting` reached through a soft reference, so nothing keeps it resident and every
+		 * query pays a blocking load. Exactly the shape the platform icons above are here for.
+		 *
+		 * ⚠ THE FIX IS EVIDENCE-BASED, THE CURE IS NOT YET PROVEN. The asset is definitely being sync
+		 * loaded and definitely costs ~320 ms. Whether PINNING it removes the hitch depends on the load
+		 * being the whole cost rather than one visible step of a larger stall, and that needs a boot to
+		 * settle. The hitch meter answers it directly: if these spikes survive with the asset pinned, the
+		 * sync load was a symptom and this entry should come back out rather than stay as cargo.
+		 *
+		 * ⚠ The log names ONE of TWO sync loads in that span ("last="). The other is unidentified, so a
+		 * partial improvement is a plausible outcome and must not be read as the fix failing.
+		 */
+		TEXT("/Game/FactoryGame/Settings/OptionsMenu/UserInterface/US_ShowCreaturePerceptionIndicators.US_ShowCreaturePerceptionIndicators"),
 	};
 
-	constexpr int32 GFPMResidencyNumIcons = static_cast<int32>(UE_ARRAY_COUNT(GFPMResidencyIconPaths));
+	constexpr int32 GFPMResidencyNumPaths = static_cast<int32>(UE_ARRAY_COUNT(GFPMResidencyPaths));
 }
 
 FFPMAssetResidency& FFPMAssetResidency::Get()
@@ -98,8 +121,8 @@ void FFPMAssetResidency::EnsurePinned(const TCHAR* Moment)
 	}
 
 	FStreamableAsyncLoadParams Params;
-	Params.TargetsToStream.Reserve(GFPMResidencyNumIcons);
-	for (const TCHAR* const Path : GFPMResidencyIconPaths)
+	Params.TargetsToStream.Reserve(GFPMResidencyNumPaths);
+	for (const TCHAR* const Path : GFPMResidencyPaths)
 	{
 		// Built through FString on purpose: FSoftObjectPath's character-pointer constructors are
 		// per-encoding while the FString one is unconditional, so this cannot be broken by a TCHAR-width
@@ -117,7 +140,7 @@ void FFPMAssetResidency::EnsurePinned(const TCHAR* Moment)
 		MoveTemp(Params), TEXT("FPM platform-icon residency"));
 
 	UE_CLOG(!PinHandle.IsValid(), LogFicsitsPerformanceManager, Warning,
-		TEXT("[FPM] residency: RequestAsyncLoad returned no handle at %s - the platform icons stay unpinned "
+		TEXT("[FPM] residency: RequestAsyncLoad returned no handle at %s - the pinned set stays unpinned "
 		     "and BPW_UserIcon keeps its blocking load."), Moment);
 }
 
@@ -126,7 +149,7 @@ void FFPMAssetResidency::OnIconsLoaded(TSharedPtr<FStreamableHandle> CompletedHa
 	if (!CompletedHandle.IsValid())
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Warning,
-			TEXT("[FPM] residency: icon load completed with no handle - icons stay unpinned."));
+			TEXT("[FPM] residency: pin load completed with no handle - the set stays unpinned."));
 		return;
 	}
 
@@ -143,7 +166,7 @@ void FFPMAssetResidency::OnIconsLoaded(TSharedPtr<FStreamableHandle> CompletedHa
 	 * which of four nulls is which by array position.
 	 */
 	Resolved = 0;
-	for (const TCHAR* const Path : GFPMResidencyIconPaths)
+	for (const TCHAR* const Path : GFPMResidencyPaths)
 	{
 		if (FSoftObjectPath(FString(Path)).ResolveObject() != nullptr)
 		{
@@ -151,10 +174,10 @@ void FFPMAssetResidency::OnIconsLoaded(TSharedPtr<FStreamableHandle> CompletedHa
 		}
 		else
 		{
-			// A game update renaming or moving an icon lands here. That icon simply keeps vanilla's blocking
+			// A game update renaming or moving one lands here. That asset simply keeps vanilla's blocking
 			// load — nothing breaks — but it must be visible rather than silent.
 			UE_LOG(LogFicsitsPerformanceManager, Warning,
-				TEXT("[FPM] residency: '%s' did not resolve after its async load - that icon keeps "
+				TEXT("[FPM] residency: '%s' did not resolve after its async load - that asset keeps "
 				     "BPW_UserIcon's blocking load. Renamed by a game update?"), Path);
 		}
 	}
@@ -172,10 +195,10 @@ void FFPMAssetResidency::OnIconsLoaded(TSharedPtr<FStreamableHandle> CompletedHa
 		 * then read the contaminated count. An instrument must not appear in its own results.
 		 */
 		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] residency: %d/%d vanilla platform icons pinned - the user-icon widget's "
+			TEXT("[FPM] residency: %d/%d vanilla assets pinned (4 platform icons + the creature-perception setting) - the user-icon widget's "
 			     "LoadAsset_Blocking now finds them resident. Its own avatar prints should REMAIN; the "
 			     "same-frame FlushAsyncLoading lines should be GONE."),
-			Resolved, GFPMResidencyNumIcons);
+			Resolved, GFPMResidencyNumPaths);
 	}
 }
 
@@ -198,7 +221,7 @@ void FFPMAssetResidency::Disarm()
 		PinHandle.Reset();
 	}
 
-	// Zero residue. The last reference goes with the handle, so the icons become collectable again exactly
+	// Zero residue. The last reference goes with the handle, so the pinned assets become collectable again exactly
 	// as they are in vanilla. Nothing was ever written anywhere, so there is nothing else to undo — and that
 	// is by design, because a removed mod cannot run cleanup code.
 	Resolved = 0;

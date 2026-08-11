@@ -62,7 +62,7 @@ void FFPMWireNullGuard::Arm()
 	 * Cost is bounded and rare: autosaves are minutes apart, and the sweep is a pointer test per wire
 	 * entry. It does not touch the per-frame path.
 	 */
-	FPM_SUBSCRIBE("wire-null-guard", UFGSaveSession::SaveWorldEndOfFrame,
+	SaveHookHandle = FPM_SUBSCRIBE("wire-null-guard", UFGSaveSession::SaveWorldEndOfFrame,
 		[](auto& Scope, UFGSaveSession* Self, UWorld* World, ELevelTick TickType, float DeltaSeconds)
 		{
 			// Sweep, then FALL THROUGH. The save must still happen -- cancelling it to avoid a crash
@@ -80,6 +80,31 @@ void FFPMWireNullGuard::Arm()
 		     "Guards the autosave path that SIGSEGV'd the dedicated server on 2026-08-09 (null UClass in "
 		     "FFastSaveReferenceCollector::HandleObjectReference)."),
 		CVarWireGuardRepair.GetValueOnAnyThread() != 0 ? TEXT("ON") : TEXT("OFF (report only)"));
+}
+
+void FFPMWireNullGuard::Disarm()
+{
+	/*
+	 * ★ THIS DID NOT EXIST, AND ITS ABSENCE MADE A TOGGLE LIE. Same defect as the Wwise gate: `Arm()`
+	 * discarded the subscribe handle and no `Disarm()` was declared, so `FPM.Fix.WireNullGuard 0` and
+	 * `FPM.Enabled 0` reported success while the hook stayed installed and kept sweeping every save.
+	 *
+	 * ⚠ AND THE STRUCTURE GATE PASSED IT. `tools/check_structure.py` grew a `check_disarm_coverage()`
+	 * check for exactly this, and on 2026-08-11 it printed `28 fixes, 0 error(s), 0 warning(s)` with
+	 * this fix and the Wwise gate both uncovered. The check is being fixed alongside this, because a
+	 * gate that certifies the defect it was built to catch is worse than no gate.
+	 *
+	 * ⚠ WHAT DISARM DOES **NOT** DO HERE, deliberately: it does not undo repairs already made. The sweep
+	 * nulls out dangling wire references to stop `FFastSaveReferenceCollector::HandleObjectReference`
+	 * dereferencing them; those entries were already unreachable, and "restoring" them would hand the
+	 * save path back the pointer that SIGSEGV'd the dedicated server on 2026-08-09. Disarm stops future
+	 * sweeps. It is not an undo, and claiming otherwise would be the more dangerous lie.
+	 */
+	if (SaveHookHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UFGSaveSession::SaveWorldEndOfFrame, SaveHookHandle);
+		SaveHookHandle.Reset();
+	}
 }
 
 void FFPMWireNullGuard::OnWorldLoad(UWorld* World)

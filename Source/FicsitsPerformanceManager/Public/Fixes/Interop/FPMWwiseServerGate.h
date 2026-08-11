@@ -68,6 +68,16 @@ public:
 
 	virtual void Arm() override;
 
+	/**
+	 * Removes the StopActor detour. Added 2026-08-11: without it `FPM.Fix.WwiseServerGate 0` and
+	 * `FPM.Enabled 0` reported success and changed nothing, because Arm() discarded its subscribe handle.
+	 */
+	virtual void Disarm() override;
+
 	/** Suppressed-call total for the session. Read by `FPM.WwiseGate.Report` and the overlay. */
 	static int64 SuppressedCount();
+
+private:
+	/** The StopActor subscription. Invalid on a client, where Arm() returns before subscribing. */
+	FDelegateHandle StopActorHookHandle;
 };

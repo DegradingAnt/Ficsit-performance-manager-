@@ -63,7 +63,7 @@ void FFPMWwiseServerGate::Arm()
 	 * first thing the original does on this machine is fail `FAkAudioDevice::Get()` and return. There
 	 * is no branch in it that could do something useful on a server.
 	 */
-	FPM_SUBSCRIBE("wwise-server-gate", UAkGameplayStatics::StopActor,
+	StopActorHookHandle = FPM_SUBSCRIBE("wwise-server-gate", UAkGameplayStatics::StopActor,
 		[](auto& Scope, AActor* /*Actor*/)
 		{
 			Scope.Cancel();
@@ -83,6 +83,34 @@ void FFPMWwiseServerGate::Arm()
 		TEXT("[FPM] Wwise server audio gate armed (dedicated server). StopActor cannot reach an audio "
 		     "device here (AkGameplayStatics.cpp:974-979), so cancelling it is behaviour-identical "
 		     "minus the log write. Measured 681 such warnings in the 2026-08-09 server session."));
+}
+
+void FFPMWwiseServerGate::Disarm()
+{
+	/*
+	 * ★ THIS DID NOT EXIST, AND ITS ABSENCE MADE A TOGGLE LIE.
+	 *
+	 * `Arm()` discarded the `FPM_SUBSCRIBE` return value and no `Disarm()` was declared, so the base
+	 * class's do-nothing body ran. `FPM.Fix.WwiseServerGate 0` and `FPM.Enabled 0` both reported success
+	 * while the funchook detour stayed installed and the gate kept cancelling `StopActor`.
+	 *
+	 * That is worse than a missing feature. Ant used the per-fix toggles on 2026-08-11 to find which fix
+	 * had broken her game — a toggle that silently does nothing would have cleared an innocent fix and
+	 * sent the search somewhere else.
+	 *
+	 * ⚠ `UNSUBSCRIBE_METHOD` is correct even though this is the non-virtual `SUBSCRIBE_METHOD` form:
+	 * both drive the same `HookInvoker<decltype(&M), &M>` and `RemoveHandler` clears the BEFORE and
+	 * AFTER maps alike (`NativeHookManager.h:359-378`).
+	 *
+	 * ⚠ The `IsValid()` guard is load-bearing, not habit. On a client `Arm()` returns before subscribing
+	 * at all, and in the editor the ledger refuses the install — both leave an invalid handle, and
+	 * `RemoveHandler` would then walk arrays SML never allocated.
+	 */
+	if (StopActorHookHandle.IsValid())
+	{
+		UNSUBSCRIBE_METHOD(UAkGameplayStatics::StopActor, StopActorHookHandle);
+		StopActorHookHandle.Reset();
+	}
 }
 
 /*

@@ -61,7 +61,55 @@ descriptor, so there is no second place to bump and no way for the log line to d
 
 Entries since the last `VERSION` line are the draft release notes for the next ficsit.app upload.
 
----
+---## 2026-08-11 13:35 — CODE — two toggles that lied, the gate that certified them, and the 320 ms asset
+
+From the whole-mod VOX review Ant asked for after `0.11.14`.
+
+- **What:** (1) `FFPMWwiseServerGate` and `FFPMWireNullGuard` now store their `FPM_SUBSCRIBE` handle and
+  implement `Disarm()`. (2) `tools/check_structure.py`'s `check_disarm_coverage()` regex now tolerates an
+  `_API` export macro. (3) `FFPMAssetResidency` pins
+  `US_ShowCreaturePerceptionIndicators`. (4) Residency identifiers and log text renamed off "icons".
+
+- **Why:**
+  1. **Two per-fix toggles silently did nothing.** Both fixes discarded the subscribe handle and declared
+     no `Disarm()`, so the base class's empty body ran: `FPM.Fix.WwiseServerGate 0`,
+     `FPM.Fix.WireNullGuard 0` and `FPM.Enabled 0` all reported success while the funchook detour stayed
+     installed. Ant used exactly those toggles on 2026-08-11 to find which fix had broken her game — a
+     toggle that silently no-ops would have cleared an innocent fix and sent the search elsewhere.
+  2. **The gate built to catch this certified the defect.** `check_disarm_coverage()` matched
+     `class\s+(FFPM\w+)...: public IFPMFix`, which requires the class name immediately after `class`.
+     Six headers are written `class FICSITSPERFORMANCEMANAGER_API FFPMx final : public IFPMFix` and were
+     therefore **silently skipped** — `FFPMAssetResidency`, `FFPMBlueprintSweepGate`, `FFPMHitchMeter`,
+     `FFPMStallSampler`, `FFPMWireNullGuard`, `FFPMWwiseServerGate`. It printed
+     `28 fixes, 0 error(s), 0 warning(s)` with two real violations present. A filter that silently
+     excludes is an absence-claim generator.
+  3. Ant's client log named a `UFGUserSetting` sync-loaded twelve times in 90 minutes at 310–336 ms each,
+     game-thread bound. `FFPMAssetResidency` already had the pin/retry/re-pin machinery, so this is one
+     path string, not a new mechanism.
+  4. With a settings asset in the list, `"%d/%d vanilla platform icons pinned"` became a false claim.
+
+- **Files:** `Private/Fixes/Interop/FPMWwiseServerGate.cpp` + its header ·
+  `Private/Fixes/Vanilla/FPMWireNullGuard.cpp` + its header · `Private/Streaming/FPMAssetResidency.cpp` ·
+  `tools/check_structure.py` · `FicsitsPerformanceManager.uplugin` (0.11.14 → 0.11.15)
+
+- **Revert:** the residency entry comes back out if the 320 ms spikes survive with it pinned — the comment
+  says so at the call site rather than leaving it as cargo. The two `Disarm()`s should not be reverted.
+
+- **Verified:** build clean. Structure gate exercised in **both** directions: with the `Disarm`
+  declaration deleted (not commented — the check greps for the substring) it printed the error and
+  **exited 1**; restored, it exited 0. The regex fix is proven by the negative case, not by the happy path.
+
+### Checked against the community docs, and NOT changed
+
+- `SUBSCRIBE_UOBJECT_METHOD` vs `SUBSCRIBE_METHOD_VIRTUAL` — `hooking.adoc:192` recommends the former for
+  UObject-derived classes. Read both macro bodies (`NativeHookManager.h:601` and `:625`): they expand to
+  the **same** `HookInvoker::InstallHook` + `AddHandlerBefore`, the UOBJECT form merely supplying
+  `GetDefault<ObjectClass>()` instead of the caller passing a sample. Style, not behaviour. No change.
+- `wwise-server-gate`'s `Side() == Any` was flagged in review and **withdrawn**: `EFPMFixSide` has no
+  server-only value and `Arm()` self-guards, exactly as its header already argues.
+- ⚠ `hooking.adoc:266-269` — *"Unhooking functionality has not been extensively tested."* Every `Disarm()`
+  and the whole master switch now rest on it. Recorded as a standing risk, not a defect.
+
 ## 2026-08-11 13:15 — CODE — three fixes that were armed and doing nothing, or doing harm
 
 Found by reading Ant's client and dedicated-server logs from the 0.11.13 session, after she reported
