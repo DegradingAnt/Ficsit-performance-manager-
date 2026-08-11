@@ -214,6 +214,13 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 			"to free otherwise. 2 can cost frames AND power, so it is not a sensible default."),
 		1, 0, 2);
 
+	/*
+	 * ⚠ A FLOAT ROW, AND THE PAGE HAS NO FLOAT HELPER YET. FPM.Sharpness.Amount is a float cvar, and
+	 * SyncAllToCVars only knows how to read Integer and Bool rows - adding an Int row here would write
+	 * a truncated value and look like it worked. Left off the page deliberately until the float path
+	 * exists; the cvar works from the console meanwhile, and FPM.Sharpness.Report explains itself.
+	 */
+
 	// ── WEATHER ─────────────────────────────────────────────────────────────────────────────────────
 	UConfigPropertySection* Weather = AddSection(TEXT("Weather"),
 		LOCTEXT("SecWeather", "Weather and particles"));

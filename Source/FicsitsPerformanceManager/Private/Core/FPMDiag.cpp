@@ -230,6 +230,13 @@ static TAutoConsoleVariable<int32> CVarDiagSettings(
 	     "the asset scan is broken and no count from it means anything."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagSharpness(
+	TEXT("FPM.Diag.Sharpness"), 1,
+	TEXT("Upscaler sharpening. 0 = silent, 1 = one line per route change. The 'DLSS is live so this is "
+	     "IGNORED' and 'upscaler unknown' warnings are NOT gated - both mean the player turned a knob "
+	     "that did nothing, which they must be told about."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarDiagReflex(
 	TEXT("FPM.Diag.Reflex"), 1,
 	TEXT("NVIDIA Reflex mode. 0 = silent, 1 = one line per mode change naming the route used. The "
@@ -285,6 +292,7 @@ namespace
 		&CVarDiagNaniteStreaming,
 		&CVarDiagMaterialEffect,
 		&CVarDiagSettings,
+		&CVarDiagSharpness,
 		&CVarDiagReflex,
 		&CVarDiagUpscalerPreset,
 		&CVarDiagInstanceSwap,
@@ -335,6 +343,7 @@ namespace
 		case FPMDiag::EChannel::NaniteStreaming: return TEXT("FPM.Diag.NaniteStreaming");
 		case FPMDiag::EChannel::MaterialEffect: return TEXT("FPM.Diag.MaterialEffect");
 		case FPMDiag::EChannel::Settings:       return TEXT("FPM.Diag.Settings");
+		case FPMDiag::EChannel::Sharpness:      return TEXT("FPM.Diag.Sharpness");
 		case FPMDiag::EChannel::Reflex:         return TEXT("FPM.Diag.Reflex");
 		case FPMDiag::EChannel::UpscalerPreset: return TEXT("FPM.Diag.UpscalerPreset");
 		case FPMDiag::EChannel::InstanceSwap:   return TEXT("FPM.Diag.InstanceSwap");

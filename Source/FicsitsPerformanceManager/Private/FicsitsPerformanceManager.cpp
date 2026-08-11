@@ -28,6 +28,7 @@
 #include "Fixes/Interop/FPMSchematicProbe.h"
 #include "Fixes/Interop/FPMInstanceRemoveSwap.h"
 #include "Fixes/ModFeatures/FPMReflexMode.h"
+#include "Fixes/ModFeatures/FPMUpscalerSharpness.h"
 #include "Fixes/ModFeatures/FPMUpscalerPreset.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 #include "Fixes/Interop/FPMTexturePoolGuard.h"
@@ -114,6 +115,12 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * the fix discovers its own route and names it.
 	 */
 	FPMFixes::Arm(FFPMReflexMode::Get());
+
+	/*
+	 * Sharpening, routed by the live upscaler - and the first real consumer of FPMUpscaler, which until
+	 * now reported to nobody. Off by default: sharpening is taste, not a fix.
+	 */
+	FPMFixes::Arm(FFPMUpscalerSharpness::Get());
 
 	// The two join-crash repairs, carried from the old mod on 2026-08-08 and REBUILT rather than copied:
 	// both used to prevent their crash by cancelling the work, and both cost something real for it — an
