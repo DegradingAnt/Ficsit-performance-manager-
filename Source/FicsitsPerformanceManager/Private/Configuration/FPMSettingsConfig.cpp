@@ -126,7 +126,27 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 	 * One helper per type. Each takes THE CVAR NAME and derives the subobject name from it, which is
 	 * what makes the binding unbreakable — see SubobjectNameFor.
 	 */
-	auto AddInt = [this, ClsInt](UConfigPropertySection* Sec, const TCHAR* CVarName,
+	/*
+	 * ★★★ THE BINDING THAT WAS MISSING, AND ITS ABSENCE MADE THIS WHOLE PAGE A DEAD INSTRUMENT.
+	 *
+	 * Found by a vox-review pass on 2026-08-11, minutes after shipping: `SyncAllToCVars` was written,
+	 * documented and never CALLED. Every row would have rendered, saved to the .cfg and reached no cvar
+	 * at all - a settings page where nothing does anything, and nothing in a build or a structure gate
+	 * can see that.
+	 *
+	 * ⚠ BINDING ON THE CDO IS CORRECT HERE, which is unusual enough to state. SML does not instantiate
+	 * the configuration: `UConfigManager::RegisterModConfiguration` takes
+	 * `Configuration.GetDefaultObject()->RootSection` as the LIVE value
+	 * (ConfigManager.cpp:280) and then loads the file into it (:287). The CDO's subobjects ARE the
+	 * player's settings, so a constructor-time bind is binding the real thing.
+	 */
+	auto BindRow = [this](UConfigProperty* P)
+	{
+		P->OnPropertyValueChanged.AddDynamic(this, &UFPMSettingsConfig::SyncAllToCVars);
+		BoundRows.Add(P);
+	};
+
+	auto AddInt = [this, ClsInt, &BindRow](UConfigPropertySection* Sec, const TCHAR* CVarName,
 	                             const FText& Display, const FText& Tip, int32 Default,
 	                             int32 Min, int32 Max)
 	{
@@ -157,10 +177,10 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 			W->MaxValue   = Max;
 		}
 		Sec->SectionProperties.Add(SubName, P);
-		BoundRows.Add(P);
+		BindRow(P);
 	};
 
-	auto AddBool = [this, ClsBool](UConfigPropertySection* Sec, const TCHAR* CVarName,
+	auto AddBool = [this, ClsBool, &BindRow](UConfigPropertySection* Sec, const TCHAR* CVarName,
 	                               const FText& Display, const FText& Tip, bool Default)
 	{
 		const FString SubName = SubobjectNameFor(CVarName);
@@ -171,7 +191,7 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 		P->DefaultValue = Default;
 		P->Value        = Default;
 		Sec->SectionProperties.Add(SubName, P);
-		BoundRows.Add(P);
+		BindRow(P);
 	};
 
 	// ── UPSCALER ────────────────────────────────────────────────────────────────────────────────────

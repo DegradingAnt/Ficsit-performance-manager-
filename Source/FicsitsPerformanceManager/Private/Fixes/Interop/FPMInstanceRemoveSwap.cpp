@@ -221,6 +221,17 @@ void FFPMInstanceRemoveSwap::OnWorldLoad(UWorld* World)
 			 * re-sweep that changes something means the CDO route does nothing and the sweeps are
 			 * load-bearing. Saying which removes an assumption instead of leaving one in the code.
 			 */
+			/*
+			 * ⚠ FILE-STATIC, SO THIS PRINTS ONCE PER PROCESS AND NOT ONCE PER WORLD - and that is the
+			 * intent, stated because a function-local static inside a lambda is easy to misread as
+			 * per-call state. The CDO question it answers is a property of the ENGINE BUILD, not of a
+			 * save: whether a value set on a class default object reaches objects constructed later
+			 * cannot change between two world loads. Re-printing it on every reload would be noise
+			 * about a settled question.
+			 *
+			 * GFPMSwapResweepIndex above IS reset per world, because how many re-sweeps have run is a
+			 * property of THIS world load. The two statics look alike and mean different things.
+			 */
 			static bool bSaidVerdict = false;
 			if (!bSaidVerdict)
 			{

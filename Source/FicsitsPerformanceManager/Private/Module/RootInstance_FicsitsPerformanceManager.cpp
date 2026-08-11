@@ -42,4 +42,28 @@ void URootInstance_FicsitsPerformanceManager::DispatchLifecycleEvent(ELifecycleP
 	// checks, before anything depends on that being true.
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] instance module: %s"), *LifecyclePhaseToString(Phase));
+
+	/*
+	 * ★ APPLY THE SAVED SETTINGS ONCE, AT THE FIRST MOMENT THEY EXIST.
+	 *
+	 * The rows push themselves into their cvars whenever the player CHANGES one - that binding lives in
+	 * UFPMSettingsConfig's constructor. But a change delegate says nothing about the values that came
+	 * off disk at startup, and whether SML broadcasts OnPropertyValueChanged while deserialising is not
+	 * something this code should assume. Without this call, a player's saved preferences would sit in
+	 * the .cfg and apply only after they went back into the menu and nudged something.
+	 *
+	 * POST_INITIALIZATION is the right phase: Super::DispatchLifecycleEvent above is what performs the
+	 * declarative registration, and UConfigManager::RegisterModConfiguration loads the file into the
+	 * CDO's RootSection before it returns (ConfigManager.cpp:280-287). So by the time this line runs,
+	 * the values are real.
+	 *
+	 * ⚠ It reads back and reports, so "settings applied: 0 rows" is visible rather than silent.
+	 */
+	if (Phase == ELifecyclePhase::POST_INITIALIZATION)
+	{
+		if (UFPMSettingsConfig* Settings = GetMutableDefault<UFPMSettingsConfig>())
+		{
+			Settings->SyncAllToCVars();
+		}
+	}
 }
