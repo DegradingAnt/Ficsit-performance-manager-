@@ -6,8 +6,10 @@
 
 #include "Configuration/ConfigProperty.h"
 #include "Configuration/Properties/ConfigPropertyBool.h"
+#include "Configuration/Properties/ConfigPropertyFloat.h"
 #include "Configuration/Properties/ConfigPropertyInteger.h"
 #include "Configuration/Properties/ConfigPropertySection.h"
+#include "Configuration/Properties/WidgetExtension/CP_Float.h"
 #include "Configuration/Properties/WidgetExtension/CP_Integer.h"
 #include "Configuration/Properties/WidgetExtension/CP_Section.h"
 
@@ -80,6 +82,7 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 	UClass* const ClsSection = ResolveSMLPropertyClass<UConfigPropertySection>(TEXT("BP_ConfigPropertySection"));
 	UClass* const ClsInt     = ResolveSMLPropertyClass<UConfigPropertyInteger>(TEXT("BP_ConfigPropertyInteger"));
 	UClass* const ClsBool    = ResolveSMLPropertyClass<UConfigPropertyBool>   (TEXT("BP_ConfigPropertyBool"));
+	UClass* const ClsFloat   = ResolveSMLPropertyClass<UConfigPropertyFloat>  (TEXT("BP_ConfigPropertyFloat"));
 
 	RootSection = static_cast<UConfigPropertySection*>(CreateDefaultSubobject(
 		TEXT("RootSection"), UConfigPropertySection::StaticClass(), ClsSection, true, false));
@@ -194,6 +197,27 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 		BindRow(P);
 	};
 
+	auto AddFloat = [this, ClsFloat, &BindRow](UConfigPropertySection* Sec, const TCHAR* CVarName,
+	                                           const FText& Display, const FText& Tip, float Default,
+	                                           float Min, float Max)
+	{
+		const FString SubName = SubobjectNameFor(CVarName);
+		UConfigPropertyFloat* P = static_cast<UConfigPropertyFloat*>(CreateDefaultSubobject(
+			*SubName, UConfigPropertyFloat::StaticClass(), ClsFloat, true, false));
+		P->DisplayName  = Display;
+		P->Tooltip      = Tip;
+		P->DefaultValue = Default;
+		P->Value        = Default;
+		if (UCP_Float* W = Cast<UCP_Float>(P))
+		{
+			W->WidgetType = ECP_FloatWidgetType::CPF_Slider;
+			W->MinValue   = Min;
+			W->MaxValue   = Max;
+		}
+		Sec->SectionProperties.Add(SubName, P);
+		BindRow(P);
+	};
+
 	// ── UPSCALER ────────────────────────────────────────────────────────────────────────────────────
 	UConfigPropertySection* Upscaler = AddSection(TEXT("Upscaler"),
 		LOCTEXT("SecUpscaler", "Upscaler"));
@@ -214,12 +238,14 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 			"to free otherwise. 2 can cost frames AND power, so it is not a sensible default."),
 		1, 0, 2);
 
-	/*
-	 * ⚠ A FLOAT ROW, AND THE PAGE HAS NO FLOAT HELPER YET. FPM.Sharpness.Amount is a float cvar, and
-	 * SyncAllToCVars only knows how to read Integer and Bool rows - adding an Int row here would write
-	 * a truncated value and look like it worked. Left off the page deliberately until the float path
-	 * exists; the cvar works from the console meanwhile, and FPM.Sharpness.Report explains itself.
-	 */
+	AddFloat(Upscaler, TEXT("FPM.Sharpness.Amount"),
+		LOCTEXT("Sharpness", "Sharpening"),
+		LOCTEXT("SharpnessTip",
+			"0 leaves the game's own sharpening alone. The control used depends on which upscaler you "
+			"are running - FSR has its own, and TSR or no upscaler uses the tonemapper's. DLSS and XeSS "
+			"sharpen inside their own pass, so this does nothing for them and says so in the log rather "
+			"than pretending."),
+		0.f, 0.f, 2.f);
 
 	// ── WEATHER ─────────────────────────────────────────────────────────────────────────────────────
 	UConfigPropertySection* Weather = AddSection(TEXT("Weather"),
@@ -289,6 +315,26 @@ void UFPMSettingsConfig::SyncAllToCVars()
 		else if (const UConfigPropertyBool* AsBool = Cast<UConfigPropertyBool>(Row))
 		{
 			Want = AsBool->Value ? 1 : 0;
+		}
+		else if (const UConfigPropertyFloat* AsFloat = Cast<UConfigPropertyFloat>(Row))
+		{
+			/*
+			 * ⚠ FLOATS GO THROUGH SetFloat, NOT THROUGH THE int32 PATH. An earlier version of this page
+			 * had no float branch at all, so a float row would have fallen through to `continue` and
+			 * silently controlled nothing - which is why FPM.Sharpness.Amount was deliberately kept OFF
+			 * the page until this existed rather than shipped as an Int row that truncates 0.5 to 0.
+			 */
+			Var->Set(AsFloat->Value, ECVF_SetByCode);
+			++Written;
+
+			if (!FMath::IsNearlyEqual(Var->GetFloat(), AsFloat->Value, KINDA_SMALL_NUMBER))
+			{
+				++Mismatched;
+				UE_LOG(LogFicsitsPerformanceManager, Warning,
+					TEXT("[FPM] settings: wrote %.3f to '%s' and read back %.3f. Something outranks this "
+					     "write."), AsFloat->Value, *CVarName, Var->GetFloat());
+			}
+			continue;
 		}
 		else
 		{
