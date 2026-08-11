@@ -21,29 +21,43 @@
  *     UNVERIFIED"*;
  *   · mind `t.Streamline.Reflex.HandleMaxTickRate` — a fight with a frame limiter shows up as judder.
  *
- * ═══ ⚠ NEITHER ROUTE IS VERIFIED HERE, SO THIS FIX DISCOVERS ITS OWN ═══
+ * ═══ ★★★ THE CVAR NAMES ARE VERIFIED. THE SPEC SAID THEY WERE NOT. ═══
  *
- * Checked 2026-08-11 and both of the obvious approaches have a hole:
- *   · **No headers.** The SML dev tree's `Plugins/` holds AbstractInstance, FactoryGameUbtPlugin,
- *     GameplayEvents, Online, RainRendering, ReliableMessaging, SignificanceISPC, Wwise, WwiseNiagara —
- *     and no Streamline or DLSS. So `UStreamlineLibraryReflex` cannot be linked against at all.
- *   · **No verified cvar names.** Ant's own client log carries 336 Streamline mentions and **zero**
- *     `t.Streamline.*` strings, so the names in the spec remain exactly as it labelled them: unverified.
+ * Ant, 2026-08-11: *"check the dumps for how to do it"* — and that settled it in one command. UTF-16
+ * extraction from `FactoryGame/Plugins/StreamlineCore/Binaries/Win64/
+ * FactoryGameSteam-StreamlineCore-Win64-Shipping.dll` returns the names WITH their help text:
  *
- * What IS established, from that same log:
+ *     "Enable Streamline Reflex extension. (default = 0)"     t.Streamline.Reflex.Enable
+ *     "Streamline Reflex mode (default = 1)
+ *        1: low latency
+ *        2: low latency with boost"                           t.Streamline.Reflex.Mode
+ *     "Enable Streamline Reflex extension when other SL
+ *      features need it. (default = 1)"                       t.Streamline.Reflex.Auto
+ *     "Controls whether Streamline Reflex handles frame rate
+ *      limiting instead of the engine (default = true)"       t.Streamline.Reflex.HandleMaxTickRate
+ *
+ * Same technique that produced the DLSS preset letter-map. `FPG-REBUILD-SPEC.md:76` should be updated:
+ * its *"literal `t.Streamline.Reflex.*` names are UNVERIFIED"* is now false, and its mode numbering is
+ * confirmed correct.
+ *
+ * ⚠⚠ AND THE EXTRACTION CAUGHT A DEFECT IN THIS FILE'S FIRST VERSION.
+ * **`Reflex.Enable` ships at 0 — Reflex is OFF in this game.** The first version set only `.Mode`,
+ * whose default is already 1, so it would have written a mode onto a DISABLED extension and reported
+ * success forever. That is the dead-instrument shape, in the fix whose own header warns about it, and
+ * only the help text revealed it. **Setting a mode is not enabling a feature.**
+ *
+ * ═══ WHY THE REFLECTION FALLBACK STAYS ANYWAY ═══
+ *
+ * The headers genuinely are absent — the SML dev tree's `Plugins/` holds AbstractInstance,
+ * FactoryGameUbtPlugin, GameplayEvents, Online, RainRendering, ReliableMessaging, SignificanceISPC,
+ * Wwise and WwiseNiagara, and no Streamline — so `UStreamlineLibraryReflex` still cannot be linked
+ * against. The cvars are the primary route now that they are proven; the reflection path remains for
+ * the case where a game update renames them, and the fix NAMES whichever route it used so a silent
+ * switch between them is impossible.
+ *
+ * Corroboration that the capability is real, from Ant's own client log:
  *     LogPluginManager: Mounting Project plugin StreamlineReflex
  *     LogStreamline: FStreamlineMaxTickRateHandler::Initialize sl::ReflexState::lowLatencyAvailable=1
- * — the plugin is mounted and low-latency is available on her hardware. The capability is real; only
- * the handle on it is uncertain.
- *
- * So this fix tries the cvar, and if the cvar does not exist it goes through the reflection route,
- * and **it says which one it used**. A fix that silently picked a route nobody can name is how a lever
- * ends up "working" for months without anyone able to prove it.
- *
- * ⚠ REFLECTION IS NOT A HACK HERE, IT IS THE ONLY AVAILABLE ROUTE. `SetReflexMode` is a `UFUNCTION`,
- * so the reflection system is its public interface by construction — and unlike a header dependency it
- * degrades to a clear "not found" line on a machine with no Streamline, instead of failing to load the
- * whole module.
  */
 class FICSITSPERFORMANCEMANAGER_API FFPMReflexMode final : public IFPMFix
 {
@@ -94,4 +108,11 @@ private:
 	FString RouteFound;
 
 	int32 AppliedMode = -1;
+
+	/**
+	 * What `t.Streamline.Reflex.Enable` / `.Mode` held BEFORE our first write, so Disarm restores what
+	 * was actually there rather than what the DLL documents as the default. -1 = not captured yet.
+	 */
+	int32 PriorEnable = -1;
+	int32 PriorMode = -1;
 };
