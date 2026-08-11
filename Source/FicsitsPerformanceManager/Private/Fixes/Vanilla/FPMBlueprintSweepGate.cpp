@@ -20,6 +20,19 @@
  * so a small library never produced the stutter in the first place and letting vanilla run is strictly
  * the safer branch. Ant's library is 262.
  */
+/*
+ * OFF BY DEFAULT AND IT MATTERS. While 0 the gate runs on a dedicated server in pure OBSERVE mode —
+ * every sweep counted, every sweep allowed through. Set to 1 only after a boot has shown the counter
+ * moving, because the server is the blueprint SOURCE OF TRUTH (board m6306394) and cancelling its
+ * sweeps on a guess risks the thing that repo item exists to record.
+ */
+static TAutoConsoleVariable<int32> CVarBlueprintGateServerEnforce(
+	TEXT("FPM.Blueprint.ServerEnforce"), 0,
+	TEXT("Dedicated server only. 0 = observe and count sweeps but cancel nothing (default). "
+	     "1 = actually gate them. Leave at 0 until FPM.Blueprint.Report shows a non-zero server sweep "
+	     "count, which is the evidence that the server runs this sweep at all."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarBlueprintGateMinLibrary(
 	TEXT("FPM.Blueprint.MinLibrary"), 24,
 	TEXT("Only gate the every-2-seconds blueprint recipe sweep once the library has at least this many "
@@ -204,6 +217,38 @@ bool FFPMBlueprintSweepGate::ShouldCancelSweep(AFGBlueprintSubsystem* Subsystem)
 	Subsystem->GetBlueprintDescriptors_Internal(Descriptors);
 	const int32 LibrarySize = Descriptors.Num();
 
+	/*
+	 * ★ ON A DEDICATED SERVER THIS GATE OBSERVES AND CANCELS NOTHING, UNTIL ONE BOOT SAYS OTHERWISE.
+	 *
+	 * The header used to keep this fix off the server entirely, reasoning that "the blueprint LIBRARY is
+	 * a per-player collection of local files". Board item m6306394 disproves that half from bytes on
+	 * both machines: *"SATISFACTORY SYNCS BLUEPRINTS FROM THE SERVER TO THE CLIENT ON JOIN"*, with the
+	 * server holding **255 .sbp** files against the client's 264. The server has a library.
+	 *
+	 * What is STILL inference is whether the server TICKS the 2-second refresh over it. Ant's server log
+	 * shows 180 hitches clustered at 51-61 ms, which FITS an O(255) sweep and is attributed to nothing.
+	 *
+	 * So: arm here, count, and cancel NOTHING. `observe-only-must-be-verified-neutral` — an observe-only
+	 * mode that quietly changes behaviour is worse than not running, because it contaminates the very
+	 * measurement it was added to take. Every server sweep is counted and allowed through untouched, and
+	 * the 60 s audit prints the count. One boot then answers the question the header asked for:
+	 *
+	 *   · sweeps counted > 0  ->  the server DOES run it; flip FPM.Blueprint.ServerEnforce 1 and measure
+	 *                             the hitches again.
+	 *   · sweeps counted == 0 ->  the header was right all along and this whole branch comes back out.
+	 *
+	 * ⚠ THE ENFORCE CVAR DEFAULTS TO 0 AND MUST STAY THERE until that boot happens. Shipping it at 1
+	 * would mean cancelling sweeps on the machine that is the blueprint SOURCE OF TRUTH — and m6306394
+	 * also records what that costs: a client-side blueprint repair was silently synced away by the
+	 * server, and an hour of work looked like success while changing nothing.
+	 */
+	if (IsRunningDedicatedServer() && CVarBlueprintGateServerEnforce.GetValueOnAnyThread() == 0)
+	{
+		++SweepsAllowed;
+		++ServerObservedSweeps;
+		return false;
+	}
+
 	// Small library: vanilla's sweep is already cheap and letting it run is the safer branch.
 	if (LibrarySize < CVarBlueprintGateMinLibrary.GetValueOnAnyThread())
 	{
@@ -380,6 +425,28 @@ void FFPMBlueprintSweepGate::LogReport()
 		     "game thread did not make."),
 		SweepsCancelled, Total, Total > 0 ? 100.0 * SweepsCancelled / Total : 0.0,
 		SweepsAllowed, LastLibrarySize, AuditsRun, AuditDisagreements);
+
+	/*
+	 * ★ THE SERVER EXPERIMENT'S READOUT. Printed only on a dedicated server, because on a client the
+	 * number is meaninglessly zero and a line that is always zero teaches a reader to skip it.
+	 *
+	 * This is the whole reason Side() was widened to Any: the count decides whether the server runs the
+	 * 2-second sweep at all. Both outcomes are useful and both are stated, so a zero here cannot be read
+	 * as "fine" — it is the REVERT signal.
+	 */
+	if (IsRunningDedicatedServer())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   SERVER, OBSERVE-ONLY (FPM.Blueprint.ServerEnforce=%d): %d sweep(s) seen and "
+			     "ALL allowed through. %s"),
+			CVarBlueprintGateServerEnforce.GetValueOnAnyThread(), ServerObservedSweeps,
+			ServerObservedSweeps > 0
+				? TEXT("Non-zero: the server DOES run this sweep, so it is a real server cost. Do NOT "
+				       "enforce yet - first prove a blueprint saved by one player still reaches the "
+				       "others with enforce on.")
+				: TEXT("ZERO: the server does not run this sweep, the original NeverOnDedicatedServer "
+				       "was right, and widening Side() to Any should be REVERTED."));
+	}
 
 	/*
 	 * ★ HOW LONG THE GATE HAS BEEN HOLDING. LastAllowedSweepSeconds was stamped on every real sweep and

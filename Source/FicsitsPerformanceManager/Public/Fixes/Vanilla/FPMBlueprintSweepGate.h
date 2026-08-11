@@ -77,14 +77,24 @@ public:
 	virtual const TCHAR* Name() const override { return TEXT("blueprint-sweep-gate"); }
 
 	/**
-	 * ⚠ Client-side. `AFGBlueprintSubsystem` exists on a dedicated server, but the blueprint LIBRARY is a
-	 * per-player collection of local files and the recipe-requirement flag drives the build-menu UI,
-	 * which a server does not draw. Decided from the header rather than assumed: the descriptors are
-	 * built by `RefreshBlueprintsAndDescriptors()` from files enumerated locally, and
-	 * `GenerateManifest()`'s comment says *"Clients evaluate their checksums at startup"*.
-	 * ★ IF A SERVER BOOT SHOWS THIS SWEEP RUNNING THERE TOO, widen it — but do that on evidence.
+	 * ★ WIDENED TO `Any` ON 2026-08-11, ON THE EVIDENCE THIS COMMENT ASKED FOR.
+	 *
+	 * It used to read `NeverOnDedicatedServer`, reasoning that "the blueprint LIBRARY is a per-player
+	 * collection of local files", and it ended with: *"IF A SERVER BOOT SHOWS THIS SWEEP RUNNING THERE
+	 * TOO, widen it — but do that on evidence."*
+	 *
+	 * Half that premise is disproved from bytes on both machines. Board item **m6306394**: *"SATISFACTORY
+	 * SYNCS BLUEPRINTS FROM THE SERVER TO THE CLIENT ON JOIN"* — the server held **255 .sbp** files
+	 * against the client's 264, and a client-only blueprint repair was silently synced away by it. The
+	 * server has a library, and it is the source of truth for one.
+	 *
+	 * ⚠ WHAT IS STILL INFERENCE is whether the server TICKS the refresh over that library. So arming here
+	 * does NOT mean gating here: on a dedicated server the fix runs in observe-only mode
+	 * (`FPM.Blueprint.ServerEnforce`, default 0), counting sweeps and cancelling none. That is the whole
+	 * point — an observe-only mode that quietly changed behaviour would contaminate the measurement it
+	 * exists to take. One boot then decides whether to enforce or to revert this widening entirely.
 	 */
-	virtual EFPMFixSide Side() const override { return EFPMFixSide::NeverOnDedicatedServer; }
+	virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
 
 	/**
 	 * OriginNamed. The cause is not a guess and not a choke point: a fixed-cadence full re-verification
@@ -164,6 +174,21 @@ private:
 
 	int32 SweepsCancelled = 0;
 	int32 SweepsAllowed = 0;
+
+	/**
+	 * Sweeps seen on a dedicated server while `FPM.Blueprint.ServerEnforce` is 0 — counted, allowed
+	 * through untouched. This counter IS the experiment: non-zero proves the server runs the sweep,
+	 * zero proves the old `NeverOnDedicatedServer` was right and this widening should be reverted.
+	 *
+	 * ⚠ AND A NON-ZERO COUNT IS NOT YET A LICENCE TO ENFORCE. Ant, 2026-08-11: *"the server also needs
+	 * to receive the new blueprints a player makes. it needs to sync to all players when new prints gets
+	 * made."* If the server-side sweep is part of how a newly-saved blueprint reaches other players,
+	 * cancelling it would break propagation — and the failure would look like "my blueprint did not show
+	 * up for SunFry", which is precisely the symptom BlueprintStutterFix's own description admits to and
+	 * that this fix exists to avoid. Enforcing needs a second experiment: one player saves a blueprint
+	 * while another watches for it, with enforce ON.
+	 */
+	int32 ServerObservedSweeps = 0;
 	int32 AuditsRun = 0;
 	int32 AuditDisagreements = 0;
 	int32 LastLibrarySize = 0;

@@ -108,7 +108,67 @@ From the whole-mod VOX review Ant asked for after `0.11.14`.
 - `wwise-server-gate`'s `Side() == Any` was flagged in review and **withdrawn**: `EFPMFixSide` has no
   server-only value and `Arm()` self-guards, exactly as its header already argues.
 - ⚠ `hooking.adoc:266-269` — *"Unhooking functionality has not been extensively tested."* Every `Disarm()`
-  and the whole master switch now rest on it. Recorded as a standing risk, not a defect.
+  and the whole master switch now rest on it. Recorded as a standing risk, not a defect.## 2026-08-11 14:40 — CODE — the server sweep question, armed to answer itself
+
+Clearing the three standing items from the whole-mod review. Two resolved as **negatives**, which is
+recorded here because a withdrawn finding that is not written down comes back as a fact.
+
+- **What:** (1) `blueprint-sweep-gate` `Side()` widened to `Any`, arming on a dedicated server in
+  **observe-only** mode behind `FPM.Blueprint.ServerEnforce` (default 0) — every sweep counted, every
+  sweep allowed through. (2) Its report gains a server-only line stating what the count MEANS in both
+  directions. (3) `FPMNavMeshCeiling`'s zero-actor message splits by net mode.
+
+- **Why:**
+  1. The header set the condition for widening — *"IF A SERVER BOOT SHOWS THIS SWEEP RUNNING THERE TOO,
+     widen it — but do that on evidence"* — and half its premise is disproved by board **m6306394**,
+     verified from bytes on both machines: *"SATISFACTORY SYNCS BLUEPRINTS FROM THE SERVER TO THE CLIENT
+     ON JOIN"*, server holding **255 .sbp** against the client's 264. The server has a library. Whether
+     it TICKS the sweep over it is still inference, so the fix arms to MEASURE, not to act.
+     `observe-only-must-be-verified-neutral`: an observe mode that quietly changed behaviour would
+     contaminate the measurement it exists to take.
+  2. A bare count is not an answer. The line says what non-zero means (real server cost, still do not
+     enforce) and what zero means (the original `NeverOnDedicatedServer` was right, revert the widening).
+  3. `navmesh-ceiling` printed a **Warning** on every client world load for the expected case. The same
+     session proves it: the server raised four navmeshes with "read back OK", the client correctly found
+     none because the server owns pathfinding. A warning on the healthy path teaches a reader to skip the
+     category, and this mod's value rests on its log being worth reading.
+
+- **Files:** `Private|Public/Fixes/Vanilla/FPMBlueprintSweepGate.*` ·
+  `Private/Fixes/Interop/FPMNavMeshCeiling.cpp` · `FicsitsPerformanceManager.uplugin` (0.11.16 → 0.11.17)
+
+- **Revert:** `FPM.Blueprint.ServerEnforce` stays 0 until TWO experiments pass — the sweep count is
+  non-zero, AND a blueprint saved by one player still reaches the others with enforce on. Board
+  **m6449030** holds the second, because Ant added the requirement while this was being written:
+  *"the server also needs to receive the new blueprints a player makes. it needs to sync to all players
+  when new prints gets made."* If the server-side sweep is part of that propagation, enforcing breaks it.
+
+- **Verified:** build clean. Structure gate 28 / 0 / 0. **Not boot-tested.**
+
+### THE `OnWorldLoad` AUDIT: A NEGATIVE RESULT, IN FULL
+
+The review flagged five fixes that bind only at `OnWorldLoad` as sharing the shape that left the sweep
+gate inert for a session. Audited all five. **None of them do.**
+
+- `FPMDistanceFieldAudit` — re-fetches the world inside its own ticker and returns `true` to keep trying.
+- `FPMPowerWarningProbe` — same, ticker with a null-world path that does not give up.
+- `FPMRainOcclusionFix` — no late-binding dependency at all; it enumerates classes, it does not wait for
+  an actor to exist.
+- `FPMWireNullGuard` — sweeps whatever the world holds; nothing to bind.
+- `FPMNavMeshCeiling` — the one that looked worst, and it **works**: the server log shows all four
+  navmeshes raised 65536/16384 → 524288 with a read-back on each. Its client-side "found none" is the
+  correct answer, not a miss.
+
+The sweep gate's failure was specific to it — a lookup of a REPLICATED actor at a moment before
+replication — and not a pattern in the codebase. Recorded so nobody re-audits these five.
+
+### THE SERVER'S 13,312 SYNC LOADS: PARTIALLY IDENTIFIED
+
+Every named one is the same asset — `/Game/FactoryGame/Interface/UI/InGame/BuildMenu/Widget_BuildMode`,
+a build-menu widget on a machine with no viewport. ⚠ Only the `last=` asset of a hitch span is named, so
+that sample says nothing about the other thousands. Banked as **m6449051**, deliberately NOT fixed: the
+server may need the widget CLASS for build validation, and gating it on shape alone is the
+"prove the blamed code runs" trap.
+
 ## 2026-08-11 14:05 — CODE — a fix that did nothing turned off, a silent fix made observable
 
 Continuing the whole-mod review. Three of the six remaining findings were real; **three were mine being

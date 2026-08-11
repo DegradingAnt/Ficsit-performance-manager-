@@ -128,11 +128,33 @@ void FFPMNavMeshCeiling::OnWorldLoad(UWorld* World)
 	 */
 	if (GFPMNavSeen == 0)
 	{
-		UE_LOG(LogFicsitsPerformanceManager, Warning,
-			TEXT("[FPM] navmesh ceiling: NO ARecastNavMesh actors present at world-load time. The ceiling "
-			     "was NOT raised. Either this world builds no navmesh (a client may not), or this hook "
-			     "runs before the actors exist and needs a later phase — the nav log's 'serialized "
-			     "maxTiles (65536' line will still be there if so."));
+		/*
+		 * ★ THE TWO CASES ARE SEPARATED, because measurement showed they are not the same event.
+		 *
+		 * The same 0.11.13 session on both machines, 2026-08-11:
+		 *   SERVER — four navmeshes found and raised, "read back OK" on every one.
+		 *   CLIENT — this line, at Warning.
+		 *
+		 * The client case is CORRECT and expected: a joined client builds no navmesh because the server
+		 * owns pathfinding. The old text already guessed that ("a client may not") — and then said it at
+		 * Warning level anyway, so the machine where this fix is behaving perfectly printed a warning on
+		 * every single world load.
+		 *
+		 * That is how a log stops being read, and this mod's whole value rests on its log being worth
+		 * reading. The genuinely alarming case — no navmesh on a machine that OWNS pathfinding, which
+		 * would mean the hook runs too early — keeps Warning and keeps the full diagnosis.
+		 */
+		const bool bNavMeshExpectedHere = !World->IsNetMode(NM_Client);
+
+		UE_CLOG(bNavMeshExpectedHere, LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] navmesh ceiling: NO ARecastNavMesh actors at world-load time on a machine that "
+			     "OWNS pathfinding. The ceiling was NOT raised, and this hook probably runs before the "
+			     "actors exist and needs a later phase — the nav log's 'serialized maxTiles (65536' line "
+			     "will still be there if so."));
+
+		UE_CLOG(!bNavMeshExpectedHere, LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] navmesh ceiling: no ARecastNavMesh actors, and none expected — this is a joined "
+			     "client and the server owns pathfinding. Nothing to raise, and not a fault."));
 		return;
 	}
 
