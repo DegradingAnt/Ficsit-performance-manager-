@@ -167,7 +167,73 @@ Every named one is the same asset — `/Game/FactoryGame/Interface/UI/InGame/Bui
 a build-menu widget on a machine with no viewport. ⚠ Only the `last=` asset of a hitch span is named, so
 that sample says nothing about the other thousands. Banked as **m6449051**, deliberately NOT fixed: the
 server may need the widget CLASS for build validation, and gating it on shape alone is the
-"prove the blamed code runs" trap.
+"prove the blamed code runs" trap.## 2026-08-11 15:45 — CODE — P3.1: invisible-but-solid buildables, fixed at the component it broke
+
+Design **P3.1**, board **m6147739**. The largest unbuilt item in Phase 3, and the first NEW fix since the
+review wave — FPM goes from 28 fixes to 29.
+
+- **What:** new `FFPMInstanceRemoveSwap` (`instance-remove-swap`). Calls the engine's own
+  `SetRemoveSwap()` on `ULightweightHierarchicalInstancedStaticMeshComponent` — AbstractInstance's mesh
+  component — at world load, on the CDO, and on a short re-sweep ladder. `FPM.InstanceSwap.Enabled` (1)
+  and `FPM.InstanceSwap.Report`. New diag channel `FPM.Diag.InstanceSwap`.
+
+- **Why:** `ULightweightHierarchicalInstancedStaticMeshComponent` derived from HISM at CL365306 and was
+  changed to a plain ISM at CL480321. The game is CL495413, so this has been live since April. The
+  conversion was incomplete and the header still shows it — the old declaration is commented out one
+  line above the new one (`AbstractInstanceManager.h:261-262`), and every local in `InstanceData.cpp` is
+  still named `Hism`. The consequence:
+    · `FInstanceComponentData::RemoveInstance` keeps its handle table with **RemoveAtSwap**
+      (`AbstractInstanceManager.cpp:194-201`) then calls `ISM->RemoveInstance` at `:203`;
+    · HISM always forced swap (`HierarchicalInstancedStaticMesh.cpp:2206-2207`), so they used to agree;
+    · plain ISM uses **RemoveAt — a shift down** (`InstancedStaticMesh.cpp:3957-3959` → `:3801-3809`).
+  From the second removal onward the handle table and the render data disagree.
+
+  ★ **It uniquely explains *solid AND invisible*:** the collision side removes the LAST index after
+  copying its transform into the hole, and last-index removal is identical under both semantics — so
+  collision and `ResolveHit` stay correct while only the visual binding rots. It fails silently because
+  the `HandleID == mesh index` invariant is only `EditorCheck`ed (`:630`), compiled out of Shipping.
+
+- **Why this form, not the one-line cvar:** `r.InstancedStaticMeshes.ForceRemoveAtSwap` is
+  process-global — it would change removal semantics for EVERY ISM including foliage and other mods,
+  and any caller assuming stable indices breaks. m6147739 flags that risk explicitly. Scoping by CLASS
+  reaches exactly the mismatched set. **The collision twin `ULightweightCollisionComponent` is
+  deliberately untouched** — it is already correct, and changing it would break the working half.
+
+- **Files:** `Private|Public/Fixes/Interop/FPMInstanceRemoveSwap.*` (new) · `Public/Core/FPMDiag.h` ·
+  `Private/Core/FPMDiag.cpp` · `Private/FicsitsPerformanceManager.cpp` ·
+  `FicsitsPerformanceManager.uplugin` (0.11.18 → 0.11.19)
+
+- **Revert:** `FPM.InstanceSwap.Enabled 0` turns it into a counter that changes nothing — which is also
+  how to A/B the claim without a rebuild. ⚠ `Disarm()` deliberately does NOT clear the flag: there is no
+  `ClearRemoveSwap()`, and writing the bit back would return components to semantics that DISAGREE with
+  a handle table maintained under swap — actively re-causing the bug. Stated in the code.
+
+- **Verified:** build clean; structure gate **29 fixes, 0 errors, 0 warnings**. **Not boot-tested.**
+
+### NO ACCESS TRANSFORMER, AND THAT WAS A DELIBERATE NARROWING
+
+An earlier sketch reached `AAbstractInstanceManager::InstanceMap` through a friend, the way the
+distance-field audit does. Not needed: the component class is `ABSTRACTINSTANCE_API`-exported and
+`SetRemoveSwap()` is public, so a class filter reaches the identical set with no widened surface. The
+AccessTransformers file's own rule — prove the member is actually non-public before adding an entry —
+applied in reverse.
+
+### THE CDO WRITE IS DONE AND EXPLICITLY NOT TRUSTED
+
+`bSupportRemoveAtSwap` is a plain `uint8 : 1` with **no `UPROPERTY`**
+(`InstancedStaticMeshComponent.h:234`), so whether a CDO value reaches components built later is an
+implementation detail, not a contract. It is set anyway — it costs one call — and then the re-sweeps
+MEASURE it: the first re-sweep prints whether it converted nothing (CDO propagates, sweeps are
+belt-and-braces) or something (CDO does nothing, sweeps are load-bearing). The fix proves its own
+mechanism instead of depending on behaviour nobody checked.
+
+### ⚠ THE NAME CAME FROM THE HEADER, THE SECOND TIME
+
+The first build failed: I called `SupportsRemoveAtSwap()`, lifted from the local `bUseRemoveAtSwap` in
+`InstancedStaticMesh.cpp:3801`. The real accessor is `SupportsRemoveSwap()`. Worth recording because the
+engine's own doc comment at `:460` is ALSO wrong — it names `SetRemoveSwapEnabled()`, which does not
+exist. Read the declaration, not the prose beside it, and not a variable that merely sounds like it.
+
 ## 2026-08-11 15:05 — CODE — the navmesh raise now proves it survived the engine's recreate
 
 Board **m6333090** has sat at priority 1 naming the one test that could settle it: *"read

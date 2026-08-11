@@ -230,6 +230,14 @@ static TAutoConsoleVariable<int32> CVarDiagSettings(
 	     "the asset scan is broken and no count from it means anything."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagInstanceSwap(
+	TEXT("FPM.Diag.InstanceSwap"), 1,
+	TEXT("AbstractInstance mesh components put back on RemoveAtSwap. 0 = silent, 1 = one line per sweep "
+	     "with seen / already-correct / converted. The 'NO components found at all' warning is NOT gated "
+	     "by this - that one means the fix is inert while still printing an armed line, and a verbosity "
+	     "setting must not be able to hide it."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -263,6 +271,7 @@ namespace
 		&CVarDiagNaniteStreaming,
 		&CVarDiagMaterialEffect,
 		&CVarDiagSettings,
+		&CVarDiagInstanceSwap,
 	};
 
 	/*
@@ -310,6 +319,7 @@ namespace
 		case FPMDiag::EChannel::NaniteStreaming: return TEXT("FPM.Diag.NaniteStreaming");
 		case FPMDiag::EChannel::MaterialEffect: return TEXT("FPM.Diag.MaterialEffect");
 		case FPMDiag::EChannel::Settings:       return TEXT("FPM.Diag.Settings");
+		case FPMDiag::EChannel::InstanceSwap:   return TEXT("FPM.Diag.InstanceSwap");
 		default:                                return TEXT("<unknown>");
 		}
 	}

@@ -26,6 +26,7 @@
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
 #include "Fixes/Interop/FPMSchematicNullGuard.h"
 #include "Fixes/Interop/FPMSchematicProbe.h"
+#include "Fixes/Interop/FPMInstanceRemoveSwap.h"
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 #include "Fixes/Interop/FPMTexturePoolGuard.h"
 #include "Fixes/Interop/FPMZiplineVolume.h"
@@ -88,6 +89,16 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	FPMFixes::Arm(FFPMNoOwnerRpcGate::Get());
 	FPMFixes::Arm(FFPMCloneSensor::Get());
 	FPMFixes::Arm(FFPMRainOcclusionFix::Get());
+
+	/*
+	 * P3.1 — invisible-but-solid buildables. Board m6147739, root-caused to CL480321: AbstractInstance's
+	 * mesh component became a plain ISM while its handle table kept RemoveAtSwap, so the two disagree
+	 * from the second removal onward. Sets the engine's own SetRemoveSwap() on those components only.
+	 *
+	 * Armed EARLY on purpose: it acts at world load and its CDO write should land before any component
+	 * of that class is constructed. Nothing here hooks, so arm order costs nothing else.
+	 */
+	FPMFixes::Arm(FFPMInstanceRemoveSwap::Get());
 
 	// The two join-crash repairs, carried from the old mod on 2026-08-08 and REBUILT rather than copied:
 	// both used to prevent their crash by cancelling the work, and both cost something real for it — an

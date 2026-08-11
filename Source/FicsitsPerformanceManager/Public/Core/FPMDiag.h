@@ -86,6 +86,7 @@ public:
 		NaniteStreaming,  // FPM.Diag.NaniteStreaming — geometry dropping detail when the pool overcommits
 		MaterialEffect,   // FPM.Diag.MaterialEffect — who calls SetMeshes after PreStarted
 		Settings,         // FPM.Diag.Settings — are FPM's own UFGUserSetting rows reachable at all?
+		InstanceSwap,     // FPM.Diag.InstanceSwap — AbstractInstance mesh components put back on RemoveAtSwap
 		Count
 	};
 
