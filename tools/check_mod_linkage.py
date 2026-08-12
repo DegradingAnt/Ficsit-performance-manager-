@@ -54,6 +54,19 @@ from pathlib import Path
 
 import pefile
 
+# ⚠ FORCE UTF-8 ON STDOUT, OR THIS GATE CRASHES EXACTLY WHEN IT HAS SOMETHING TO SAY.
+#
+# Measured 2026-08-12: run from a cp1252 console, the tool completed its whole analysis and then died
+# with UnicodeEncodeError on the U+2605 in "★ n MOD(S) CANNOT LOAD" - the one line that carries the
+# finding. Every diagnostic line before it printed fine, so the failure looks like a crash in the
+# reporting code rather than what it is: a console that cannot represent the output.
+#
+# That is the worst possible failure shape for a GATE. The traceback exits non-zero, which is the same
+# exit code as "broken mods found", so a caller checking only the exit code cannot tell a real finding
+# from a dead tool - and the finding itself never reaches the screen.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 GAME_ROOT = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Satisfactory")
 GAME_BINARIES = GAME_ROOT / "Engine" / "Binaries" / "Win64"
 MODS_ROOT = GAME_ROOT / "FactoryGame" / "Mods"
