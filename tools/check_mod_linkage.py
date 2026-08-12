@@ -71,6 +71,15 @@ GAME_ROOT = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Satisfactory")
 GAME_BINARIES = GAME_ROOT / "Engine" / "Binaries" / "Win64"
 MODS_ROOT = GAME_ROOT / "FactoryGame" / "Mods"
 
+
+def installed_mod_names() -> set[str]:
+    """Every installed mod, native or not.
+
+    Keyed on the .uplugin because that is the one file EVERY mod has - a content-only mod has no
+    Binaries/ directory at all, so enumerating DLLs silently under-counts the stack by more than half.
+    """
+    return {up.stem for up in MODS_ROOT.rglob("*.uplugin")}
+
 # ?FuncName@ClassName@@<encoding>  ->  ClassName::FuncName
 MANGLED = re.compile(rb"^\?(\w+)@(\w+)@")
 
@@ -236,6 +245,7 @@ def main() -> int:
     unreadable: set[str] = set()
     skipped_other_storefront = 0
     checked = 0
+    checked_mods: set[str] = set()
 
     for dll in mod_dlls:
         if dll.name.startswith("FactoryGame") and not dll.name.startswith(storefront):
@@ -247,6 +257,7 @@ def main() -> int:
         mod = rel[1] if rel[0] == "GameFeatures" and len(rel) > 1 else rel[0]
 
         checked += 1
+        checked_mods.add(mod)
         missing: list[tuple[str, bytes]] = []
         for from_dll, syms in imports_of(dll).items():
             if from_dll not in universe:
@@ -270,6 +281,29 @@ def main() -> int:
     print(f"checked    : {checked} mod binary(ies)"
           + (f"  ({skipped_other_storefront} skipped: other storefront, NOT CHECKED)"
              if skipped_other_storefront else ""))
+    # ★ SAY WHAT THIS GATE CANNOT SEE, EVERY RUN.
+    #
+    # Measured 2026-08-12 on Ant's stack: 148 installed mods, of which only 61 carry native code. The
+    # other 87 - 58% - are CONTENT-ONLY, and a PE import table is the only thing this tool reads. It has
+    # literally nothing to look at for them.
+    #
+    # That blind spot is not theoretical. BigStorageTank is content-only and its author reported water
+    # no longer flowing through it on this build; the vanilla pipe classes are all still present, so the
+    # break is in the mod's own Blueprint. This gate called that stack's content half clean by saying
+    # nothing about it, which is exactly the "absence of coverage reads as a clean bill of health"
+    # failure the header warns about for unreadable modules. Same defect, larger surface.
+    #
+    # A content-only mod cannot raise Entry Point Not Found - it has no imports to resolve - so this
+    # gate's verdict is still the right answer to "will the game START". It is NOT the answer to "is the
+    # stack healthy", and printing the ratio is what stops the two being confused.
+    content_only = sorted(m for m in installed_mod_names() if m not in checked_mods)
+    if content_only:
+        total = len(content_only) + len(checked_mods)
+        print(f"NOT CHECKED: {len(content_only)} of {total} installed mod(s) are CONTENT-ONLY (no DLL) - "
+              f"this gate reads PE imports and is blind to them by construction. It answers 'will the "
+              f"game START', not 'is the stack healthy'. Their breakage is asset/Blueprint-level and "
+              f"shows up in play, not at load.")
+
     if unreadable:
         print(f"⚠ NOT CHECKED: {len(unreadable)} module(s) whose exports could not be read - imports "
               f"from these were SKIPPED, not passed: {', '.join(sorted(unreadable))}")
