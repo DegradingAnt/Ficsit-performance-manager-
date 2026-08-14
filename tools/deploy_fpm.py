@@ -175,11 +175,29 @@ def main() -> int:
     else:
         ok("no debug symbols in the install")
 
+    # A DLL PRESENT IS NOT A DLL THAT LOADS. `.modules` carries a BuildId; SML's packaging rewrites
+    # it to the sentinel "SML" while a local UBT build stamps its own changelist. The loader compares
+    # that against the retail game's and REJECTS the module - which surfaces as "module could not be
+    # found" with the dll sitting in the folder. Its ABSENCE is checkable here, so check it.
+    mods_files = list((GAME_MOD_DIR / "Binaries").rglob("*.modules")) if bins else []
+    if bins and not mods_files:
+        fail("DLLs present but NO .modules descriptor - the loader has no BuildId to match")
+        good = False
+    elif mods_files:
+        ok(f"{len(mods_files)} .modules descriptor(s) present")
+
     if not good:
         print("\nRESULT: the deploy is NOT sound. See the FAIL lines above.")
         return 1
 
     print(f"\nRESULT: {new_version} deployed clean. Old install removed, not written over.")
+    # SAY WHAT "CLEAN" DOES NOT MEAN, HERE, EVERY RUN - not in a doc nobody has open at deploy time.
+    # See the memory an-instrument-must-print-its-own-coverage. This is the highest-stakes tool in
+    # the set, and three green lines read as a full bill of health unless the gaps sit beside them.
+    print("NOT CHECKED: that the mod LOADS. This verifies the version string, that DLLs and a")
+    print("  .modules descriptor exist, and that no PDBs shipped. It does NOT read the BuildId inside")
+    print("  .modules, does not check the storefront matches, does not inspect the .pak/.ucas payload,")
+    print("  and cannot tell whether a hook arms. Only a boot and the '[FPM] ... armed' line do that.")
     return 0
 
 
