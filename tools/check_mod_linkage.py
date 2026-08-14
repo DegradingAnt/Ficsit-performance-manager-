@@ -71,6 +71,9 @@ GAME_ROOT = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Satisfactory")
 GAME_BINARIES = GAME_ROOT / "Engine" / "Binaries" / "Win64"
 MODS_ROOT = GAME_ROOT / "FactoryGame" / "Mods"
 
+# This mod. Its own invariant is asserted below; everything else here is measured, not judged.
+SELF_MOD = "FicsitsPerformanceManager"
+
 
 def installed_mod_names() -> set[str]:
     """Every installed mod, native or not.
@@ -82,6 +85,29 @@ def installed_mod_names() -> set[str]:
 
 # ?FuncName@ClassName@@<encoding>  ->  ClassName::FuncName
 MANGLED = re.compile(rb"^\?(\w+)@(\w+)@")
+
+
+# MSVC encodes C++ ACCESS into the mangled name, in the single character right after the `@@` that
+# ends the qualified name:
+#     U = public virtual   M = protected virtual   I = protected   Q = public   A/E = private
+# ONE function knows that, because two places need it and a format only half the code understands is
+# how a decoding rule drifts. `access_variant` uses it to find a renameable symbol; the invariant
+# check uses it to spot vtable exposure.
+VIRTUAL_NIBBLES = (b"U", b"M")
+
+
+def access_nibble(sym: bytes) -> tuple[bytes, bytes, bytes] | None:
+    """Split a mangled symbol into (head-through-@@, access char, tail). None if it has no `@@`."""
+    at = sym.find(b"@@")
+    if at < 0 or len(sym) <= at + 2:
+        return None
+    return sym[: at + 2], sym[at + 2 : at + 3], sym[at + 3 :]
+
+
+def is_virtual(sym: bytes) -> bool:
+    """True when the symbol is a virtual member - the only kind that carries vtable exposure."""
+    parts = access_nibble(sym)
+    return parts is not None and parts[1] in VIRTUAL_NIBBLES
 
 
 def readable(sym: bytes) -> str:
@@ -255,7 +281,6 @@ def main() -> int:
     checked_mods: set[str] = set()
 
     # ★ FPM's OWN vtable exposure - see the invariant check below for why this is collected.
-    SELF_MOD = "FicsitsPerformanceManager"
     self_virtual: list[tuple[str, bytes]] = []
 
     for dll in mod_dlls:
@@ -287,10 +312,7 @@ def main() -> int:
             if mod == SELF_MOD and from_dll in game_module_names:
                 # The access nibble sits right after the `@@` that ends the qualified name.
                 # U = public virtual, M = protected virtual. Either means vtable exposure.
-                for sym in syms:
-                    at = sym.find(b"@@")
-                    if at >= 0 and sym[at + 2:at + 3] in (b"U", b"M"):
-                        self_virtual.append((from_dll, sym))
+                self_virtual.extend((from_dll, sym) for sym in syms if is_virtual(sym))
 
         if missing:
             broken.setdefault(mod, []).extend(missing)
@@ -315,9 +337,14 @@ def main() -> int:
     # A content-only mod cannot raise Entry Point Not Found - it has no imports to resolve - so this
     # gate's verdict is still the right answer to "will the game START". It is NOT the answer to "is the
     # stack healthy", and printing the ratio is what stops the two being confused.
-    content_only = sorted(m for m in installed_mod_names() if m not in checked_mods)
+    # ⚠ A UNION, NOT A SUM. `checked_mods` is keyed on FOLDER name and `installed` on .uplugin STEM.
+    # They agree today, and adding the two lengths would silently over-count the day one mod's folder
+    # is named differently from its descriptor - a total that is wrong only sometimes is worse than
+    # one that is wrong always, because nobody re-checks it.
+    installed = installed_mod_names()
+    content_only = sorted(installed - checked_mods)
     if content_only:
-        total = len(content_only) + len(checked_mods)
+        total = len(installed | checked_mods)
         print(f"NOT CHECKED: {len(content_only)} of {total} installed mod(s) are CONTENT-ONLY (no DLL) - "
               f"this gate reads PE imports and is blind to them by construction. It answers 'will the "
               f"game START', not 'is the stack healthy'. Their breakage is asset/Blueprint-level and "
@@ -399,10 +426,10 @@ def main() -> int:
 
     def access_variant(sym: bytes) -> bytes | None:
         """The same symbol at a different C++ access level, if the game still exports one."""
-        at = sym.find(b"@@")
-        if at < 0 or len(sym) <= at + 2:
+        parts = access_nibble(sym)
+        if parts is None:
             return None
-        head, cur, tail = sym[: at + 2], sym[at + 2 : at + 3], sym[at + 3 :]
+        head, cur, tail = parts
         for c in b"AEIMQU":
             alt = head + bytes([c]) + tail
             if bytes([c]) != cur and alt in game_exports:
