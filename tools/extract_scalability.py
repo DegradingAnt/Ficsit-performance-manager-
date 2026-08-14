@@ -158,6 +158,17 @@ def main() -> int:
     print(f"ok    {overridden} key(s) where Satisfactory overrides Epic's value")
     print(f"ok    {len(game_only)} group(s) that exist ONLY in Satisfactory: {', '.join(game_only) or '(none)'}")
 
+    # ★ SAY WHAT THIS DOES NOT COVER, IN THE OUTPUT, EVERY RUN.
+    #
+    # The caveats used to live in the docstring above - which is not on screen at the moment someone
+    # reads these numbers and plans against them. Silence about scope reads as "this is the whole
+    # answer". See the memory an-instrument-must-print-its-own-coverage: three tools failed exactly
+    # this way in one night, and none of them was WRONG, only quiet.
+    print(f"NOT CHECKED: this merges two INI layers only. UE also applies DeviceProfiles and console "
+          f"writes at runtime, and a CONSOLE write outranks scalability for the rest of the session - "
+          f"so a value here is what the ini layer SAYS, not necessarily what the running game ends up "
+          f"with. The canary is ONE datum, measured on CL {CANARY_MEASURED_ON_CL}.")
+
     if args.check:
         print("\n--check: nothing written.")
         return 0
