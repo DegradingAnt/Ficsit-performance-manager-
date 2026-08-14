@@ -76,6 +76,17 @@ CANARY_SECTION = "ShadowQuality@2"
 CANARY_CVAR = "r.Shadow.MaxResolution"
 CANARY_GAME = "512"     # what the game's Scalability layer actually applied
 CANARY_EPIC = "1024"    # Epic's value — the one that misled seven hypotheses
+# ⚠ THE CL THE CANARY WAS MEASURED ON. Named, not buried in the failure message, because a
+# changelist living only inside a string is exactly how FPMSupport's DerivedFromChangelist went stale
+# for three days - nothing greps a sentence. When this dump moves past a CSS change to that value,
+# THIS is the line to re-measure and update, and the refusal below quotes it rather than a literal.
+CANARY_MEASURED_ON_CL = 495413
+
+
+def group_of(section: str) -> str:
+    """"ShadowQuality@2" -> "ShadowQuality". The level is after the @; the group is what precedes it."""
+    return section.split("@")[0]
+
 
 SECTION_RE = re.compile(r"^\[([A-Za-z]+@[0-9A-Za-z]+)\]\s*$")
 
@@ -123,8 +134,8 @@ def main() -> int:
             print("      exact wrong answer that cost seven hypotheses on 2026-08-09.")
         else:
             print("      Neither the game's known value nor Epic's. The value may legitimately have")
-            print("      MOVED between CL 495413, when it was measured, and this dump. Check that against")
-            print("      a running game before concluding this file is the wrong one.")
+            print(f"      MOVED between CL {CANARY_MEASURED_ON_CL}, when it was measured, and this dump. Check")
+            print("      that against a running game before concluding this file is the wrong one.")
         return 1
     print(f"ok    canary: [{CANARY_SECTION}] {CANARY_CVAR} = {got}  "
           f"(Epic's base says {CANARY_EPIC} — so this IS the game's table, not the engine's)")
@@ -139,8 +150,8 @@ def main() -> int:
                 overridden += 1
             tgt[k] = v
 
-    groups = sorted({s.split("@")[0] for s in merged})
-    game_only = sorted({s.split("@")[0] for s in game} - {s.split("@")[0] for s in base})
+    groups = sorted({group_of(s) for s in merged})
+    game_only = sorted({group_of(s) for s in game} - {group_of(s) for s in base})
     rows = sum(len(v) for v in merged.values())
 
     print(f"ok    {len(groups)} group(s), {len(merged)} group@level section(s), {rows} cvar assignment(s)")
@@ -155,7 +166,7 @@ def main() -> int:
 
     lines = ["group\tlevel\tcvar\tvalue\tsource"]
     for sect in sorted(merged):
-        grp, _, lvl = sect.partition("@")
+        grp, lvl = group_of(sect), sect.partition("@")[2]
         for cvar in sorted(merged[sect]):
             src = "game" if cvar in game.get(sect, {}) else "engine"
             lines.append(f"{grp}\t{lvl}\t{cvar}\t{merged[sect][cvar]}\t{src}")
