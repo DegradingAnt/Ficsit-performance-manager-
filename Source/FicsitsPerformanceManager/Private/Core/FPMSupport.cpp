@@ -48,14 +48,23 @@ namespace
 	 * fallback and the scalability expansions all age exactly the same way — they are snapshots of a
 	 * moving target that gives no notification when it moves. This is cheap insurance against the next
 	 * CSS refactor doing the same thing.
+	 *
+	 * BUMPED 495413 -> 502094 on 2026-08-14, and ONLY because the tables were actually re-derived.
+	 * The constant is the LAST step of a re-derivation, never the first - moving it early silences the
+	 * alarm for tables nobody re-read, which is worse than no alarm at all.
 	 */
-	constexpr uint32 DerivedFromChangelist = 495413;
+	constexpr uint32 DerivedFromChangelist = 502094;
 
 	/** What goes stale when the CL moves. Named individually so the WARN is actionable, not ominous. */
 	const TCHAR* const AgingTables[] =
 	{
 		TEXT("the US_*-backed cvar table (Private/Core/FPMUserSettingTable.g.h) - clause 6's denylist"),
-		TEXT("the vanilla-defaults snapshot used to decide what a 'default' even is"),
+		// ⚠ NOT STALE - DOES NOT EXIST YET. This is the governor's anti-ratchet baseline, and the
+		// governor has not been ported to FPM2 (Private/ has no Governor at all, checked 2026-08-14).
+		// Listed so it is DERIVED against whatever CL is current when the governor lands - not so the
+		// watch keeps warning about a file nobody has written. Ant ruled this 2026-08-14; before that
+		// the constant sat held at 495413 waiting on a table that was never going to arrive.
+		TEXT("the vanilla-defaults snapshot - NOT YET BUILT; arrives with the governor, derive it then"),
 		TEXT("the scalability group expansions (sg.* -> member cvars)"),
 	};
 
