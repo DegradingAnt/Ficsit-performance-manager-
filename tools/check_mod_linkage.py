@@ -199,6 +199,13 @@ def main() -> int:
     # Engine plugins each carry their own Binaries/Win64 too.
     universe: dict[str, set[bytes] | None] = {}
     game_dlls = [p for p in GAME_ROOT.rglob("*.dll") if MODS_ROOT not in p.parents]
+
+    # ⚠ EVERY module DLL is named "FactoryGameSteam-<Module>-...", INCLUDING the engine ones, so the
+    # filename prefix cannot tell a game module from an engine module. The install PATH can: game
+    # modules live under FactoryGame\, the engine under Engine\. Measured 2026-08-14 - a first
+    # attempt keyed on the name counted 114 CoreUObject/Core/Json/Slate virtuals as game exposure,
+    # which would have made the invariant below fail permanently and therefore be switched off.
+    game_module_names = {p.name.lower() for p in game_dlls if "Engine" not in p.parts}
     for p in game_dlls:
         universe[p.name.lower()] = exports_of(p)
     universe[exe.name.lower()] = exports_of(exe)
@@ -247,6 +254,10 @@ def main() -> int:
     checked = 0
     checked_mods: set[str] = set()
 
+    # ★ FPM's OWN vtable exposure - see the invariant check below for why this is collected.
+    SELF_MOD = "FicsitsPerformanceManager"
+    self_virtual: list[tuple[str, bytes]] = []
+
     for dll in mod_dlls:
         if dll.name.startswith("FactoryGame") and not dll.name.startswith(storefront):
             skipped_other_storefront += 1
@@ -272,6 +283,14 @@ def main() -> int:
                 unreadable.add(from_dll)  # NOT CHECKED - never counted as resolved
                 continue
             missing.extend((from_dll, s) for s in syms if s not in known)
+
+            if mod == SELF_MOD and from_dll in game_module_names:
+                # The access nibble sits right after the `@@` that ends the qualified name.
+                # U = public virtual, M = protected virtual. Either means vtable exposure.
+                for sym in syms:
+                    at = sym.find(b"@@")
+                    if at >= 0 and sym[at + 2:at + 3] in (b"U", b"M"):
+                        self_virtual.append((from_dll, sym))
 
         if missing:
             broken.setdefault(mod, []).extend(missing)
@@ -308,6 +327,45 @@ def main() -> int:
         print(f"⚠ NOT CHECKED: {len(unreadable)} module(s) whose exports could not be read - imports "
               f"from these were SKIPPED, not passed: {', '.join(sorted(unreadable))}")
 
+    # ══ FPM'S OWN INVARIANT: ZERO VIRTUAL REFERENCES INTO GAME MODULES ═══════════════════════════
+    #
+    # ★ THIS IS THE PROPERTY THAT SAVED US ON 2026-08-11, AND UNTIL NOW IT WAS ONLY AN INTENTION.
+    #
+    # That update knocked out 13 mods. FPM was not among them, because it reaches game classes ONLY
+    # through non-virtual members, so a vtable reshuffle cannot touch it. For contrast, RefinedPower
+    # carried 358 virtual references into FactoryGame and RSS 313 - both died.
+    #
+    # That is a consequence of design, not luck: hooks go through SML's SUBSCRIBE_ macros instead of
+    # subclassing FactoryGame types, and private members are reached via AccessTransformers.ini
+    # instead of header edits - the first two measures the official docs list under "Avoid Breaking
+    # in the First Place".
+    #
+    # ⚠ NOTHING ENFORCED IT UNTIL NOW. One fix subclassing an FG type reintroduces the exposure, and
+    # the bill does not arrive until the NEXT game update, months later, when nobody connects the
+    # two. So it is a gate, asserted every run against the SAME parsed import tables the resolution
+    # check uses - never a regex over binary strings, which is how the contrast numbers above were
+    # produced and is not accurate enough to gate on.
+    if SELF_MOD in checked_mods:
+        if self_virtual:
+            print()
+            print(f"★ INVARIANT BROKEN: {SELF_MOD} now imports {len(self_virtual)} "
+                  f"VIRTUAL symbol(s) from game modules. It previously imported none.")
+            print("  Virtual imports mean vtable exposure: next time CSS reshuffles a base class")
+            print("  this mod breaks the way 13 others did on 2026-08-11. Prefer a SUBSCRIBE_ hook")
+            print("  or an AccessTransformers friend over subclassing a game type.")
+            for from_dll, sym in self_virtual[:10]:
+                print(f"    {readable(sym)}")
+                print(f"      from {from_dll}")
+            if len(self_virtual) > 10:
+                print(f"    ... and {len(self_virtual) - 10} more")
+        else:
+            print(f"ok    invariant: {SELF_MOD} imports ZERO virtual symbols from game modules "
+                  f"- no vtable exposure, so a base-class reshuffle cannot break it")
+    else:
+        # NOT CHECKED is never a pass - the same law this tool applies to everything else.
+        print(f"⚠ NOT CHECKED: {SELF_MOD} was not among the checked binaries, so its "
+              f"zero-virtual invariant was NOT verified. Is it deployed for this storefront?")
+
     if args.verbose and clean:
         print(f"\nRESOLVE CLEAN ({len(sorted(set(clean)))}):")
         for m in sorted(set(clean)):
@@ -315,7 +373,8 @@ def main() -> int:
 
     if not broken:
         print(f"\nRESULT: every checked mod resolves against {build}. Nothing here blocks a boot.")
-        return 0
+        # A broken invariant is a FAILURE even when nothing is broken today - that is the point.
+        return 1 if self_virtual else 0
 
     # ── Is it patchable? An access-level change is; a removed virtual is NOT. ────────────────────
     # MSVC encodes ACCESS into the mangled name, right after the `@@` ending the qualified name:
