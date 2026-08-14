@@ -13,8 +13,9 @@
  * ═══ THE BUG, AND IT IS ONE LINE OF SEMANTICS ═══
  *
  * `ULightweightHierarchicalInstancedStaticMeshComponent` derived from HISM when it was introduced at
- * CL365306, and was changed to a plain ISM at CL480321 (2026-04-23). The game is CL495413, so this has
- * been live since April. The evidence that it was an incomplete CONVERSION rather than a decision is
+ * CL365306, and was changed to a plain ISM at CL480321 (2026-04-23). The game is CL502094, and the
+ * mismatch is STILL PRESENT there - re-read from SML upstream/master 2026-08-14, same file, same
+ * line numbers. So this has been live since April and CSS has not touched it. The evidence that it was an incomplete CONVERSION rather than a decision is
  * still sitting in the header, one line above the declaration:
  *
  *     AbstractInstanceManager.h:261   //class ... : public UHierarchicalInstancedStaticMeshComponent
@@ -35,7 +36,18 @@
  * So from the second removal onward the handle table and the render data disagree about which index is
  * which, and the disagreement grows.
  *
- * ═══ WHY IT UNIQUELY EXPLAINS *SOLID AND INVISIBLE* ═══
+ * ═══ WHY IT EXPLAINS *SOLID AND INVISIBLE* - AND WHY 'UNIQUELY' NO LONGER HOLDS ═══
+ *
+ * ⚠ THIS SECTION USED TO SAY 'UNIQUELY'. IT CANNOT ANY MORE. CL 502094's patch notes include
+ * "Fixed an issue where players could end up with invisible Sign poles with lingering collision that
+ * could not be interacted with in some scenarios" - the exact symptom named below. Yet the mismatch
+ * this fix repairs is UNCHANGED in that build, at the same line numbers. So CSS fixed that symptom by
+ * some OTHER route, which means the mismatch below was NOT its only possible cause.
+ *
+ * ★ THE DIAGNOSIS IS UNAFFECTED. The two call sites still disagree, and that is read from source in
+ * both trees. What is retracted is the CLAIM OF UNIQUENESS - and with it, any expectation that arming
+ * this will fix the Sign poles, because vanilla already did. If it is armed and something visibly
+ * improves, that is a SEPARATE bug it happened to fix, not confirmation of the story below.
  *
  * The collision side removes the LAST index after copying its transform into the hole
  * (`:237-240`), and last-index removal is identical under both semantics. So collision and `ResolveHit`
