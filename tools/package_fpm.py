@@ -279,6 +279,13 @@ def main() -> int:
 
     print(f"\nRESULT: {DLC_NAME} {version} packaged and verified for {sorted(REQUIRED_MERGED_FOLDERS)}.")
     print("        NOT deployed. The dedicated server must be STOPPED first, and that is Ant's call.")
+    # Say what 'verified' does NOT mean, beside the line that says it. See the memory
+    # an-instrument-must-print-its-own-coverage. The checks above are strong on SHAPE - every target
+    # present, fresh not stale, every platform folder, binaries not a codeless payload - and say
+    # nothing about CONTENT.
+    print("        NOT CHECKED: that the binaries contain THIS source. Freshness is a timestamp, not")
+    print("        a diff - a zip written this run can still hold a DLL built before the last edit.")
+    print("        The BuildId inside .modules is unread, and nothing here proves a hook arms.")
     return 0
 
 
