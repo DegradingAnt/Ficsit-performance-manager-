@@ -57,6 +57,7 @@
 #include "Streaming/FPMAssetResidency.h"
 #include "Server/FPMServerLevers.h"
 #include "Session/FPMHostTier.h"
+#include "Wrist/FPMTowItem.h"
 #include "Wrist/FPMWristSlotComponent.h"
 #include "Fixes/Vanilla/FPMBlueprintContentSnap.h"
 
@@ -412,6 +413,12 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// to clients from there. Arms everywhere including the dedicated server — the slot is
 	// server-authoritative state, not renderer/audio/input work.
 	FPMFixes::Arm(FFPMWristSlotHook::Get());
+
+	// The TOW wrist item's catalog registration. SHIPS INERT (DefaultArmed() == false) - its placeholder
+	// mesh has not been imported into Content yet, and the current frozen glb would drop all three of
+	// its device sockets on import even if it were (flat-hierarchy blocker, findings file). See
+	// Public/Wrist/FPMTowItem.h for the full reasoning and the two-step flip condition.
+	FPMFixes::Arm(FFPMTowItemHook::Get());
 
 	// Lane D Hook A + Hook B. The DESCRIPTOR (FPMBlueprintContentSnapMode) deliberately holds no
 	// logic; these are the hooks. v1 is connection-anchor snapping only, no foundation lattice,
