@@ -42,6 +42,7 @@
 #include "Fixes/Vanilla/FPMPowerWarningProbe.h"
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
 #include "Streaming/FPMAssetResidency.h"
+#include "Wrist/FPMWristSlotComponent.h"
 
 #include "Interfaces/IPluginManager.h"
 
@@ -351,6 +352,11 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * trap — but the texture pool guard re-polls, and it is the later poll that picks up a raise.
 	 */
 	FPMFixes::Arm(FFPMNaniteStreamingGuard::Get());
+
+	// Slice W. Adds UFPMWristSlotComponent to every AFGCharacterPlayer on the authority; it replicates
+	// to clients from there. Arms everywhere including the dedicated server — the slot is
+	// server-authoritative state, not renderer/audio/input work.
+	FPMFixes::Arm(FFPMWristSlotHook::Get());
 
 	// The debug feed, on by default while the mod is pre-release. Ant: "i want UI to show when and what
 	// the rain fix thing is doing so i can see that its working." It attaches as soon as a viewport

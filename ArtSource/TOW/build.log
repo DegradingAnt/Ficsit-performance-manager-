@@ -1,0 +1,130 @@
+C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\build_tow_v2.py:132: DeprecationWarning: 'Material.use_nodes' is expected to be removed in Blender 6.0
+  mat.use_nodes = True
+C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\build_tow_v2.py:570: DeprecationWarning: 'World.use_nodes' is expected to be removed in Blender 6.0
+  world.use_nodes = True
+[TOW] drum WORLD extent (rotation-aware): x=0.0620 y=0.0520 z=0.0520
+[TOW] render engine set to BLENDER_EEVEE
+[TOW] device object count: 48
+[TOW] reference object count: 2
+Info: Saved as "tow_v2.blend"
+[TOW] saved blend: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\tow_v2.blend (132686 bytes)
+INFO Draco is available, use library at C:\Program Files\Blender Foundation\Blender 5.2\5.2\scripts\addons_core\io_scene_gltf2\bf_intern_draco_bridge.dll
+INFO MeshOptimizer is available, use library at C:\Program Files\Blender Foundation\Blender 5.2\5.2\scripts\addons_core\io_scene_gltf2\bf_intern_meshopt_bridge.dll
+08:47:03 | INFO: Starting glTF 2.0 export
+08:47:03 | INFO: Extracting primitive: Cone.016
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.019
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.020
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.021
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.022
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.023
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.024
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.018
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.017
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.004
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.005
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.001
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.002
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.003
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.004
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.005
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.006
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.007
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.008
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.009
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.010
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.011
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.012
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus.001
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus.002
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus.003
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus.004
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus.005
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus.008
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus.007
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.013
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Torus.006
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.014
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.015
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.003
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.002
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.001
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.006
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.007
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.008
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.009
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.010
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cube.011
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.027
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.028
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.025
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Extracting primitive: Cone.026
+08:47:03 | INFO: Primitives created: 1
+08:47:03 | INFO: Finished glTF 2.0 export in 0.15203309059143066 s
+00:12.782  render           | Saved: 'C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\side.png'
+00:13.078  render           | Saved: 'C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\top.png'
+00:13.375  render           | Saved: 'C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\three_quarter.png'
+00:13.657  render           | Saved: 'C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\mounted.png'
+
+[TOW] glb validated: magic=b'glTF' version=2 declared_length=313664 bytes_on_disk=313664
+[TOW] rendered side: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\side.png (970457 bytes)
+[TOW] rendered top: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\top.png (970520 bytes)
+[TOW] rendered three_quarter: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\three_quarter.png (970546 bytes)
+[TOW] rendered mounted: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\mounted.png (970421 bytes)
+[TOW] BUILD COMPLETE
+[TOW]   blend: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\tow_v2.blend (132686 bytes)
+[TOW]   glb:   C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\tow_v2.glb (313664 bytes)
+[TOW]   render: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\side.png (970457 bytes)
+[TOW]   render: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\top.png (970520 bytes)
+[TOW]   render: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\three_quarter.png (970546 bytes)
+[TOW]   render: C:\Modding\SatisfactoryModLoader\Mods\GameFeatures\FicsitsPerformanceManager\ArtSource\TOW\renders\mounted.png (970421 bytes)
+Blender 5.2.0 LTS (hash fbe6228777e7 built 2026-07-14 01:35:40)
+
+Blender quit
