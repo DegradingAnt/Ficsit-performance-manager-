@@ -248,6 +248,57 @@ struct FICSITSPERFORMANCEMANAGER_API FFPMSteerDecision
  * CPU-bound window, a ladder that has honestly bottomed out) log at Warning; the rest log at Error,
  * because they are the shape that hid for months.
  */
+/**
+ * ★ ONE ROW OF THE DRY LADDER WALK. See FFPMGiveTakeWalk::DryRunWalk.
+ */
+struct FICSITSPERFORMANCEMANAGER_API FFPMDryWalkStep
+{
+	int32  Step = 0;
+	double AtSeconds = 0.0;
+	float  MeanFrameMs = 0.0f;
+
+	FFPMSteerDecision Decision;
+
+	/** One line per lever the decided tier moves: the lever, the old value, the new value, the note
+	 *  and any AWAITING RULING marker. Empty for a decision that moved no tier. */
+	TArray<FString> LeverLines;
+};
+
+/**
+ * ★ THE RESULT OF A DRY LADDER WALK, INCLUDING ITS OWN PROOF THAT IT WROTE NOTHING.
+ *
+ * The held-cvar snapshot is taken from FPMCVarWriter before the first decision and again after the
+ * last one. Identical means the walk held nothing new and released nothing. That is a claim about the
+ * WRITER'S OWN LEDGER rather than about the walk's source, which is why the self-test also proves the
+ * comparator can say NO: a comparator that always returns "identical" would report a clean walk after
+ * a walk that wrote.
+ */
+struct FICSITSPERFORMANCEMANAGER_API FFPMDryWalkResult
+{
+	EFPMGovernorMode Mode = EFPMGovernorMode::Balanced;
+	TArray<FFPMDryWalkStep> Steps;
+
+	/** True when the walk stopped because the ladder settled, false when it hit the step budget. */
+	bool bConverged = false;
+	FString StopReason;
+
+	/** FPMCVarWriter's held set, before and after. */
+	TArray<FString> HeldBefore;
+	TArray<FString> HeldAfter;
+	bool bHeldSetIdentical = true;
+	FString HeldSetDelta;
+
+	/** The simulated cvar state must return to its starting values after a full give-then-take cycle.
+	 *  This is the walk's own version of Law 3: a release restores the value that was SAVED before the
+	 *  engage, never a value read back afterwards, so a repeated cycle cannot ratchet. */
+	bool bReturnedToStart = true;
+	FString RatchetDelta;
+
+	/** The simulated GlobalIlluminationQuality tier never went below the floor during the walk. */
+	bool bGIFloorHeld = true;
+	int32 LowestGITierSeen = 0;
+};
+
 struct FICSITSPERFORMANCEMANAGER_API FFPMSteerStall
 {
 	bool   bActive = false;
@@ -376,6 +427,15 @@ public:
 	 *   4. SATURATION DOES NOT STRAND THE RESTORE. With one bonus tier permanently inert, the take
 	 *      side must still reach the resolution step. This is the mirror of the promote-side bug
 	 *      section 3.3 names.
+	 *   5. IDEMPOTENCE. Two decisions on a byte-identical input, with no Commit between them, must
+	 *      agree on the action, the tier and the block. A walk that answers the same question two
+	 *      ways cannot be reasoned about, and a caller retrying a failed apply would be handed a
+	 *      different lever the second time.
+	 *   6. THE DRY LADDER WALK, in all three steerable modes, with four things required of each run:
+	 *      it CONVERGES, it moves a non-zero number of gives AND takes (a walk that moved nothing
+	 *      would satisfy every other proof trivially), FPMCVarWriter's held set is byte-identical
+	 *      before and after, and the simulated values return to where the first climb left them. The
+	 *      held-set comparator is itself proven able to say NO against a perturbed copy.
 	 *
 	 * @return true only if every check passed. The report refuses to print if it did not.
 	 */
@@ -384,10 +444,45 @@ public:
 	/** `FPM.Stage.Walk` -- ladder position, dwell, cooldowns, and the stall ledger. */
 	void ReportNow(FOutputDevice& Ar) const;
 
-	/** `FPM.Stage.Simulate` -- run ONE decision against injected inputs and print it. The walk is
-	 *  observable on the first boot with no bench and no signals wired, which is the difference
-	 *  between a component that can be checked and one that has to be believed. */
+	/** `FPM.Stage.Simulate` -- run ONE decision against injected inputs and print it, or with the
+	 *  first argument `walk` run the full DRY LADDER WALK below. The walk is observable on the first
+	 *  boot with no bench and no signals wired, which is the difference between a component that can
+	 *  be checked and one that has to be believed. */
 	void SimulateAndPrint(const TArray<FString>& Args, FOutputDevice& Ar);
+
+	/**
+	 * ★ THE DRY LADDER WALK. Drives one mode from vanilla to the bottom of its give order and back up
+	 * its take order against a SYNTHETIC signal series, and records every step.
+	 *
+	 * WHAT IT IS FOR. 3071 lines of tier content and walk logic shipped with no driver: on a boot
+	 * today the walk logs its arm line, runs its self-test and waits. This is how the whole ladder is
+	 * exercised end to end without the signals, without the bench and without the apply pass, so a
+	 * defect in the ORDERS or in the DECISION LOGIC is found offline instead of on Ant's rig.
+	 *
+	 * ⚠ IT IS DRY, AND THAT IS ENFORCED RATHER THAN INTENDED. It resolves a decision, projects the
+	 * lever values through FPMProjectLeverValue against a SIMULATED cvar state that lives only inside
+	 * this call, and prints them. It never calls FPMCVarWriter::Hold, Release, ReleaseOwner or
+	 * ReleaseAll. FFPMDryWalkResult carries the writer's held set from before and after, and the
+	 * self-test requires them identical.
+	 *
+	 * WHAT IS SYNTHETIC, STATED SO NOTHING HERE IS MISTAKEN FOR A MEASUREMENT:
+	 *   - the signal series (a sustained over-budget phase, then a sustained headroom phase),
+	 *   - the per-tier bench measurements (uniform, since no bench exists),
+	 *   - the per-cvar starting values (a declared constant, not a live read, because a live read
+	 *     would make the walk non-deterministic and could return FPM's own earlier write),
+	 *   - the resolution executor, which is modelled as PERFECT: one ResolutionDown reaches the
+	 *     floor. A stalled executor is the case FFPMSteerStall exists for, and it is not modelled
+	 *     here because this walk would then never converge, which is the finding rather than a bug.
+	 *
+	 * The live ladder position, dwell state, cooldowns, stall ledger and session decision count are
+	 * saved before and restored after, so a dry run leaves the session exactly as it found it.
+	 *
+	 * @param MaxSteps the step budget. Reaching it is reported as NOT converged, never as a pass.
+	 */
+	void DryRunWalk(EFPMGovernorMode Mode, int32 MaxSteps, FFPMDryWalkResult& Out);
+
+	/** Print one dry walk, step by step, with every give and every take in order. */
+	static void PrintDryRun(const FFPMDryWalkResult& Result, FOutputDevice& Ar);
 
 	// ---- [DEFAULT] timings. Section 4.6 wants every default to name its mover; none of these has one
 	// ---- yet, and the bench is the intended mover for the dwells. They are named here so that is

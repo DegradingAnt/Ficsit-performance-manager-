@@ -583,6 +583,102 @@ bool FFPMLeverRegistry::SelfTest()
 		bOk = false;
 	}
 
+	// (5) ★ INVARIANT: A BASELINE COMES FROM A DECLARED SAFE SOURCE, NEVER FROM A LIVE READ.
+	//
+	// Law 3 in this project's own words: a live read may be FPM's own earlier write coming back, so a
+	// baseline taken that way RATCHETS -- each cycle starts from where the last one left off and the
+	// player's own setting is walked away from them. Release is the moment that matters, because the
+	// value a release restores IS the baseline.
+	//
+	// Three halves, and the third is the one that can rot quietly:
+	//   (a) the enum offers no live-read option at all. Enumerated here so the day somebody adds one,
+	//       this count changes and this check fails rather than the law becoming a comment.
+	//   (b) the refusal classifier says NO to a baseline-comparing policy with no declared source and
+	//       YES to the same definition with one. Both directions, on a real cvar name.
+	//   (c) every WRITABLE lever now in the registry declares a safe source. This is a sweep with a
+	//       printed denominator, because a sweep over zero levers passes.
+	{
+		// (a)
+		constexpr int32 ExpectedBaselineSourceCount = 3;   // NotApplicable, ShippedTable, CapturedOnce
+		const bool bEnumUnchanged =
+			static_cast<int32>(EFPMLeverBaselineSource::NotApplicable) == 0
+			&& static_cast<int32>(EFPMLeverBaselineSource::ShippedTable) == 1
+			&& static_cast<int32>(EFPMLeverBaselineSource::CapturedOnce) == ExpectedBaselineSourceCount - 1;
+
+		// (b) BOTH DIRECTIONS on the refusal classifier. The known-positive is a definition that must
+		// be refused; the known-negative is the same definition made safe, which must be accepted.
+		FFPMLeverDefinition Unsafe;
+		Unsafe.Name = FName(TEXT("__SelfTest.BaselineUndeclared"));
+		Unsafe.Backing = EFPMLeverBacking::Cvar;
+		Unsafe.CVarNames = { FPMCVarWriter::SelfTestProbeName() };
+		Unsafe.Policy = EFPMLeverPolicy::BaseScale;
+		Unsafe.BaselineSource = EFPMLeverBaselineSource::NotApplicable;
+		FString UnsafeWhy;
+		const bool bUnsafeRefused = RefuseIfUnsafeToWrite(Unsafe, UnsafeWhy);
+
+		FFPMLeverDefinition Safe2 = Unsafe;
+		Safe2.BaselineSource = EFPMLeverBaselineSource::CapturedOnce;
+		FString SafeWhy;
+		const bool bSafeRefused = RefuseIfUnsafeToWrite(Safe2, SafeWhy);
+
+		// (c)
+		int32 WritableSwept = 0;
+		int32 NeedingBaseline = 0;
+		int32 Undeclared = 0;
+		int32 ClaimingShippedTable = 0;
+		for (const auto& Pair : Levers)
+		{
+			const FFPMLeverDefinition& Def = Pair.Value;
+			if (!Def.bWritable) { continue; }
+			++WritableSwept;
+			const bool bNeeds =
+				Def.Policy == EFPMLeverPolicy::MaxOf || Def.Policy == EFPMLeverPolicy::MinOf ||
+				Def.Policy == EFPMLeverPolicy::BaseScale || Def.Policy == EFPMLeverPolicy::BaseDelta;
+			if (!bNeeds) { continue; }
+			++NeedingBaseline;
+			if (Def.BaselineSource == EFPMLeverBaselineSource::NotApplicable) { ++Undeclared; }
+			if (Def.BaselineSource == EFPMLeverBaselineSource::ShippedTable) { ++ClaimingShippedTable; }
+		}
+
+		if (!bEnumUnchanged || !bUnsafeRefused || bSafeRefused || Undeclared > 0
+			|| NeedingBaseline == 0)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] lever registry self-test (5) FAILED (baseline source law): enum shape "
+				     "unchanged=%s; undeclared baseline refused=%s ('%s'); declared baseline "
+				     "accepted=%s ('%s'); sweep saw %d writable lever(s), %d needing a baseline "
+				     "(expected more than 0, or this sweep proved nothing), %d with NO declared "
+				     "source (expected 0)."),
+				bEnumUnchanged ? TEXT("yes") : TEXT("NO"),
+				bUnsafeRefused ? TEXT("yes") : TEXT("NO"), *UnsafeWhy,
+				bSafeRefused ? TEXT("NO") : TEXT("yes"), *SafeWhy,
+				WritableSwept, NeedingBaseline, Undeclared);
+			bOk = false;
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] lever registry self-test (5) passed: %d writable lever(s) swept, %d "
+				     "compare against a baseline, 0 left the source undeclared, %d claim ShippedTable. "
+				     "The enum still offers no live-read value, and the classifier refused an "
+				     "undeclared baseline with: %s"),
+				WritableSwept, NeedingBaseline, ClaimingShippedTable, *UnsafeWhy);
+
+			// The honest gap, stated every boot rather than remembered. No shipped vanilla-defaults
+			// table exists for engine r.* cvars, so every baseline-comparing lever uses the GUARDED
+			// CapturedOnce path instead. That path refuses to read while FPM holds the cvar, which is
+			// what stops the ratchet; it is not the same thing as a shipped table, and saying so is
+			// the difference between a known gap and a forgotten one.
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] lever registry: %d baseline-comparing lever(s) use CapturedOnce and %d use "
+				     "ShippedTable. ShippedTable is the source Law 3 prefers and NO shipped "
+				     "vanilla-defaults table exists yet for engine r.* cvars, so the count above is "
+				     "expected to be 0 today. The CapturedOnce guard (refuse a read while held) is "
+				     "what carries the anti-ratchet duty until that table ships."),
+				NeedingBaseline - ClaimingShippedTable, ClaimingShippedTable);
+		}
+	}
+
 	return bOk;
 }
 

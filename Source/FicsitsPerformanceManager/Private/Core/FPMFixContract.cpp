@@ -4,6 +4,7 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMConsoleEcho.h"
+#include "Core/FPMHookLedger.h"
 
 #include "HAL/IConsoleManager.h"
 
@@ -228,6 +229,210 @@ namespace
 		virtual void Arm() override { bArmWasCalled = true; }
 		bool bArmWasCalled = false;
 	};
+
+	/**
+	 * Stands in for SML's TCallScope in the counting-wrapper proofs below.
+	 *
+	 * ⚠ ONLY THE SHAPE IS COPIED, AND THAT LIMIT IS STATED RATHER THAN IMPLIED. A real TCallScope
+	 * cannot be built outside an installed hook. What the proofs below check is the WRAPPER: that it
+	 * forwards a scope by non-const reference, forwards every other argument unchanged, and counts
+	 * exactly one call per call. They do not prove that any real hook fires. Only a boot does that.
+	 */
+	struct FFPMSelfTestScope
+	{
+		bool bCancelled = false;
+		void Cancel() { bCancelled = true; }
+	};
+
+	/** What each proof writes into, so every forwarded argument can be checked one by one. */
+	struct FFPMSelfTestWrapProbe
+	{
+		int32 Int = 0;
+		float Real = 0.0f;
+		FString Text;
+		bool bScopeCancelled = false;
+		int32 ReturnSeen = 0;
+		int32 Calls = 0;
+	};
+}
+
+namespace
+{
+	/**
+	 * PROVES THE COUNTING WRAPPER, IN THE FOUR HANDLER SHAPES SML GENERATES.
+	 *
+	 * ★ WHY A CLASSIFIER PROOF AND NOT A HOOK TEST. FPM cannot install a probe hook at boot to prove
+	 * the wrapper: installing one costs a funchook detour on a real game function for no player
+	 * benefit, and the FPM_SUBSCRIBE ledger would then carry a row that is not a fix. So this proves
+	 * the part that CAN fail silently, against a known-positive and a known-negative, the way
+	 * FPMCVarWriter::SelfTest proves its write path on its own probe cvar.
+	 *
+	 * ⚠ FOUR MACRO FAMILIES, THREE DISTINCT HANDLER SIGNATURES. Read against
+	 * NativeHookManager.h:233-241 and 254-257, not from memory:
+	 *   FPM_SUBSCRIBE and FPM_SUBSCRIBE_VIRTUAL both produce void(ScopeType&, Args...).
+	 *   FPM_SUBSCRIBE_AFTER and FPM_SUBSCRIBE_VIRTUAL_AFTER produce void(Args...) when the hooked
+	 *   function returns void, and void(const Ret&, Args...) when it does not.
+	 * All four families are exercised below. Saying they collapse to three shapes is the honest
+	 * version of "four cases pass".
+	 *
+	 * @return true if every check passed.
+	 */
+	bool FPMProveCountingWrapper()
+	{
+		bool bOk = true;
+
+		// KNOWN-NEGATIVE. A slot nothing wrapped must classify as NOT counted. Without this half, the
+		// audit could return true for everything and nobody would know.
+		FPMHookCounter BareSlot;
+		if (FPMHookLedger::IsCounted(BareSlot))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] hook-counter self-test FAILED: an unwrapped slot classified as counted. "
+				     "The audit that finds uncounted hooks now passes everything, so a hook whose "
+				     "REACHED count can never move will report as healthy."));
+			bOk = false;
+		}
+
+		FFPMSelfTestWrapProbe Probe;
+
+		// 1. THE BEFORE SHAPE, as FPM_SUBSCRIBE produces it: void(ScopeType&, Args...).
+		FPMHookCounter BeforeSlot;
+		auto OnBefore = [&Probe](FFPMSelfTestScope& Scope, int32 A, const FString& B)
+		{
+			Scope.Cancel();
+			Probe.Int = A;
+			Probe.Text = B;
+			++Probe.Calls;
+		};
+		auto WrappedBefore = FPMHookCount::Wrap(&BeforeSlot, OnBefore);
+
+		// KNOWN-POSITIVE for the same classifier.
+		if (!FPMHookLedger::IsCounted(BeforeSlot))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] hook-counter self-test FAILED: a wrapped slot classified as NOT counted. "
+				     "Every hook will now be reported as uncounted."));
+			bOk = false;
+		}
+
+		// ⚠ INSTALLING MUST NOT MOVE THE COUNT. An instrument that appears in its own results reports
+		// 1 on a hook that never fired, and this project has already shipped that shape once.
+		if (FPlatformAtomics::AtomicRead(&BeforeSlot.Reached) != 0)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] hook-counter self-test FAILED: wrapping a handler incremented its own "
+				     "REACHED count. Every hook will report at least one call it never received."));
+			bOk = false;
+		}
+
+		FFPMSelfTestScope Scope;
+		WrappedBefore(Scope, 7, FString(TEXT("before-arg")));
+		WrappedBefore(Scope, 7, FString(TEXT("before-arg")));
+
+		if (!Scope.bCancelled || Probe.Int != 7 || Probe.Text != TEXT("before-arg"))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] hook-counter self-test FAILED: the BEFORE shape did not forward its "
+				     "arguments unchanged. Cancel reached the scope: %s. int arrived as %d, expected "
+				     "7. string arrived as '%s', expected 'before-arg'."),
+				Scope.bCancelled ? TEXT("yes") : TEXT("NO"), Probe.Int, *Probe.Text);
+			bOk = false;
+		}
+
+		if (FPlatformAtomics::AtomicRead(&BeforeSlot.Reached) != 2 || Probe.Calls != 2)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] hook-counter self-test FAILED: two calls produced REACHED=%lld and %d "
+				     "handler run(s), expected 2 and 2. The counter does not track calls one for one."),
+				static_cast<long long>(FPlatformAtomics::AtomicRead(&BeforeSlot.Reached)), Probe.Calls);
+			bOk = false;
+		}
+
+		// 2. THE VIRTUAL SHAPE, as FPM_SUBSCRIBE_VIRTUAL produces it. Same signature shape as BEFORE,
+		//    different argument types, so a wrapper that only works for one set is caught.
+		FPMHookCounter VirtualSlot;
+		auto OnVirtual = [&Probe](FFPMSelfTestScope& Scope, float A, int32 B)
+		{
+			Scope.Cancel();
+			Probe.Real = A;
+			Probe.Int = B;
+		};
+		auto WrappedVirtual = FPMHookCount::Wrap(&VirtualSlot, OnVirtual);
+
+		FFPMSelfTestScope VirtualScope;
+		WrappedVirtual(VirtualScope, 2.5f, 11);
+
+		if (!VirtualScope.bCancelled || !FMath::IsNearlyEqual(Probe.Real, 2.5f) || Probe.Int != 11
+			|| FPlatformAtomics::AtomicRead(&VirtualSlot.Reached) != 1)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] hook-counter self-test FAILED: the VIRTUAL shape did not forward or did "
+				     "not count. float arrived as %f, expected 2.5. int arrived as %d, expected 11. "
+				     "REACHED=%lld, expected 1."),
+				Probe.Real, Probe.Int,
+				static_cast<long long>(FPlatformAtomics::AtomicRead(&VirtualSlot.Reached)));
+			bOk = false;
+		}
+
+		// 3. THE AFTER SHAPE FOR A VOID RETURN, as FPM_SUBSCRIBE_AFTER produces it on a void function:
+		//    no scope and no return value, only the arguments. glass-quality and upscaler-preset both
+		//    hook UFGGameUserSettings::ApplyNonResolutionSettings, which returns void.
+		FPMHookCounter AfterVoidSlot;
+		auto OnAfterVoid = [&Probe](int32 A, const FString& B)
+		{
+			Probe.Int = A;
+			Probe.Text = B;
+		};
+		auto WrappedAfterVoid = FPMHookCount::Wrap(&AfterVoidSlot, OnAfterVoid);
+		WrappedAfterVoid(31, FString(TEXT("after-void")));
+
+		if (Probe.Int != 31 || Probe.Text != TEXT("after-void")
+			|| FPlatformAtomics::AtomicRead(&AfterVoidSlot.Reached) != 1)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] hook-counter self-test FAILED: the AFTER shape for a void return did not "
+				     "forward or did not count. int arrived as %d, expected 31. string arrived as "
+				     "'%s', expected 'after-void'. REACHED=%lld, expected 1."),
+				Probe.Int, *Probe.Text,
+				static_cast<long long>(FPlatformAtomics::AtomicRead(&AfterVoidSlot.Reached)));
+			bOk = false;
+		}
+
+		// 4. THE AFTER SHAPE FOR A NON-VOID RETURN, as FPM_SUBSCRIBE_VIRTUAL_AFTER produces it on a
+		//    function that returns a value: void(const Ret&, Args...). clone-sensor hooks
+		//    AFGGameMode::FindInactivePlayer this way and reads what the real call returned.
+		FPMHookCounter AfterValueSlot;
+		auto OnAfterValue = [&Probe](const int32& ReturnValue, int32 A)
+		{
+			Probe.ReturnSeen = ReturnValue;
+			Probe.Int = A;
+		};
+		auto WrappedAfterValue = FPMHookCount::Wrap(&AfterValueSlot, OnAfterValue);
+
+		const int32 PretendReturn = 99;
+		WrappedAfterValue(PretendReturn, 5);
+
+		if (Probe.ReturnSeen != 99 || Probe.Int != 5
+			|| FPlatformAtomics::AtomicRead(&AfterValueSlot.Reached) != 1)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] hook-counter self-test FAILED: the AFTER shape for a non-void return did "
+				     "not forward or did not count. return value arrived as %d, expected 99. int "
+				     "arrived as %d, expected 5. REACHED=%lld, expected 1."),
+				Probe.ReturnSeen, Probe.Int,
+				static_cast<long long>(FPlatformAtomics::AtomicRead(&AfterValueSlot.Reached)));
+			bOk = false;
+		}
+
+		// 5. THE LIVE LEDGER. Every hook that actually installed must carry a wrapper, or its REACHED
+		//    column is a permanent 0 that reads like a handler which never runs.
+		if (!FPMHookLedger::AuditCountingWrappers())
+		{
+			bOk = false;
+		}
+
+		return bOk;
+	}
 }
 
 bool FPMFixes::SelfTest()
@@ -273,11 +478,36 @@ bool FPMFixes::SelfTest()
 		}
 	}
 
+	/*
+	 * 4. THE REACHED COUNTING WRAPPER. Same discipline as the three checks above: it is worth proving
+	 * every boot rather than asserting, because a wrapper that drops an argument or that counts at
+	 * install time fails SILENTLY. The failure looks like a working hook with a wrong number beside
+	 * it, and a wrong number is worse than no number.
+	 */
+	if (!FPMProveCountingWrapper())
+	{
+		bOk = false;
+	}
+
+	// Counted here rather than taken from Records().Num(), because a REFUSED row is not an installed
+	// hook and reporting it as one would overstate what the audit above actually covered.
+	int32 InstalledHooks = 0;
+	for (const FPMHookRecord& Record : FPMHookLedger::Records())
+	{
+		if (Record.bInstalled)
+		{
+			++InstalledHooks;
+		}
+	}
+
 	UE_CLOG(bOk, LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] fix-registry self-test PASSED: unregistered fixes refused, no-op sets report no "
-		     "change, and %d armed of %d registered agree across all three accessors. ⚠ This does NOT "
-		     "prove a real arm/disarm CYCLE works - that still needs a boot."),
-		GArmedFixes.Num(), GRegisteredFixes.Num());
+		     "change, and %d armed of %d registered agree across all three accessors. The REACHED "
+		     "counting wrapper forwards every argument unchanged and counts one per call in all four "
+		     "FPM_SUBSCRIBE families, and all %d installed hook(s) carry it. ⚠ This does NOT prove a "
+		     "real arm/disarm CYCLE works, and it does NOT prove any hooked function ever runs - both "
+		     "still need a boot. Every REACHED count is 0 until then. Run FPM.Hooks.Report after play."),
+		GArmedFixes.Num(), GRegisteredFixes.Num(), InstalledHooks);
 
 	return bOk;
 }

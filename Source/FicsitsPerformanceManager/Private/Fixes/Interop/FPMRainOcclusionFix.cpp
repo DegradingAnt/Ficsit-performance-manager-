@@ -105,7 +105,17 @@ namespace
 	 * is accounted for rather than merely printed. A residual would now be visible as arithmetic.
 	 */
 	int32 GAlreadySettled = 0;     // handled by an earlier sweep in THIS process
-	int32 GNoRepairNeeded = 0;     // vanilla already gave it a usable occlusion box
+
+	/*
+	 * ★ SPLIT FROM ONE COUNTER, 2026-08-15. `NeedsRepair` has three distinct early-outs (flag off, wrong
+	 * shape, already has a box) and the old `GNoRepairNeeded` merged all three into one number, with a
+	 * comment that described only the third. That hid the answer to what Ant actually asked: whether
+	 * modded buildings let rain through. GFlagOff is that answer -- it means DoesAffectOcclusionSystem()
+	 * is false, so the class never entered the rain occlusion system at all.
+	 */
+	int32 GFlagOff = 0;        // DoesAffectOcclusionSystem() is false -- class is not in the occlusion system
+	int32 GNotBoxShape = 0;    // GetOcclusionShape() is not ROCS_Box -- a custom mesh shape, not our concern
+	int32 GHasUsableBox = 0;   // vanilla already gave it a usable occlusion box (the ONLY case the old comment described)
 
 	/*
 	 * ★ THE SEVENTH EXIT, FOUND BY THE UNACCOUNTED CHECK ON ITS FIRST RUN. Ant's 0.5.1 boot printed
@@ -367,13 +377,16 @@ namespace
 		return false;
 	}
 
-	/** True when this class still needs a box. */
-	bool NeedsRepair(const AFGBuildable* CDO)
+	/** Which of NeedsRepair's three early-outs fired, or Repair when none did and a box is still owed. */
+	enum class ERepairCheck : uint8 { Repair, FlagOff, NotBoxShape, HasUsableBox };
+
+	/** Reports WHICH case this class hit, so the caller can count them separately instead of merging them. */
+	ERepairCheck NeedsRepair(const AFGBuildable* CDO)
 	{
-		if (!CDO->DoesAffectOcclusionSystem()) { return false; }
-		if (CDO->GetOcclusionShape() != EFGRainOcclusionShape::ROCS_Box) { return false; }
-		if (CDO->mRainOcclusionBoundingBox.IsValid && !BoxIsInheritedFromUs(CDO)) { return false; }
-		return true;
+		if (!CDO->DoesAffectOcclusionSystem()) { return ERepairCheck::FlagOff; }
+		if (CDO->GetOcclusionShape() != EFGRainOcclusionShape::ROCS_Box) { return ERepairCheck::NotBoxShape; }
+		if (CDO->mRainOcclusionBoundingBox.IsValid && !BoxIsInheritedFromUs(CDO)) { return ERepairCheck::HasUsableBox; }
+		return ERepairCheck::Repair;
 	}
 
 	/**
@@ -414,9 +427,19 @@ namespace
 			if (bFromSweep) { ++GAlreadySettled; }
 			return EBoxSource::None;
 		}
-		if (!NeedsRepair(CDO))
+		const ERepairCheck RepairCheck = NeedsRepair(CDO);
+		if (RepairCheck != ERepairCheck::Repair)
 		{
-			if (bFromSweep) { ++GNoRepairNeeded; }
+			if (bFromSweep)
+			{
+				switch (RepairCheck)
+				{
+				case ERepairCheck::FlagOff:      ++GFlagOff;      break;
+				case ERepairCheck::NotBoxShape:  ++GNotBoxShape;  break;
+				case ERepairCheck::HasUsableBox: ++GHasUsableBox; break;
+				default: break;
+				}
+			}
 			return EBoxSource::None;
 		}
 
@@ -490,7 +513,7 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 	// load in a session re-printed the FIRST sweep's totals and read as a fresh result. Found on the
 	// 2026-08-08 reload: a "cache HIT" line showing the MISS run's numbers.
 	GAppliedFromCache = GDerivedInstanceData = GDerivedComponents = GGeometryless = 0;
-	GAlreadySettled = GNoRepairNeeded = GNoUsableCDO = 0;
+	GAlreadySettled = GFlagOff = GNotBoxShape = GHasUsableBox = GNoUsableCDO = 0;
 
 	if (CVarRainSweep.GetValueOnGameThread() == 0)
 	{
@@ -542,14 +565,15 @@ void FFPMRainOcclusionFix::OnWorldLoad(UWorld* World)
 	 */
 	const int32 Examined = BuildableClasses.Num();
 	const int32 Bucketed = GAppliedFromCache + GDerivedInstanceData + GDerivedComponents
-	                     + GGeometryless + GAlreadySettled + GNoRepairNeeded + GNoUsableCDO
-	                     + GNotInstantiable;
+	                     + GGeometryless + GAlreadySettled + GFlagOff + GNotBoxShape + GHasUsableBox
+	                     + GNoUsableCDO + GNotInstantiable;
 	FString Summary = FString::Printf(
 		TEXT("cache %s | %d classes examined | %d from cache, %d instance-data, %d components, %d none, "
-		     "%d already settled, %d needed no repair, %d no usable CDO, %d not instantiable"),
+		     "%d already settled, %d flag off, %d not box shape, %d already has box, %d no usable CDO, "
+		     "%d not instantiable"),
 		bHit ? TEXT("HIT") : TEXT("MISS->rebuilt"),
 		Examined, GAppliedFromCache, GDerivedInstanceData, GDerivedComponents, GGeometryless,
-		GAlreadySettled, GNoRepairNeeded, GNoUsableCDO, GNotInstantiable);
+		GAlreadySettled, GFlagOff, GNotBoxShape, GHasUsableBox, GNoUsableCDO, GNotInstantiable);
 	if (Bucketed != Examined)
 	{
 		// ASCII, not '⚠'. The overlay's Mono font rendered the warning sign as a tofu box on Ant's

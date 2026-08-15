@@ -312,8 +312,15 @@ namespace FPMFixes
 	 *      never logs a toggle that toggled nothing.
 	 *   3. `Armed()`, `Registered()` and `IsArmed()` AGREE. Three accessors over two arrays is exactly
 	 *      how an inventory starts lying, and the inventory lying is what `FPMHookLedger` exists to stop.
+	 *   4. THE REACHED COUNTING WRAPPER forwards every argument unchanged and counts exactly one per
+	 *      call, in all four `FPM_SUBSCRIBE` families, and every INSTALLED hook carries it. A wrapper
+	 *      that drops an argument or that counts at install time fails silently, and the result is a
+	 *      working hook with a wrong number beside it. The classifier is proved both ways, against an
+	 *      unwrapped slot and a wrapped one, the way `FPMCVarWriter::SelfTest` proves its write path.
 	 *
-	 * ⚠ WHAT IT DOES NOT PROVE, said out loud: that a real arm/disarm CYCLE works. That needs a boot.
+	 * ⚠ WHAT IT DOES NOT PROVE, said out loud: that a real arm/disarm CYCLE works, and that any hooked
+	 * function ever runs. Both need a boot. Until one happens every REACHED count is 0, and that 0 is
+	 * arithmetic rather than evidence. `FPM.Hooks.Report` reads them after play.
 	 *
 	 * @return true if every check passed.
 	 */

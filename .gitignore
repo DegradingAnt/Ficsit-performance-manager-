@@ -15,3 +15,15 @@ DerivedDataCache/
 # Python bytecode from tools/.
 __pycache__/
 *.pyc
+
+# ---------------------------------------------------------------------------
+# THIRD-PARTY REFERENCE IMAGES -- NEVER COMMITTED, NEVER SHIPPED.
+# Added 2026-08-15 after 63 reference images (122.8 MB) were copied in for the
+# TOW grapple design work. This repository is PUBLIC and GPL-3.0. We ship only
+# what we own, and a reference image is not ours.
+# The packager already refuses any artsource/ path in a shipped zip
+# (tools/package_fpm.py:247). This closes the OTHER route, which is git.
+# Our own WRITTEN descriptions of a reference stay tracked on purpose: a
+# description is a fact about a shape, and facts travel. Geometry does not.
+# ---------------------------------------------------------------------------
+ArtSource/REFERENCE/images/

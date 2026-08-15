@@ -114,7 +114,145 @@ struct FICSITSPERFORMANCEMANAGER_API FFPMStageLever
 	 *  stated by the design, this says so. That is the difference between a carried table and an
 	 *  invented one. */
 	FString Note;
+
+	/**
+	 * ★ NON-EMPTY WHEN THIS LEVER'S BEHAVIOUR DEPENDS ON A RULING ANT HAS NOT GIVEN.
+	 *
+	 * The value is the ruling id, for example "policy-gap" or "K4f-depth". Every report line and
+	 * every dry-walk line that shows such a lever prints an AWAITING RULING marker, and the count of
+	 * marked levers is printed with it. A marker instrument that can silently reach zero is a dead
+	 * instrument, so the count is the coverage denominator for the marker.
+	 *
+	 * ⚠ THIS FIELD CHANGES NO BEHAVIOUR. It labels the shipped value; it does not replace it. The
+	 * lever moves exactly as it moved before this field existed.
+	 */
+	FString AwaitingRuling;
 };
+
+/**
+ * ★ DOES A HIGHER NUMBER MEAN BETTER QUALITY FOR THIS CVAR?
+ *
+ * Not a property anyone can look up: r.Nanite.MaxPixelsPerEdge gets WORSE as it rises and
+ * r.LumenScene.GlobalSDF.Resolution gets BETTER. The tables answer it themselves, because the design
+ * header states that MaxOf and MinOf "never worsen a user's own baseline" (:304). So a BONUS lever
+ * that uses MaxOf proves higher is better for its cvar, and a bonus lever that uses MinOf proves the
+ * opposite. Unknown is a first-class answer: a cvar whose only bonus lever is Absolute casts no vote,
+ * and a guess there would be an invention.
+ */
+enum class EFPMLeverPolarity : uint8
+{
+	Unknown,
+	HigherIsBetter,
+	LowerIsBetter,
+};
+FICSITSPERFORMANCEMANAGER_API const TCHAR* LexToString(EFPMLeverPolarity Polarity);
+
+/** ONE LEVER PLUS THE TIER IT SITS IN, flat. The invariant checks below take a flat array so a
+ *  self-test can hand them a DELIBERATELY VIOLATED copy of the shipped tables and prove the check
+ *  refuses it. A check that only ever sees data it passes is indistinguishable from a constant. */
+struct FICSITSPERFORMANCEMANAGER_API FFPMFlatLever
+{
+	EFPMStageTier  Tier = EFPMStageTier::None;
+	FFPMStageLever Lever;
+};
+
+/**
+ * ★ THE DRY PROJECTION. Applies one lever's POLICY ARITHMETIC to a baseline the CALLER supplies, and
+ * returns the value the lever would land on. It reads no console variable, it writes no console
+ * variable, and it touches FPMCVarWriter not at all.
+ *
+ * ⚠ THIS IS NOT THE APPLY PASS, and the difference is the baseline. The apply pass needs a baseline
+ * from the shipped vanilla-defaults table (Law 3), and no such table exists yet for engine r.* cvars.
+ * This function refuses to have an opinion about where the baseline came from: it is a parameter. The
+ * dry walk passes a declared SYNTHETIC baseline, and the direction invariant passes a SWEEP of
+ * baselines, because an invariant that holds at one baseline and not another is not an invariant.
+ *
+ * Group levers return the baseline unchanged and set OutNote, because a group lever's target is a
+ * TIER and not a value. Use FFPMStageTables::ResolveGroupTarget for those.
+ */
+FICSITSPERFORMANCEMANAGER_API float FPMProjectLeverValue(const FFPMStageLever& Lever,
+                                                         float AssumedBaseline,
+                                                         FString& OutNote);
+
+/** Print a lever value the way a cvar carries it: whole numbers stay whole, the rest keep 4 places
+ *  with trailing zeros trimmed. "0.6" and "0.600000" must not read as two different truths. */
+FICSITSPERFORMANCEMANAGER_API FString FPMFormatLeverValue(float Value);
+
+/**
+ * ★ THE INVARIANT CHECKS, AS FREE FUNCTIONS OVER DATA THEY ARE GIVEN.
+ *
+ * Every one of them is a PROJECT LAW rather than a preference, and every one takes the thing it
+ * checks as a parameter for one reason: so the self-test can run it twice, once over the shipped
+ * tables (which must PASS) and once over a copy mutated to break the law (which must FAIL). The
+ * second half is the only thing that can tell a working check apart from `return true`.
+ */
+namespace FPMStageInvariants
+{
+	/** Resolver signature: (lever, live group tier, out note) -> the tier it lands on, or INDEX_NONE
+	 *  when the step is refused. The shipped resolver is FFPMStageTables::ResolveGroupTarget; the
+	 *  self-test also passes an UNCLAMPED one, which must be caught. */
+	using FGroupResolver = TFunctionRef<int32(const FFPMStageLever&, int32, FString&)>;
+
+	/**
+	 * LAW: the GlobalIlluminationQuality group never moves below @2 on any FPM path (design section
+	 * 3.4). Sweeps every reachable live tier against every group lever given, and fails if any
+	 * resolved target lands under FloorTier.
+	 *
+	 * OutCasesChecked is the coverage denominator. Zero cases means the check proved nothing, and the
+	 * caller must treat that as a failure rather than as a pass.
+	 */
+	FICSITSPERFORMANCEMANAGER_API bool GIFloorNeverBreached(const TArray<FFPMFlatLever>& GroupLevers,
+	                                                        FGroupResolver Resolver,
+	                                                        int32 FloorTier,
+	                                                        FString& OutFailure,
+	                                                        int32& OutCasesChecked);
+
+	/**
+	 * LAW: r.Lumen.DiffuseIndirect.Allow never appears on any ladder. @0 and @1 both carry it at 0,
+	 * and that is the 0.52.0 lighting regression this project has now refused three separate times.
+	 *
+	 * Takes the union of every cvar every tier of every mode order can touch. A caller must prove
+	 * that union is not empty before believing a pass; PositiveControl is the name that must be
+	 * present, and the check fails if it is not, so an empty extractor cannot report a clean bill.
+	 */
+	FICSITSPERFORMANCEMANAGER_API bool ForbiddenGICVarAbsent(const TSet<FString>& LadderCVars,
+	                                                         const TCHAR* PositiveControl,
+	                                                         FString& OutFailure);
+
+	/** LAW: every tier an order names is a real tier. An EMPTY tier is legitimate and must not fail
+	 *  this check: K4g derives to the empty set on this engine build and is still correctly named. */
+	FICSITSPERFORMANCEMANAGER_API bool OrderNamesRealTiers(const TArray<EFPMStageTier>& Order,
+	                                                       const TCHAR* Label,
+	                                                       FString& OutFailure);
+
+	/**
+	 * LAW: no bonus step worsens a lever, and no cut step improves one.
+	 *
+	 * Derives each cvar's polarity from the BONUS levers in the array it is given (see
+	 * EFPMLeverPolarity), then projects every lever across a baseline sweep and checks the direction.
+	 * Two K3 levers are exempt by name, each with a stated reason, and they are COUNTED so the
+	 * exemption list cannot grow unnoticed.
+	 *
+	 * OutChecked / OutNoPolarity / OutExempt are the coverage numbers. A lever with no polarity is
+	 * not a pass, it is an ABSTENTION, and it is reported as one.
+	 */
+	FICSITSPERFORMANCEMANAGER_API bool StepDirectionsSane(const TArray<FFPMFlatLever>& Levers,
+	                                                      FString& OutFailure,
+	                                                      int32& OutChecked,
+	                                                      int32& OutNoPolarity,
+	                                                      int32& OutExempt);
+
+	/** Polarity of one cvar, derived from the bonus levers in the array given. Exposed so a report
+	 *  can print it beside a lever rather than a reader having to trust the check. */
+	FICSITSPERFORMANCEMANAGER_API EFPMLeverPolarity DerivePolarity(const TArray<FFPMFlatLever>& Levers,
+	                                                               const FString& CVarName);
+
+	/** True when the two lists hold the same names, ignoring order. The comparator behind the
+	 *  no-write proof: it must be able to say NO, so its own liveness check feeds it a perturbed
+	 *  copy and requires a false. */
+	FICSITSPERFORMANCEMANAGER_API bool SameNameSet(const TArray<FString>& A, const TArray<FString>& B,
+	                                               FString& OutDelta);
+}
 
 class FICSITSPERFORMANCEMANAGER_API FFPMStageTables final : public IFPMFix
 {
@@ -197,6 +335,28 @@ public:
 	 */
 	bool CheckOrderInversions(FString& OutFailure) const;
 
+	/** Every registered lever with its tier, flat. The input the invariant checks above take, and the
+	 *  thing a self-test copies and mutates to build a known-bad case. */
+	void FlattenLevers(TArray<FFPMFlatLever>& Out) const;
+
+	/** The union of every underlying cvar every tier of every mode order can touch, plus the derived
+	 *  K4g members. This is what the forbidden-cvar law is checked against, and its SIZE is the
+	 *  coverage denominator for that check. */
+	void CollectLadderCVars(TSet<FString>& Out) const;
+
+	/** The cvar the GI floor law exists to keep off every ladder. One declaration site. */
+	static const TCHAR* ForbiddenGICVarName();
+
+	/** K4g's derived member names, and the sentence that says how the derivation went. Empty on this
+	 *  engine build by construction; see DeriveK4gMembers. */
+	const TArray<FString>& GetK4gMembers() const { return K4gMembers; }
+	const FString& GetK4gDerivationNote() const { return K4gDerivationNote; }
+
+	/** One line per lever whose behaviour depends on a ruling Ant has not given, each already
+	 *  carrying the AWAITING RULING marker. The count is printed with them, because a marker list
+	 *  that quietly reaches zero looks exactly like a list of settled questions. */
+	void GetAwaitingRulings(TArray<FString>& Out) const;
+
 	/**
 	 * ★ THE LIVENESS PROOF. Every check below has a known-positive AND a known-negative, because four
 	 * gates in this project shipped able to refuse correct work and nothing noticed:
@@ -209,6 +369,22 @@ public:
 	 *      rather than asserted in a comment.
 	 *   4. Every registered stage lever survived the registry's refusal (Law 1 / clause 2). A tier
 	 *      that lost levers to a refusal reports it rather than shrinking quietly.
+	 *
+	 * Then the four PROJECT LAWS, each run twice: once over the shipped tables, which must PASS, and
+	 * once over a copy mutated to break the law, which must FAIL.
+	 *   5. Every tier an order names is a real tier, and an EMPTY tier is legitimate. The known-bad
+	 *      copy carries EFPMStageTier::None; the empty-tier half is proven by K4g, which every mode
+	 *      names and which carries no levers on this engine build.
+	 *   6. The GlobalIlluminationQuality group never moves below @2 on any path. The known-bad case
+	 *      is an UNCLAMPED resolver, which is the arithmetic the clamp replaced.
+	 *   7. r.Lumen.DiffuseIndirect.Allow never appears on any ladder. The known-bad case is the same
+	 *      cvar set with that name injected, and a positive control stops an empty extractor from
+	 *      reporting a clean ladder.
+	 *   8. No bonus step worsens a lever and no cut step improves one, across a baseline sweep. The
+	 *      known-bad case flips one K1 lever's policy. Two K3 levers are exempt by name, both are
+	 *      printed with their reasons, and abstentions are counted rather than passed.
+	 *   9. The AWAITING RULING marker is not dead: a count of zero fails, because a marker list that
+	 *      reaches zero reads exactly like a list of settled questions.
 	 */
 	bool SelfTest();
 

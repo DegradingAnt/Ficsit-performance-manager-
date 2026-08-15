@@ -63,16 +63,30 @@ void FFPMWireNullGuard::Arm()
 	 * Cost is bounded and rare: autosaves are minutes apart, and the sweep is a pointer test per wire
 	 * entry. It does not touch the per-frame path.
 	 */
-	SaveHookHandle = FPM_SUBSCRIBE("wire-null-guard", UFGSaveSession::SaveWorldEndOfFrame,
-		[](auto& Scope, UFGSaveSession* Self, UWorld* World, ELevelTick TickType, float DeltaSeconds)
+	/*
+	 * ★ THE HANDLER IS NAMED BEFORE IT IS PASSED, and that is the rule now rather than a preference.
+	 *
+	 * This was one of the last two inline handlers in the mod. FPMHookLedger.h asked for the
+	 * conversion in its own header comment: SML's SUBSCRIBE_ macros are function-like, so the
+	 * preprocessor splits a handler on any top-level comma. This body holds no top-level comma today,
+	 * which is luck rather than protection, and the body is a loop away from growing one.
+	 *
+	 * FPM_SUBSCRIBE now takes ONE named Handler instead of __VA_ARGS__, because the REACHED counter
+	 * needs a single handler expression to wrap.
+	 */
+	auto OnSaveWorldEndOfFrame = [](auto& Scope, UFGSaveSession* Self, UWorld* World,
+		ELevelTick TickType, float DeltaSeconds)
+	{
+		// Sweep, then FALL THROUGH. The save must still happen -- cancelling it to avoid a crash
+		// would trade a crash for silent data loss, which is the worse of the two.
+		if (World)
 		{
-			// Sweep, then FALL THROUGH. The save must still happen -- cancelling it to avoid a crash
-			// would trade a crash for silent data loss, which is the worse of the two.
-			if (World)
-			{
-				FFPMWireNullGuard::Get().SweepWorld(World);
-			}
-		});
+			FFPMWireNullGuard::Get().SweepWorld(World);
+		}
+	};
+
+	SaveHookHandle = FPM_SUBSCRIBE("wire-null-guard", UFGSaveSession::SaveWorldEndOfFrame,
+		OnSaveWorldEndOfFrame);
 
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
 	// that separates "swept and found nothing" from "never swept".

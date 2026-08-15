@@ -64,19 +64,32 @@ void FFPMWwiseServerGate::Arm()
 	 * first thing the original does on this machine is fail `FAkAudioDevice::Get()` and return. There
 	 * is no branch in it that could do something useful on a server.
 	 */
-	StopActorHookHandle = FPM_SUBSCRIBE("wwise-server-gate", UAkGameplayStatics::StopActor,
-		[](auto& Scope, AActor* /*Actor*/)
-		{
-			Scope.Cancel();
+	/*
+	 * ★ THE HANDLER IS NAMED BEFORE IT IS PASSED, and that is the rule now rather than a preference.
+	 *
+	 * This call site used to pass the lambda inline. FPMHookLedger.h asked for the conversion in its
+	 * own header comment for two years of edits: SML's SUBSCRIBE_ macros are function-like, so the
+	 * preprocessor splits a handler on any top-level comma and does not treat angle brackets as
+	 * grouping. This body holds no top-level comma today. That is luck, not protection.
+	 *
+	 * FPM_SUBSCRIBE now takes ONE named Handler instead of __VA_ARGS__, because the REACHED counter
+	 * needs a single handler expression to wrap. An inline lambda with a comma no longer fails deep
+	 * inside SML's macro. It fails here, on this line, which is where the author can read it.
+	 */
+	auto OnStopActor = [](auto& Scope, AActor* /*Actor*/)
+	{
+		Scope.Cancel();
 
-			const int64 Count = GFPMWwiseSuppressed.fetch_add(1, std::memory_order_relaxed) + 1;
-			if (Count == 1 || (Count % HeartbeatEvery) == 0)
-			{
-				UE_CLOG(FPMDiag::IsOn(FPMDiag::EChannel::WwiseGate), LogFicsitsPerformanceManager, Display,
-					TEXT("[FPM] Wwise server gate: %lld StopActor no-op(s) suppressed this session."),
-					static_cast<long long>(Count));
-			}
-		});
+		const int64 Count = GFPMWwiseSuppressed.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (Count == 1 || (Count % HeartbeatEvery) == 0)
+		{
+			UE_CLOG(FPMDiag::IsOn(FPMDiag::EChannel::WwiseGate), LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] Wwise server gate: %lld StopActor no-op(s) suppressed this session."),
+				static_cast<long long>(Count));
+		}
+	};
+
+	StopActorHookHandle = FPM_SUBSCRIBE("wwise-server-gate", UAkGameplayStatics::StopActor, OnStopActor);
 
 	// Not gated by the channel: the stated Arm()-line exception in FPMDiag.h. This is the line that
 	// separates "suppressed nothing because the gate is working" from "never armed".

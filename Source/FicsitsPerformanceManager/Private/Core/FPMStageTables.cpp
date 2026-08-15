@@ -83,10 +83,364 @@ namespace
 	}
 }
 
+const TCHAR* LexToString(const EFPMLeverPolarity Polarity)
+{
+	switch (Polarity)
+	{
+	case EFPMLeverPolarity::Unknown:        return TEXT("polarity-unknown");
+	case EFPMLeverPolarity::HigherIsBetter: return TEXT("higher-is-better");
+	case EFPMLeverPolarity::LowerIsBetter:  return TEXT("lower-is-better");
+	default:                                return TEXT("<unknown polarity>");
+	}
+}
+
+FString FPMFormatLeverValue(const float Value)
+{
+	if (FMath::IsNearlyEqual(Value, FMath::RoundToFloat(Value), 1.e-4f) && FMath::Abs(Value) < 1.e9f)
+	{
+		return FString::Printf(TEXT("%d"), static_cast<int32>(FMath::RoundToFloat(Value)));
+	}
+	FString Text = FString::Printf(TEXT("%.4f"), Value);
+	while (Text.EndsWith(TEXT("0"))) { Text.LeftChopInline(1); }
+	if (Text.EndsWith(TEXT("."))) { Text.LeftChopInline(1); }
+	return Text;
+}
+
+float FPMProjectLeverValue(const FFPMStageLever& Lever, const float AssumedBaseline, FString& OutNote)
+{
+	if (!Lever.GroupName.IsEmpty())
+	{
+		OutNote = TEXT("group lever: its target is a TIER, not a value. Use ResolveGroupTarget.");
+		return AssumedBaseline;
+	}
+
+	const float Target = FCString::Atof(*Lever.TargetValue);
+	float Result = AssumedBaseline;
+
+	switch (Lever.Policy)
+	{
+	case EFPMLeverPolicy::Absolute:  Result = Target; break;
+	case EFPMLeverPolicy::MaxOf:     Result = FMath::Max(AssumedBaseline, Target); break;
+	case EFPMLeverPolicy::MinOf:     Result = FMath::Min(AssumedBaseline, Target); break;
+	case EFPMLeverPolicy::BaseScale: Result = AssumedBaseline * Target; break;
+	case EFPMLeverPolicy::BaseDelta: Result = AssumedBaseline + Target; break;
+	default:
+		OutNote = TEXT("no value arithmetic for this policy");
+		return AssumedBaseline;
+	}
+
+	if (Lever.bHasClamp)
+	{
+		const float Clamped = FMath::Clamp(Result, Lever.ClampMin, Lever.ClampMax);
+		if (!FMath::IsNearlyEqual(Clamped, Result))
+		{
+			OutNote = FString::Printf(TEXT("clamped to [%s, %s]"),
+				*FPMFormatLeverValue(Lever.ClampMin), *FPMFormatLeverValue(Lever.ClampMax));
+		}
+		Result = Clamped;
+	}
+	return Result;
+}
+
+// ------------------------------------------------------------------------------------------------
+// ★ THE INVARIANT CHECKS. Each one takes its subject as a PARAMETER so the self-test can run it over
+// a deliberately violated copy and require a refusal. See the header for why that second run is the
+// only thing that separates a working check from `return true`.
+// ------------------------------------------------------------------------------------------------
+
+namespace FPMStageInvariants
+{
+	/**
+	 * The two K3 levers that raise a value inside a CUT tier, each with the reason it is allowed to.
+	 *
+	 * ⚠ THIS LIST IS DELIBERATELY TINY AND IS COUNTED BY ITS CALLER. An exemption list that can grow
+	 * without anybody noticing turns the law it exempts from into a suggestion. Both entries are
+	 * printed on every self-test run, with their reasons, whether or not the check passes.
+	 */
+	struct FStepExemption
+	{
+		EFPMStageTier Tier;
+		const TCHAR*  CVarName;
+		const TCHAR*  Reason;
+	};
+
+	static const FStepExemption GStepExemptions[] =
+	{
+		{ EFPMStageTier::K3, TEXT("r.Lumen.ScreenProbeGather.SpatialFilterNumPasses"),
+		  TEXT("stated in the table itself: extra spatial filtering is the COMPENSATION half of the "
+		       "same tier's downsample, so the rule is about the tier's net effect") },
+		{ EFPMStageTier::K3, TEXT("r.Lumen.ScreenProbeGather.TemporalFilterProbes"),
+		  TEXT("[AWAITING RULING: policy-gap] the design states the value and not the policy here, "
+		       "and MaxOf is an inferred reading. The exemption stands only while the inference does") },
+	};
+
+	static const FStepExemption* FindExemption(const EFPMStageTier Tier, const FString& CVarName)
+	{
+		for (const FStepExemption& E : GStepExemptions)
+		{
+			if (E.Tier == Tier && CVarName.Equals(E.CVarName, ESearchCase::IgnoreCase))
+			{
+				return &E;
+			}
+		}
+		return nullptr;
+	}
+
+	EFPMLeverPolarity DerivePolarity(const TArray<FFPMFlatLever>& Levers, const FString& CVarName)
+	{
+		bool bSawMax = false;
+		bool bSawMin = false;
+		for (const FFPMFlatLever& Flat : Levers)
+		{
+			if (!FPMIsBonusTier(Flat.Tier)) { continue; }
+			if (!Flat.Lever.CVarName.Equals(CVarName, ESearchCase::IgnoreCase)) { continue; }
+			if (Flat.Lever.Policy == EFPMLeverPolicy::MaxOf) { bSawMax = true; }
+			if (Flat.Lever.Policy == EFPMLeverPolicy::MinOf) { bSawMin = true; }
+		}
+		// Both votes is a CONTRADICTION, not a tie to be broken. Reporting Unknown makes the caller
+		// abstain rather than pick one, and the caller counts abstentions.
+		if (bSawMax && !bSawMin) { return EFPMLeverPolarity::HigherIsBetter; }
+		if (bSawMin && !bSawMax) { return EFPMLeverPolarity::LowerIsBetter; }
+		return EFPMLeverPolarity::Unknown;
+	}
+
+	bool GIFloorNeverBreached(const TArray<FFPMFlatLever>& GroupLevers, FGroupResolver Resolver,
+	                          const int32 FloorTier, FString& OutFailure, int32& OutCasesChecked)
+	{
+		OutCasesChecked = 0;
+		// Every tier a live group could report, INCLUDING the two below the floor. A player whose own
+		// setting sits at @1 is a real case, and the clamp must refuse a further step from there as
+		// firmly as it refuses one from @2.
+		for (const FFPMFlatLever& Flat : GroupLevers)
+		{
+			if (Flat.Lever.GroupName.IsEmpty()) { continue; }
+			for (int32 LiveTier = 0; LiveTier <= 4; ++LiveTier)
+			{
+				FString Note;
+				const int32 Landed = Resolver(Flat.Lever, LiveTier, Note);
+				++OutCasesChecked;
+				if (Landed == INDEX_NONE) { continue; }
+				if (Landed < FloorTier)
+				{
+					OutFailure = FString::Printf(
+						TEXT("%s's %s lever steps %+d and from @%d it LANDED on @%d, below the @%d "
+						     "floor. @0 and @1 both carry %s=0, which is the 0.52.0 lighting "
+						     "regression."),
+						LexToString(Flat.Tier), *Flat.Lever.GroupName, Flat.Lever.GroupStep,
+						LiveTier, Landed, FloorTier, FFPMStageTables::ForbiddenGICVarName());
+					return false;
+				}
+			}
+		}
+		if (OutCasesChecked == 0)
+		{
+			OutFailure = TEXT("0 cases checked -- no group lever was handed to the floor check, so a "
+			                  "pass here would be an artefact of an empty input rather than a fact "
+			                  "about the tables");
+			return false;
+		}
+		return true;
+	}
+
+	bool ForbiddenGICVarAbsent(const TSet<FString>& LadderCVars, const TCHAR* PositiveControl,
+	                           FString& OutFailure)
+	{
+		// The positive control first. A pass on an empty or broken extractor is worth nothing, and
+		// this project has already shipped one zero-filter that hid the exact thing it was asked
+		// about.
+		if (!LadderCVars.Contains(PositiveControl))
+		{
+			OutFailure = FString::Printf(
+				TEXT("the ladder cvar set has %d entries and does NOT contain the positive control "
+				     "'%s'. Every 'the forbidden cvar is absent' verdict from this set would be an "
+				     "empty-extractor artefact."), LadderCVars.Num(), PositiveControl);
+			return false;
+		}
+		for (const FString& Name : LadderCVars)
+		{
+			if (Name.Equals(FFPMStageTables::ForbiddenGICVarName(), ESearchCase::IgnoreCase))
+			{
+				OutFailure = FString::Printf(
+					TEXT("'%s' is reachable from the ladder (%d cvar(s) checked). It is the GI kill "
+					     "switch and no FPM path may name it."),
+					FFPMStageTables::ForbiddenGICVarName(), LadderCVars.Num());
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool OrderNamesRealTiers(const TArray<EFPMStageTier>& Order, const TCHAR* Label, FString& OutFailure)
+	{
+		for (const EFPMStageTier Tier : Order)
+		{
+			// EMPTINESS IS NOT CHECKED HERE, ON PURPOSE. K4g derives to the empty set on this engine
+			// build and is still a real, correctly named tier. A check that failed on that would be a
+			// gate refusing correct input.
+			if (Tier != EFPMStageTier::Resolution && !FPMIsBonusTier(Tier) && !FPMIsCutTier(Tier))
+			{
+				OutFailure = FString::Printf(
+					TEXT("%s names '%s', which is neither a bonus tier, a cut tier, nor the "
+					     "resolution step."), Label, LexToString(Tier));
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool StepDirectionsSane(const TArray<FFPMFlatLever>& Levers, FString& OutFailure,
+	                        int32& OutChecked, int32& OutNoPolarity, int32& OutExempt)
+	{
+		OutChecked = 0;
+		OutNoPolarity = 0;
+		OutExempt = 0;
+
+		// A SWEEP, not one baseline. A direction rule that holds at 1.0 and breaks at 0.25 is not a
+		// rule, and a clamp can flip a direction at one end of the range only.
+		const float Baselines[] = { 0.0f, 0.25f, 1.0f, 4.0f, 100.0f, 4096.0f };
+
+		for (const FFPMFlatLever& Flat : Levers)
+		{
+			const FFPMStageLever& Lever = Flat.Lever;
+			if (!Lever.GroupName.IsEmpty()) { continue; }
+			if (!FPMIsBonusTier(Flat.Tier) && !FPMIsCutTier(Flat.Tier)) { continue; }
+
+			const EFPMLeverPolarity Polarity = DerivePolarity(Levers, Lever.CVarName);
+			if (Polarity == EFPMLeverPolarity::Unknown)
+			{
+				++OutNoPolarity;
+				continue;
+			}
+			if (const FStepExemption* Exemption = FindExemption(Flat.Tier, Lever.CVarName))
+			{
+				(void)Exemption;
+				++OutExempt;
+				continue;
+			}
+
+			++OutChecked;
+			const bool bIsBonus = FPMIsBonusTier(Flat.Tier);
+
+			for (const float Baseline : Baselines)
+			{
+				FString ProjNote;
+				const float Landed = FPMProjectLeverValue(Lever, Baseline, ProjNote);
+				if (FMath::IsNearlyEqual(Landed, Baseline, 1.e-6f)) { continue; }
+
+				const bool bRose = Landed > Baseline;
+				const bool bImproved = (Polarity == EFPMLeverPolarity::HigherIsBetter) ? bRose : !bRose;
+
+				if (bIsBonus && !bImproved)
+				{
+					OutFailure = FString::Printf(
+						TEXT("BONUS %s lever '%s' (%s, %s) WORSENS: baseline %s -> %s."),
+						LexToString(Flat.Tier), *Lever.CVarName, LexToString(Lever.Policy),
+						LexToString(Polarity), *FPMFormatLeverValue(Baseline),
+						*FPMFormatLeverValue(Landed));
+					return false;
+				}
+				if (!bIsBonus && bImproved)
+				{
+					OutFailure = FString::Printf(
+						TEXT("CUT %s lever '%s' (%s, %s) IMPROVES: baseline %s -> %s. Only the two "
+						     "named K3 exemptions may do that, and this is not one of them."),
+						LexToString(Flat.Tier), *Lever.CVarName, LexToString(Lever.Policy),
+						LexToString(Polarity), *FPMFormatLeverValue(Baseline),
+						*FPMFormatLeverValue(Landed));
+					return false;
+				}
+			}
+		}
+
+		if (OutChecked == 0)
+		{
+			OutFailure = TEXT("0 levers had a derivable polarity, so this check proved nothing about "
+			                  "the tables");
+			return false;
+		}
+		return true;
+	}
+
+	bool SameNameSet(const TArray<FString>& A, const TArray<FString>& B, FString& OutDelta)
+	{
+		TArray<FString> SortedA = A;
+		TArray<FString> SortedB = B;
+		SortedA.Sort();
+		SortedB.Sort();
+		if (SortedA == SortedB)
+		{
+			OutDelta.Reset();
+			return true;
+		}
+
+		FString Added;
+		FString Removed;
+		for (const FString& Name : SortedB)
+		{
+			if (!SortedA.Contains(Name)) { Added += FString::Printf(TEXT("+%s "), *Name); }
+		}
+		for (const FString& Name : SortedA)
+		{
+			if (!SortedB.Contains(Name)) { Removed += FString::Printf(TEXT("-%s "), *Name); }
+		}
+		OutDelta = FString::Printf(TEXT("%d before, %d after. %s%s"),
+			SortedA.Num(), SortedB.Num(), *Removed, *Added);
+		return false;
+	}
+}
+
+const TCHAR* FFPMStageTables::ForbiddenGICVarName()
+{
+	return TEXT("r.Lumen.DiffuseIndirect.Allow");
+}
+
 FFPMStageTables& FFPMStageTables::Get()
 {
 	static FFPMStageTables Instance;
 	return Instance;
+}
+
+void FFPMStageTables::FlattenLevers(TArray<FFPMFlatLever>& Out) const
+{
+	for (int32 TierIndex = 0; TierIndex < StageIdx(EFPMStageTier::Count); ++TierIndex)
+	{
+		for (const FFPMStageLever& Lever : TierLevers[TierIndex])
+		{
+			FFPMFlatLever Flat;
+			Flat.Tier = static_cast<EFPMStageTier>(TierIndex);
+			Flat.Lever = Lever;
+			Out.Add(MoveTemp(Flat));
+		}
+	}
+}
+
+void FFPMStageTables::CollectLadderCVars(TSet<FString>& Out) const
+{
+	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
+	{
+		const EFPMGovernorMode Mode = static_cast<EFPMGovernorMode>(M);
+		// GIVE and TAKE both, even though one is the reverse of the other. The reversal is proven
+		// elsewhere; a law check that assumed it would be leaning on another check's result.
+		for (const EFPMStageTier Tier : GiveOrder(Mode)) { UnderlyingCVars(Tier, Out); }
+		for (const EFPMStageTier Tier : TakeOrder(Mode)) { UnderlyingCVars(Tier, Out); }
+	}
+	// K4g's derived members are not registered levers, so UnderlyingCVars cannot see them. They are
+	// still names a future arming of that tier would write, so the forbidden-cvar law covers them.
+	for (const FString& Member : K4gMembers) { Out.Add(Member); }
+}
+
+void FFPMStageTables::GetAwaitingRulings(TArray<FString>& Out) const
+{
+	for (int32 TierIndex = 0; TierIndex < StageIdx(EFPMStageTier::Count); ++TierIndex)
+	{
+		for (const FFPMStageLever& Lever : TierLevers[TierIndex])
+		{
+			if (Lever.AwaitingRuling.IsEmpty()) { continue; }
+			Out.Add(FString::Printf(TEXT("AWAITING RULING [%s] %s %s -- %s"),
+				*Lever.AwaitingRuling, LexToString(static_cast<EFPMStageTier>(TierIndex)),
+				*Lever.CVarName, *Lever.Note));
+		}
+	}
 }
 
 const TArray<FFPMStageLever>& FFPMStageTables::LeversIn(const EFPMStageTier Tier) const
@@ -280,8 +634,21 @@ void FFPMStageTables::RegisterTables()
 
 	const TCHAR* InferMax = TEXT("policy inferred: the design states the value, not the policy; MaxOf "
 	                             "is the never-worsen reading for a bonus");
-	const TCHAR* InferMin = TEXT("policy inferred: the design states the value, not the policy; MinOf "
-	                             "is the never-improve reading for a cut");
+
+	// ★ THE TWO RULING IDS THIS FILE OWNS. Ant owes a ruling on both, and until she gives one the
+	// SHIPPED BEHAVIOUR STAYS EXACTLY AS IT IS: the marker labels the value, it does not change it.
+	//   policy-gap -- the design's table states a VALUE for these levers and no POLICY. The inferred
+	//                 reading is in the note beside each one.
+	//   K4f-depth  -- the design states K4f's shape and its shallowness in words and names no cvars
+	//                 and no values. The 0.75 scale is a [DEFAULT] with no mover.
+	const TCHAR* RulingPolicyGap = TEXT("policy-gap");
+	const TCHAR* RulingK4fDepth  = TEXT("K4f-depth");
+
+	auto Ruling = [](FFPMStageLever Lever, const TCHAR* Id)
+	{
+		Lever.AwaitingRuling = Id;
+		return Lever;
+	};
 
 	// ---- BONUS +1 (B1). Design :306. Lumen filtering plus reflection richness, about 0.5ms. -------
 	{
@@ -289,11 +656,11 @@ void FFPMStageTables::RegisterTables()
 		const TCHAR* V = TEXT("carried FPM1 table, design :306 (archive FPMQualityStages.cpp:205-236, byte-verified)");
 		RegisterOne(T::B1, L(TEXT("r.Lumen.Reflections.TraceCompaction.WaveOps"), TEXT("1"), P::MaxOf), Gpu, C, V);
 		RegisterOne(T::B1, L(TEXT("r.Lumen.RadianceCache.SortTraceTiles"), TEXT("1"), P::MaxOf), Gpu, C, V);
-		RegisterOne(T::B1, L(TEXT("r.Lumen.ScreenProbeGather.SpatialFilterNumPasses"), TEXT("4"), P::MaxOf, InferMax), Gpu, C, V);
-		RegisterOne(T::B1, L(TEXT("r.Lumen.ScreenProbeGather.TemporalFilterProbes"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
-		RegisterOne(T::B1, L(TEXT("r.Lumen.RadianceCache.SpatialFilterProbes"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
-		RegisterOne(T::B1, L(TEXT("r.Lumen.Reflections.SampleSceneColorAtHit"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
-		RegisterOne(T::B1, L(TEXT("r.Lumen.Reflections.RadianceCache"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
+		RegisterOne(T::B1, Ruling(L(TEXT("r.Lumen.ScreenProbeGather.SpatialFilterNumPasses"), TEXT("4"), P::MaxOf, InferMax), RulingPolicyGap), Gpu, C, V);
+		RegisterOne(T::B1, Ruling(L(TEXT("r.Lumen.ScreenProbeGather.TemporalFilterProbes"), TEXT("1"), P::MaxOf, InferMax), RulingPolicyGap), Gpu, C, V);
+		RegisterOne(T::B1, Ruling(L(TEXT("r.Lumen.RadianceCache.SpatialFilterProbes"), TEXT("1"), P::MaxOf, InferMax), RulingPolicyGap), Gpu, C, V);
+		RegisterOne(T::B1, Ruling(L(TEXT("r.Lumen.Reflections.SampleSceneColorAtHit"), TEXT("1"), P::MaxOf, InferMax), RulingPolicyGap), Gpu, C, V);
+		RegisterOne(T::B1, Ruling(L(TEXT("r.Lumen.Reflections.RadianceCache"), TEXT("1"), P::MaxOf, InferMax), RulingPolicyGap), Gpu, C, V);
 		RegisterOne(T::B1, L(TEXT("r.Lumen.Reflections.BilateralFilter.NumSamples"), TEXT("6"), P::MaxOf), Gpu, C, V);
 		RegisterOne(T::B1, L(TEXT("r.Lumen.Reflections.BilateralFilter.KernelRadius"), TEXT("10"), P::MaxOf), Gpu, C, V);
 		RegisterOne(T::B1, L(TEXT("r.Nanite.Streaming.QualityScale.MaxPoolPercentage"), TEXT("92"), P::MaxOf), Gpu, C, V);
@@ -319,8 +686,8 @@ void FFPMStageTables::RegisterTables()
 		const TCHAR* V = TEXT("carried FPM1 table, design :308 (archive FPMQualityStages.cpp:311-346)");
 		RegisterOne(T::B3, L(TEXT("r.Lumen.Reflections.ScreenSpaceReconstruction"), TEXT("1"), P::MaxOf), Gpu, C, V);
 		RegisterOne(T::B3, L(TEXT("r.Lumen.TraceDistanceScale"), TEXT("2.0"), P::Absolute), Gpu, C, V);
-		RegisterOne(T::B3, L(TEXT("r.Lumen.TraceMeshSDFs"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
-		RegisterOne(T::B3, L(TEXT("r.Lumen.TraceMeshSDFs.Allow"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
+		RegisterOne(T::B3, Ruling(L(TEXT("r.Lumen.TraceMeshSDFs"), TEXT("1"), P::MaxOf, InferMax), RulingPolicyGap), Gpu, C, V);
+		RegisterOne(T::B3, Ruling(L(TEXT("r.Lumen.TraceMeshSDFs.Allow"), TEXT("1"), P::MaxOf, InferMax), RulingPolicyGap), Gpu, C, V);
 		RegisterOne(T::B3, Vram(L(TEXT("r.LumenScene.SurfaceCache.CardTexelDensityScale"), TEXT("800"), P::Absolute,
 			TEXT("design gates this at 11.5GB VRAM")), StageVram11500MB), GpuVram, C, V);
 		RegisterOne(T::B3, L(TEXT("r.LumenScene.GlobalSDF.Resolution"), TEXT("256"), P::MaxOf), Gpu, C, V);
@@ -416,7 +783,7 @@ void FFPMStageTables::RegisterTables()
 			TEXT("raised, not lowered: extra spatial filtering compensates for the downsample above. "
 			     "The 'a cut never IMPROVES a value' rule is about the tier's net effect, and this "
 			     "lever is the compensation half of it")), Gpu, C, V);
-		RegisterOne(T::K3, L(TEXT("r.Lumen.ScreenProbeGather.TemporalFilterProbes"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
+		RegisterOne(T::K3, Ruling(L(TEXT("r.Lumen.ScreenProbeGather.TemporalFilterProbes"), TEXT("1"), P::MaxOf, InferMax), RulingPolicyGap), Gpu, C, V);
 		RegisterOne(T::K3, L(TEXT("r.Shadow.Virtual.ResolutionLodBiasDirectional"), TEXT("1.0"), P::BaseDelta), Gpu, C, V);
 		RegisterOne(T::K3, Clamp(L(TEXT("r.Lumen.TraceDistanceScale"), TEXT("0.5"), P::BaseScale), 0.25f, 1.0f), Gpu, C, V);
 		RegisterOne(T::K3, L(TEXT("r.Lumen.TraceMeshSDFs"), TEXT("0"), P::MinOf), Gpu, C, V);
@@ -447,10 +814,12 @@ void FFPMStageTables::RegisterTables()
 		const TCHAR* V = TEXT("design :336 states the shape and the shallowness but no cvars and no "
 		                      "values; the two cvars are the live foliage pair from :309 and the 0.75 "
 		                      "depth is a DEFAULT awaiting a mover (design section 4.6)");
-		RegisterOne(T::K4f, Clamp(L(TEXT("grass.densityScale"), TEXT("0.75"), P::BaseScale,
-			TEXT("[DEFAULT, needs a mover] depth not stated by the design")), 0.25f, 1.0f), Gpu, C, V);
-		RegisterOne(T::K4f, Clamp(L(TEXT("foliage.LODDistanceScale"), TEXT("0.75"), P::BaseScale,
-			TEXT("[DEFAULT, needs a mover] depth not stated by the design")), 0.25f, 1.0f), Gpu, C, V);
+		RegisterOne(T::K4f, Ruling(Clamp(L(TEXT("grass.densityScale"), TEXT("0.75"), P::BaseScale,
+			TEXT("[DEFAULT, needs a mover] depth not stated by the design")), 0.25f, 1.0f),
+			RulingK4fDepth), Gpu, C, V);
+		RegisterOne(T::K4f, Ruling(Clamp(L(TEXT("foliage.LODDistanceScale"), TEXT("0.75"), P::BaseScale,
+			TEXT("[DEFAULT, needs a mover] depth not stated by the design")), 0.25f, 1.0f),
+			RulingK4fDepth), Gpu, C, V);
 	}
 
 	// K4g is NOT registered here. Its lever list is DERIVED from the live BaseScalability.ini at
@@ -567,7 +936,10 @@ void FFPMStageTables::DeriveK4gMembers()
 		TEXT("derived from the live BaseScalability.ini: %d member(s) at @1 considered, %d carried the "
 		     "same value as @2 (no delta), %d excluded by the GI floor law, %d excluded as US_*-backed, "
 		     "%d survived. Survivors are NOT armed: a cut needs a per-cvar policy direction that cannot "
-		     "be derived from the ini, and inventing one is worse than an honest gap."),
+		     "be derived from the ini, and inventing one is worse than an honest gap. "
+		     "[AWAITING RULING: K4g-empty] the design calls K4g the deepest lighting cut that exists "
+		     "and every mode order names it, so a tier that derives to nothing is Ant's call to make, "
+		     "not this file's. The shipped behaviour is unchanged: K4g reports INERT."),
 		Considered, SameValue, ExcludedByLaw, ExcludedAsUserSetting, K4gMembers.Num());
 }
 
@@ -801,25 +1173,51 @@ bool FFPMStageTables::SelfTest()
 		}
 	}
 
-	// (2) Every tier an order names is a real tier. A typo in an order table would otherwise reach the
-	// walk as a step that matches nothing and is skipped in silence.
-	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
+	// (2) INVARIANT: every tier an order names is a real tier, and an EMPTY tier is legitimate. A typo
+	// in an order table would otherwise reach the walk as a step that matches nothing and is skipped
+	// in silence. Run BOTH directions: the shipped orders must clear it, and an order carrying a
+	// non-tier must be refused, or this check could be returning a constant.
 	{
-		for (const EFPMStageTier Tier : GiveOrder(static_cast<EFPMGovernorMode>(M)))
+		for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
 		{
-			if (Tier != EFPMStageTier::Resolution && !FPMIsBonusTier(Tier) && !FPMIsCutTier(Tier))
+			const EFPMGovernorMode Mode = static_cast<EFPMGovernorMode>(M);
+			FString Failure;
+			if (!FPMStageInvariants::OrderNamesRealTiers(GiveOrder(Mode), LexToString(Mode), Failure))
 			{
 				UE_LOG(LogFicsitsPerformanceManager, Error,
-					TEXT("[FPM] stage tables self-test (2) FAILED: %s order names '%s', which is neither "
-					     "a bonus tier, a cut tier, nor the resolution step."),
-					LexToString(static_cast<EFPMGovernorMode>(M)), LexToString(Tier));
+					TEXT("[FPM] stage tables self-test (2a) FAILED: %s"), *Failure);
+				bOk = false;
+			}
+			if (!FPMStageInvariants::OrderNamesRealTiers(TakeOrder(Mode), LexToString(Mode), Failure))
+			{
+				UE_LOG(LogFicsitsPerformanceManager, Error,
+					TEXT("[FPM] stage tables self-test (2a) FAILED on the take side: %s"), *Failure);
 				bOk = false;
 			}
 		}
+
+		TArray<EFPMStageTier> Bad = GiveOrder(EFPMGovernorMode::ResolutionFirst);
+		Bad.Add(EFPMStageTier::None);
+		FString BadFailure;
+		if (FPMStageInvariants::OrderNamesRealTiers(Bad, TEXT("synthetic order with a non-tier"), BadFailure))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] stage tables self-test (2b) FAILED: an order carrying EFPMStageTier::None "
+				     "was CLEARED. The tier-name check is not discriminating."));
+			bOk = false;
+		}
+
+		// The EMPTY-TIER half, proven rather than asserted in a comment. K4g is named by every mode's
+		// order and carries no levers on this engine build, and the check above must still pass.
+		const bool bK4gNamed = GiveOrder(EFPMGovernorMode::ResolutionFirst).Contains(EFPMStageTier::K4g);
+		if (!bK4gNamed)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] stage tables self-test (2c) FAILED: K4g is not named by mode A's order, so "
+				     "the 'an empty tier is legitimate' half of this invariant was never exercised."));
+			bOk = false;
+		}
 	}
-	// NOTE it does NOT require every named tier to be non-empty. K4g is legitimately empty on this
-	// build (see DeriveK4gMembers), and a check that failed on that would be a gate refusing correct
-	// input. Emptiness is reported by IsTierInert, which is where a reader can act on it.
 
 	// (3) POSITIVE CONTROL ON THE UNDERLYING-CVAR EXTRACTOR ITSELF, before anything is concluded from
 	// a zero. B5 is a group lever, so its underlying set comes entirely from the alias table; if that
@@ -948,6 +1346,184 @@ bool FFPMStageTables::SelfTest()
 		if (Orphans > 0)
 		{
 			bOk = false;
+		}
+	}
+
+	TArray<FFPMFlatLever> Flat;
+	FlattenLevers(Flat);
+
+	// (7) INVARIANT: THE GI GROUP NEVER MOVES BELOW @2 ON ANY PATH, and the proof that the check can
+	// SAY NO. The same checker runs twice: once with the shipped resolver (must pass) and once with an
+	// UNCLAMPED resolver that does the bare arithmetic (must fail). Without the second run this check
+	// could not tell the clamp apart from an absent clamp.
+	{
+		TArray<FFPMFlatLever> GroupLevers;
+		for (const FFPMFlatLever& Entry : Flat)
+		{
+			if (!Entry.Lever.GroupName.IsEmpty()) { GroupLevers.Add(Entry); }
+		}
+
+		const auto ShippedResolver = [this](const FFPMStageLever& Lever, const int32 LiveTier,
+		                                    FString& Note)
+		{
+			return ResolveGroupTarget(Lever, LiveTier, Note);
+		};
+		// The known-bad path: what the arithmetic does with no floor at all. This is the code the
+		// clamp replaced, and it must be caught.
+		const auto UnclampedResolver = [](const FFPMStageLever& Lever, const int32 LiveTier,
+		                                  FString& Note)
+		{
+			Note = TEXT("synthetic UNCLAMPED resolver -- deliberate violation");
+			return LiveTier + Lever.GroupStep;
+		};
+
+		FString Failure;
+		int32 Cases = 0;
+		const bool bShippedHolds = FPMStageInvariants::GIFloorNeverBreached(
+			GroupLevers, ShippedResolver, GIGroupFloorTier(), Failure, Cases);
+
+		FString BadFailure;
+		int32 BadCases = 0;
+		const bool bUnclampedHolds = FPMStageInvariants::GIFloorNeverBreached(
+			GroupLevers, UnclampedResolver, GIGroupFloorTier(), BadFailure, BadCases);
+
+		if (!bShippedHolds || bUnclampedHolds)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] stage tables self-test (7) FAILED: shipped resolver held=%s across %d "
+				     "case(s) (%s); UNCLAMPED resolver held=%s across %d case(s) (expected a refusal, "
+				     "got '%s'). Both halves must be true or the floor clamp is unproven."),
+				bShippedHolds ? TEXT("yes") : TEXT("NO"), Cases, *Failure,
+				bUnclampedHolds ? TEXT("YES") : TEXT("no"), BadCases, *BadFailure);
+			bOk = false;
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] stage tables self-test (7) passed: the GI floor held across %d resolver "
+				     "case(s), and the deliberately unclamped resolver was REFUSED with: %s"),
+				Cases, *BadFailure);
+		}
+	}
+
+	// (8) INVARIANT: r.Lumen.DiffuseIndirect.Allow NEVER APPEARS ON ANY LADDER, and the proof that the
+	// check can say no. The positive control inside the checker guards against an empty extractor; the
+	// injected copy proves the checker refuses the real thing.
+	{
+		TSet<FString> Ladder;
+		CollectLadderCVars(Ladder);
+
+		FString Failure;
+		const bool bClean = FPMStageInvariants::ForbiddenGICVarAbsent(
+			Ladder, TEXT("r.Nanite.MaxPixelsPerEdge"), Failure);
+
+		TSet<FString> Violated = Ladder;
+		Violated.Add(ForbiddenGICVarName());
+		FString BadFailure;
+		const bool bViolatedCleared = FPMStageInvariants::ForbiddenGICVarAbsent(
+			Violated, TEXT("r.Nanite.MaxPixelsPerEdge"), BadFailure);
+
+		if (!bClean || bViolatedCleared)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] stage tables self-test (8) FAILED: the shipped ladder (%d cvar(s)) was "
+				     "clean=%s (%s), and a copy with '%s' injected was cleared=%s (expected a "
+				     "refusal, got '%s')."),
+				Ladder.Num(), bClean ? TEXT("yes") : TEXT("NO"), *Failure,
+				ForbiddenGICVarName(), bViolatedCleared ? TEXT("YES") : TEXT("no"), *BadFailure);
+			bOk = false;
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] stage tables self-test (8) passed: %d ladder cvar(s) checked, '%s' absent, "
+				     "and the injected copy was REFUSED with: %s"),
+				Ladder.Num(), ForbiddenGICVarName(), *BadFailure);
+		}
+	}
+
+	// (9) INVARIANT: no bonus step worsens a lever and no cut step improves one, across a baseline
+	// sweep. The known-bad copy flips one cut lever's policy, which must be caught.
+	{
+		FString Failure;
+		int32 Checked = 0;
+		int32 NoPolarity = 0;
+		int32 Exempt = 0;
+		const bool bDirectionsHold = FPMStageInvariants::StepDirectionsSane(
+			Flat, Failure, Checked, NoPolarity, Exempt);
+
+		// Build the violation from a lever that really has a derived polarity, so the mutation is a
+		// genuine law break and not an untestable no-op.
+		TArray<FFPMFlatLever> Violated = Flat;
+		bool bMutated = false;
+		for (FFPMFlatLever& Entry : Violated)
+		{
+			if (Entry.Tier != EFPMStageTier::K1) { continue; }
+			if (!Entry.Lever.CVarName.Equals(TEXT("r.Nanite.MaxPixelsPerEdge"))) { continue; }
+			// K1 raises this cvar because lower is better for it. MinOf would LOWER it, which is a cut
+			// tier improving a value.
+			Entry.Lever.Policy = EFPMLeverPolicy::MinOf;
+			Entry.Lever.TargetValue = TEXT("0.1");
+			bMutated = true;
+			break;
+		}
+
+		FString BadFailure;
+		int32 BadChecked = 0;
+		int32 BadNoPolarity = 0;
+		int32 BadExempt = 0;
+		const bool bViolatedHeld = FPMStageInvariants::StepDirectionsSane(
+			Violated, BadFailure, BadChecked, BadNoPolarity, BadExempt);
+
+		if (!bDirectionsHold || !bMutated || bViolatedHeld)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] stage tables self-test (9) FAILED: shipped directions held=%s (%s); the "
+				     "known-bad copy was built=%s and held=%s (expected a refusal, got '%s'). "
+				     "Coverage: %d lever(s) checked, %d abstained for want of a derivable polarity, "
+				     "%d exempt by name."),
+				bDirectionsHold ? TEXT("yes") : TEXT("NO"), *Failure,
+				bMutated ? TEXT("yes") : TEXT("NO"),
+				bViolatedHeld ? TEXT("YES") : TEXT("no"), *BadFailure,
+				Checked, NoPolarity, Exempt);
+			bOk = false;
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] stage tables self-test (9) passed: %d lever(s) checked across a 6-point "
+				     "baseline sweep, %d abstained (no derivable polarity -- an ABSTENTION, not a "
+				     "pass), %d exempt by name. The known-bad copy was REFUSED with: %s"),
+				Checked, NoPolarity, Exempt, *BadFailure);
+		}
+
+		for (const FPMStageInvariants::FStepExemption& Exemption : FPMStageInvariants::GStepExemptions)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] stage tables self-test (9) EXEMPT: %s %s -- %s"),
+				LexToString(Exemption.Tier), Exemption.CVarName, Exemption.Reason);
+		}
+	}
+
+	// (10) THE AWAITING-RULING MARKER MUST NOT BE DEAD. Four rulings are owed and this file carries
+	// three of them; a marker list that reached zero would look exactly like a list of settled
+	// questions, so a zero is a failure here rather than good news.
+	{
+		TArray<FString> Rulings;
+		GetAwaitingRulings(Rulings);
+		if (Rulings.Num() == 0)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] stage tables self-test (10) FAILED: 0 levers carry an AWAITING RULING "
+				     "marker. Either every ruling has landed and this check must be retired, or the "
+				     "marker has gone dead and every report since is quietly missing it."));
+			bOk = false;
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] stage tables self-test (10) passed: %d lever(s) carry an AWAITING RULING "
+				     "marker, and K4g's derivation note carries a fourth."), Rulings.Num());
 		}
 	}
 
@@ -1081,13 +1657,16 @@ void FFPMStageTables::ReportNow(FOutputDevice& Ar) const
 		for (const FFPMStageLever& Lever : LeversIn(Tier))
 		{
 			const FFPMLeverDefinition* Def = FFPMLeverRegistry::Get().Find(Lever.RegistryKey);
+			const FString Marker = Lever.AwaitingRuling.IsEmpty()
+				? FString()
+				: FString::Printf(TEXT("[AWAITING RULING: %s] "), *Lever.AwaitingRuling);
 			UE_LOG(LogFicsitsPerformanceManager, Display,
-				TEXT("[FPM]        %-9s %-58s %-8s %-16s %s"),
+				TEXT("[FPM]        %-9s %-58s %-8s %-16s %s%s"),
 				Def ? LexToString(Def->Availability) : TEXT("NOT-IN-REG"),
 				Lever.GroupName.IsEmpty() ? *Lever.CVarName : *Lever.GroupName,
 				Lever.GroupName.IsEmpty() ? *Lever.TargetValue : TEXT("(group)"),
 				LexToString(Lever.Policy),
-				*Lever.Note);
+				*Marker, *Lever.Note);
 		}
 	}
 
@@ -1114,6 +1693,19 @@ void FFPMStageTables::ReportNow(FOutputDevice& Ar) const
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Display,
 			TEXT("[FPM]   REFUSED BY THE REGISTRY: %s"), *Refusal);
+	}
+
+	// ★ THE OWED RULINGS, PRINTED LAST SO THEY ARE THE PART A READER LEAVES WITH. Each line names a
+	// question that is Ant's to answer. The shipped behaviour beside each one is unchanged and stays
+	// unchanged until she answers.
+	TArray<FString> Rulings;
+	GetAwaitingRulings(Rulings);
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   %d lever(s) carry an AWAITING RULING marker. A zero here would be a dead marker, "
+		     "not a settled question, and the self-test fails on it."), Rulings.Num());
+	for (const FString& Line : Rulings)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM]        %s"), *Line);
 	}
 }
 

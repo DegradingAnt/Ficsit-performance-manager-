@@ -4,6 +4,8 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMConsoleEcho.h"
+#include "Core/FPMCVarWriter.h"   // GetHeldCVars ONLY -- the dry walk proves it wrote nothing, and
+                                   // that proof is the single reason this header is included here.
 #include "Core/FPMDiag.h"
 #include "Core/FPMLeverRegistry.h"
 
@@ -153,7 +155,8 @@ namespace FPMSteerGates
 				TEXT("the %.0f%% term wants %.3fms but the best remaining tier recovers %.3fms, so no "
 				     "tier could satisfy it and applying it would stall the ladder at the exact moment "
 				     "the miss is largest. Noise floor still cleared (%.3fms >= %.3fms). "
-				     "[DESIGN DELTA from :302, mirroring section 3.3's saturation disjunct]"),
+				     "[AWAITING RULING: bench-worthwhile-disjunct] [DESIGN DELTA from :302, mirroring "
+				     "section 3.3's saturation disjunct]"),
 				WorthwhileFraction() * 100.0f, Proportional, BestRemainingRecoveryMs,
 				M.RecoveryMs, In.BenchNoiseFloorMs);
 			return true;
@@ -806,6 +809,353 @@ void FFPMGiveTakeWalk::UpdateStall(const FFPMSteeringInputs& In, const FFPMSteer
 }
 
 // ------------------------------------------------------------------------------------------------
+// ★ THE DRY LADDER WALK. See FFPMGiveTakeWalk::DryRunWalk in the header for what is synthetic and
+// why. Nothing below reaches FPMCVarWriter except to READ its held set, twice, as the no-write proof.
+// ------------------------------------------------------------------------------------------------
+
+namespace
+{
+	/**
+	 * The declared synthetic starting value for every cvar in the dry walk.
+	 *
+	 * ⚠ IT IS A CONSTANT AND NOT A LIVE READ, for two separate reasons. A live read makes the walk
+	 * non-deterministic, so two runs could not be compared. And a live read may return FPM's own
+	 * earlier write, which is the ratchet Law 3 forbids -- the dry walk must not model the very
+	 * mistake it exists to rule out.
+	 */
+	constexpr float FPMDrySyntheticBaseline = 1.0f;
+
+	/** Seconds advanced per dry step. Larger than both dwells (2s and 5s) and larger than the tier
+	 *  cooldown (10s), so no step is refused for a timer the dry run is not trying to test. */
+	constexpr double FPMDryStepSeconds = 20.0;
+
+	/** The simulated cvar world one dry walk lives in. It exists inside DryRunWalk and nowhere else. */
+	struct FFPMDrySimState
+	{
+		TMap<FString, float> Values;
+		int32 GroupTier = 3;
+	};
+}
+
+void FFPMGiveTakeWalk::DryRunWalk(const EFPMGovernorMode Mode, const int32 MaxSteps,
+                                  FFPMDryWalkResult& Out)
+{
+	Out = FFPMDryWalkResult();
+	Out.Mode = Mode;
+
+	const FFPMStageTables& Tables = FFPMStageTables::Get();
+
+	// ---- The no-write proof, first half. ---------------------------------------------------------
+	FPMCVarWriter::Get().GetHeldCVars(Out.HeldBefore);
+
+	// ---- Save the live session. A dry run must leave nothing behind. ------------------------------
+	bool   SavedEngaged[static_cast<int32>(EFPMStageTier::Count)];
+	double SavedCooldown[static_cast<int32>(EFPMStageTier::Count)];
+	FMemory::Memcpy(SavedEngaged, bEngaged, sizeof(bEngaged));
+	FMemory::Memcpy(SavedCooldown, CooldownUntil, sizeof(CooldownUntil));
+	const double SavedOver = OverBudgetSince;
+	const double SavedHead = HeadroomSince;
+	const FFPMSteerStall SavedStall = StallState;
+	const int32 SavedDecisions = DecisionsThisSession;
+
+	FMemory::Memzero(bEngaged, sizeof(bEngaged));
+	FMemory::Memzero(CooldownUntil, sizeof(CooldownUntil));
+	OverBudgetSince = -1.0;
+	HeadroomSince = -1.0;
+	StallState = FFPMSteerStall();
+
+	// ---- The simulated cvar world. ---------------------------------------------------------------
+	FFPMDrySimState Sim;
+	Sim.GroupTier = FFPMStageTables::GroupCeilingTier();
+	Out.LowestGITierSeen = Sim.GroupTier;
+
+	for (int32 I = 0; I < static_cast<int32>(EFPMStageTier::Count); ++I)
+	{
+		for (const FFPMStageLever& Lever : Tables.LeversIn(static_cast<EFPMStageTier>(I)))
+		{
+			if (!Lever.CVarName.IsEmpty())
+			{
+				Sim.Values.FindOrAdd(Lever.CVarName) = FPMDrySyntheticBaseline;
+			}
+		}
+	}
+
+	// What a tier held BEFORE it was engaged. A release restores from here and from nowhere else,
+	// which is the walk's own statement of Law 3: the restore value is SAVED, never re-read.
+	TMap<EFPMStageTier, TMap<FString, float>> SavedByTier;
+	TMap<EFPMStageTier, int32> SavedGroupTierByTier;
+
+	FFPMSteeringInputs In;
+	In.Mode = Mode;
+	In.BudgetMs = 16.667f;
+	In.RaiseMs  = 13.333f;
+	In.Attribution = EFPMBoundAttribution::Gpu;
+	In.bProfileAvailable = true;
+	In.BenchNoiseFloorMs = 0.2f;
+	In.bResolutionAtFloor = false;
+	In.bResolutionAtMax = true;      // vanilla: full resolution, nothing engaged
+	for (int32 I = 0; I < static_cast<int32>(EFPMStageTier::Count); ++I)
+	{
+		In.Measurements[I].bMeasured = true;
+		In.Measurements[I].RecoveryMs = 0.8f;
+		In.Measurements[I].CostMs = 0.8f;
+	}
+
+	// Three phases, because a two-phase series can never show a DEMOTE: a fresh ladder has no bonus
+	// engaged to hand back. Climb, then fall, then climb again -- and the third phase must land on the
+	// values the first one produced, which is the no-ratchet check.
+	const float PhaseMeans[3] = { In.RaiseMs * 0.5f, In.BudgetMs * 1.6f, In.RaiseMs * 0.5f };
+	const TCHAR* PhaseNames[3] = { TEXT("headroom (climb)"), TEXT("over budget (fall)"),
+	                               TEXT("headroom (recover)") };
+	int32 Phase = 0;
+
+	TMap<FString, float> AfterFirstClimb;
+	int32 GroupTierAfterFirstClimb = Sim.GroupTier;
+	bool bCapturedFirstClimb = false;
+
+	double Now = 0.0;
+	int32 StepIndex = 0;
+
+	auto RecordLeverMove = [](FFPMDryWalkStep& Step, const FFPMStageLever& Lever,
+	                          const FString& OldText, const FString& NewText, const FString& Note)
+	{
+		const FString Marker = Lever.AwaitingRuling.IsEmpty()
+			? FString()
+			: FString::Printf(TEXT("[AWAITING RULING: %s] "), *Lever.AwaitingRuling);
+		Step.LeverLines.Add(FString::Printf(TEXT("%-58s %10s -> %-10s %s%s"),
+			Lever.GroupName.IsEmpty() ? *Lever.CVarName : *Lever.GroupName,
+			*OldText, *NewText, *Marker, *Note));
+	};
+
+	while (StepIndex < MaxSteps)
+	{
+		++StepIndex;
+		Now += FPMDryStepSeconds;
+		In.NowSeconds = Now;
+		In.MeanFrameMs = PhaseMeans[Phase];
+
+		FFPMDryWalkStep Step;
+		Step.Step = StepIndex;
+		Step.AtSeconds = Now;
+		Step.MeanFrameMs = In.MeanFrameMs;
+		Step.Decision = Decide(In);
+
+		const EFPMStageTier Tier = Step.Decision.Tier;
+		const EFPMSteerAction Action = Step.Decision.Action;
+
+		if (Action == EFPMSteerAction::EngageCut || Action == EFPMSteerAction::PromoteBonus)
+		{
+			TMap<FString, float>& Saved = SavedByTier.FindOrAdd(Tier);
+			Saved.Reset();
+			SavedGroupTierByTier.FindOrAdd(Tier) = Sim.GroupTier;
+
+			for (const FFPMStageLever& Lever : Tables.LeversIn(Tier))
+			{
+				if (!Lever.GroupName.IsEmpty())
+				{
+					FString GroupNote;
+					const int32 Landed = Tables.ResolveGroupTarget(Lever, Sim.GroupTier, GroupNote);
+					if (Landed == INDEX_NONE)
+					{
+						RecordLeverMove(Step, Lever, FString::Printf(TEXT("@%d"), Sim.GroupTier),
+							TEXT("(skipped)"), GroupNote);
+						continue;
+					}
+					RecordLeverMove(Step, Lever, FString::Printf(TEXT("@%d"), Sim.GroupTier),
+						FString::Printf(TEXT("@%d"), Landed), GroupNote);
+					Sim.GroupTier = Landed;
+					Out.LowestGITierSeen = FMath::Min(Out.LowestGITierSeen, Sim.GroupTier);
+					if (Sim.GroupTier < FFPMStageTables::GIGroupFloorTier())
+					{
+						Out.bGIFloorHeld = false;
+					}
+					continue;
+				}
+
+				float& Live = Sim.Values.FindOrAdd(Lever.CVarName);
+				Saved.Add(Lever.CVarName, Live);
+				FString ProjNote;
+				const float Landed = FPMProjectLeverValue(Lever, Live, ProjNote);
+				RecordLeverMove(Step, Lever, FPMFormatLeverValue(Live), FPMFormatLeverValue(Landed),
+					ProjNote.IsEmpty() ? Lever.Note : ProjNote);
+				Live = Landed;
+			}
+		}
+		else if (Action == EFPMSteerAction::ReleaseCut || Action == EFPMSteerAction::DemoteBonus)
+		{
+			if (const int32* SavedGroup = SavedGroupTierByTier.Find(Tier))
+			{
+				for (const FFPMStageLever& Lever : Tables.LeversIn(Tier))
+				{
+					if (Lever.GroupName.IsEmpty()) { continue; }
+					RecordLeverMove(Step, Lever, FString::Printf(TEXT("@%d"), Sim.GroupTier),
+						FString::Printf(TEXT("@%d"), *SavedGroup),
+						TEXT("restored from the value SAVED before the engage, never re-read"));
+					Sim.GroupTier = *SavedGroup;
+				}
+			}
+			if (const TMap<FString, float>* Saved = SavedByTier.Find(Tier))
+			{
+				for (const FFPMStageLever& Lever : Tables.LeversIn(Tier))
+				{
+					if (Lever.GroupName.IsEmpty() && Saved->Contains(Lever.CVarName))
+					{
+						float& Live = Sim.Values.FindOrAdd(Lever.CVarName);
+						const float Restore = (*Saved)[Lever.CVarName];
+						RecordLeverMove(Step, Lever, FPMFormatLeverValue(Live),
+							FPMFormatLeverValue(Restore),
+							TEXT("restored from the value SAVED before the engage, never re-read"));
+						Live = Restore;
+					}
+				}
+			}
+		}
+		else if (Action == EFPMSteerAction::ResolutionDown)
+		{
+			Step.LeverLines.Add(TEXT("(no stage levers -- section 8 owns resolution. The dry run "
+			                         "models a PERFECT executor: the floor is reached in one step.)"));
+			In.bResolutionAtFloor = true;
+			In.bResolutionAtMax = false;
+		}
+		else if (Action == EFPMSteerAction::ResolutionUp)
+		{
+			Step.LeverLines.Add(TEXT("(no stage levers -- section 8 owns resolution. The dry run "
+			                         "models a PERFECT executor: the maximum is reached in one step.)"));
+			In.bResolutionAtMax = true;
+			In.bResolutionAtFloor = false;
+		}
+
+		if (Step.Decision.IsAction())
+		{
+			Commit(Step.Decision, Now);
+		}
+
+		Out.Steps.Add(MoveTemp(Step));
+
+		// A block that is not the dwell means this phase has nothing left to do. The dwell is
+		// transient by construction: the next step is 20 seconds later and clears it.
+		const bool bPhaseSettled = !Out.Steps.Last().Decision.IsAction()
+			&& Out.Steps.Last().Decision.Block != EFPMSteerBlock::Dwell;
+
+		if (!bPhaseSettled) { continue; }
+
+		if (Phase == 0 && !bCapturedFirstClimb)
+		{
+			AfterFirstClimb = Sim.Values;
+			GroupTierAfterFirstClimb = Sim.GroupTier;
+			bCapturedFirstClimb = true;
+		}
+		if (Phase == 2)
+		{
+			Out.bConverged = true;
+			Out.StopReason = FString::Printf(
+				TEXT("all three phases settled in %d step(s). Last block: %s"),
+				StepIndex, LexToString(Out.Steps.Last().Decision.Block));
+			break;
+		}
+		++Phase;
+		// A phase change is a new signal regime, so the dwell state must start again rather than
+		// carry a stale timestamp from the phase before.
+		OverBudgetSince = -1.0;
+		HeadroomSince = -1.0;
+	}
+
+	if (!Out.bConverged)
+	{
+		Out.StopReason = FString::Printf(
+			TEXT("STEP BUDGET of %d exhausted in phase %d (%s). This is NOT a pass: the ladder did not "
+			     "settle."), MaxSteps, Phase, PhaseNames[FMath::Clamp(Phase, 0, 2)]);
+	}
+
+	// ---- THE NO-RATCHET CHECK. Climb, fall, climb must land where the first climb left it. --------
+	if (bCapturedFirstClimb)
+	{
+		FString Delta;
+		for (const TPair<FString, float>& Pair : AfterFirstClimb)
+		{
+			const float* Nowv = Sim.Values.Find(Pair.Key);
+			if (!Nowv || !FMath::IsNearlyEqual(*Nowv, Pair.Value, 1.e-4f))
+			{
+				Delta += FString::Printf(TEXT("%s %s->%s "), *Pair.Key,
+					*FPMFormatLeverValue(Pair.Value),
+					Nowv ? *FPMFormatLeverValue(*Nowv) : TEXT("(gone)"));
+			}
+		}
+		if (Sim.GroupTier != GroupTierAfterFirstClimb)
+		{
+			Delta += FString::Printf(TEXT("GI group @%d->@%d "), GroupTierAfterFirstClimb, Sim.GroupTier);
+		}
+		Out.bReturnedToStart = Delta.IsEmpty();
+		Out.RatchetDelta = Delta;
+	}
+	else
+	{
+		Out.bReturnedToStart = false;
+		Out.RatchetDelta = TEXT("the first climb never settled, so there is no reference state to "
+		                        "compare the recovery against");
+	}
+
+	// ---- Restore the live session, then the no-write proof's second half. -------------------------
+	FMemory::Memcpy(bEngaged, SavedEngaged, sizeof(bEngaged));
+	FMemory::Memcpy(CooldownUntil, SavedCooldown, sizeof(CooldownUntil));
+	OverBudgetSince = SavedOver;
+	HeadroomSince = SavedHead;
+	StallState = SavedStall;
+	DecisionsThisSession = SavedDecisions;
+
+	FPMCVarWriter::Get().GetHeldCVars(Out.HeldAfter);
+	Out.bHeldSetIdentical = FPMStageInvariants::SameNameSet(Out.HeldBefore, Out.HeldAfter,
+		Out.HeldSetDelta);
+}
+
+void FFPMGiveTakeWalk::PrintDryRun(const FFPMDryWalkResult& Result, FOutputDevice& Ar)
+{
+	FPMScopedConsoleEcho Echo(&Ar);
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] DRY LADDER WALK -- mode %s, %d step(s). %s"),
+		LexToString(Result.Mode), Result.Steps.Num(), *Result.StopReason);
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   SYNTHETIC: the signal series, the per-tier measurements (uniform 0.8ms), the "
+		     "starting cvar values (%s for every lever, a declared constant and NOT a live read), and "
+		     "a PERFECT resolution executor. Nothing here is a measurement."),
+		*FPMFormatLeverValue(FPMDrySyntheticBaseline));
+
+	for (const FFPMDryWalkStep& Step : Result.Steps)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   %3d  t=%6.0fs  mean %6.2fms  %-16s %-4s %-28s %s"),
+			Step.Step, Step.AtSeconds, Step.MeanFrameMs,
+			LexToString(Step.Decision.Action), LexToString(Step.Decision.Tier),
+			LexToString(Step.Decision.Block), *Step.Decision.Reason);
+		for (const FString& Line : Step.LeverLines)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM]          %s"), *Line);
+		}
+	}
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   NO-WRITE PROOF: FPMCVarWriter held %d cvar(s) before and %d after, identical=%s. "
+		     "%s"),
+		Result.HeldBefore.Num(), Result.HeldAfter.Num(),
+		Result.bHeldSetIdentical ? TEXT("yes") : TEXT("NO"),
+		Result.bHeldSetIdentical ? TEXT("The walk resolved and printed; it applied nothing.")
+		                         : *Result.HeldSetDelta);
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   NO-RATCHET PROOF: climb, fall, climb returned to the first climb's values=%s. %s"),
+		Result.bReturnedToStart ? TEXT("yes") : TEXT("NO"),
+		Result.bReturnedToStart
+			? TEXT("Every release restored the value SAVED before its engage, so a repeated cycle "
+			       "cannot walk the baseline anywhere.")
+			: *Result.RatchetDelta);
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   GI FLOOR: lowest GlobalIlluminationQuality tier reached was @%d against a floor "
+		     "of @%d, held=%s."),
+		Result.LowestGITierSeen, FFPMStageTables::GIGroupFloorTier(),
+		Result.bGIFloorHeld ? TEXT("yes") : TEXT("NO"));
+}
+
+// ------------------------------------------------------------------------------------------------
 // ★ THE SELF-TEST. Runs at world load, after the stage tables' own self-test, so the orders it walks
 // are already proven internally consistent.
 // ------------------------------------------------------------------------------------------------
@@ -1070,6 +1420,169 @@ bool FFPMGiveTakeWalk::SelfTest()
 		}
 	}
 
+	// ---- (5) INVARIANT: THE WALK IS IDEMPOTENT WHEN THE INPUT DOES NOT CHANGE. -------------------
+	// Two Decide calls on a byte-identical FFPMSteeringInputs, with no Commit between them, must
+	// return the same action, the same tier and the same block. A walk that answered differently to
+	// the same question could not be reasoned about at all, and a caller retrying after a failed
+	// apply would get a different lever the second time.
+	{
+		const EFPMGovernorMode Modes[] = {
+			EFPMGovernorMode::Balanced, EFPMGovernorMode::ResolutionFirst,
+			EFPMGovernorMode::GraphicsFirst, EFPMGovernorMode::LightingFirst };
+		const float Means[] = { Budget * 1.5f, (Budget + Raise) * 0.5f, Raise * 0.5f };
+
+		int32 Pairs = 0;
+		int32 Divergent = 0;
+		for (const EFPMGovernorMode Mode : Modes)
+		{
+			for (const float Mean : Means)
+			{
+				for (int32 Floor = 0; Floor < 2; ++Floor)
+				{
+					FMemory::Memzero(bEngaged, sizeof(bEngaged));
+					FFPMSteeringInputs In = FreshInputs(Mode);
+					In.MeanFrameMs = Mean;
+					In.Attribution = EFPMBoundAttribution::Gpu;
+					In.bResolutionAtFloor = Floor != 0;
+					In.bProfileAvailable = true;
+					In.BenchNoiseFloorMs = 0.2f;
+					for (int32 I = 0; I < static_cast<int32>(EFPMStageTier::Count); ++I)
+					{
+						In.Measurements[I] = { true, 0.8f, 0.8f };
+					}
+
+					const FFPMSteerDecision First = DecidePastDwell(In);
+					// Same clock, same signal, no Commit. The only thing that could differ is the
+					// walk's own bookkeeping, and it must not.
+					In.NowSeconds = 1000.0;
+					const FFPMSteerDecision Second = Decide(In);
+					++Pairs;
+
+					if (First.Action != Second.Action || First.Tier != Second.Tier
+						|| First.Block != Second.Block)
+					{
+						++Divergent;
+						if (Divergent <= 3)
+						{
+							UE_LOG(LogFicsitsPerformanceManager, Error,
+								TEXT("[FPM] give/take self-test (5): NOT IDEMPOTENT -- mode %s mean "
+								     "%.2f floor=%d gave '%s'/'%s'/'%s' then '%s'/'%s'/'%s'"),
+								LexToString(Mode), Mean, Floor,
+								LexToString(First.Action), LexToString(First.Tier),
+								LexToString(First.Block), LexToString(Second.Action),
+								LexToString(Second.Tier), LexToString(Second.Block));
+						}
+					}
+				}
+			}
+		}
+		if (Divergent > 0)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] give/take self-test (5) FAILED: %d of %d repeated decisions differed on "
+				     "identical input."), Divergent, Pairs);
+			bOk = false;
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] give/take self-test (5) passed: %d repeated decisions, every one identical "
+				     "on identical input."), Pairs);
+		}
+	}
+
+	// ---- (6) THE DRY LADDER WALK, ALL THREE STEERABLE MODES, WITH ITS OWN THREE PROOFS. ----------
+	// This is the check that exercises the 3071 lines of tier content end to end without a boot: the
+	// walk must converge, it must write nothing, it must not ratchet, and it must never take the GI
+	// group below its floor.
+	{
+		const EFPMGovernorMode WalkModes[] = {
+			EFPMGovernorMode::ResolutionFirst, EFPMGovernorMode::GraphicsFirst,
+			EFPMGovernorMode::LightingFirst };
+
+		for (const EFPMGovernorMode Mode : WalkModes)
+		{
+			FFPMDryWalkResult Result;
+			DryRunWalk(Mode, 300, Result);
+
+			if (!Result.bConverged || !Result.bHeldSetIdentical || !Result.bReturnedToStart
+				|| !Result.bGIFloorHeld)
+			{
+				UE_LOG(LogFicsitsPerformanceManager, Error,
+					TEXT("[FPM] give/take self-test (6) FAILED for mode %s: converged=%s (%s), "
+					     "no-write=%s (%s), no-ratchet=%s (%s), GI floor held=%s (lowest @%d)."),
+					LexToString(Mode),
+					Result.bConverged ? TEXT("yes") : TEXT("NO"), *Result.StopReason,
+					Result.bHeldSetIdentical ? TEXT("yes") : TEXT("NO"), *Result.HeldSetDelta,
+					Result.bReturnedToStart ? TEXT("yes") : TEXT("NO"), *Result.RatchetDelta,
+					Result.bGIFloorHeld ? TEXT("yes") : TEXT("NO"), Result.LowestGITierSeen);
+				bOk = false;
+			}
+			else
+			{
+				int32 Gives = 0;
+				int32 Takes = 0;
+				for (const FFPMDryWalkStep& Step : Result.Steps)
+				{
+					switch (Step.Decision.Action)
+					{
+					case EFPMSteerAction::DemoteBonus:
+					case EFPMSteerAction::EngageCut:
+					case EFPMSteerAction::ResolutionDown: ++Gives; break;
+					case EFPMSteerAction::ReleaseCut:
+					case EFPMSteerAction::PromoteBonus:
+					case EFPMSteerAction::ResolutionUp:   ++Takes; break;
+					default: break;
+					}
+				}
+				UE_LOG(LogFicsitsPerformanceManager, Display,
+					TEXT("[FPM] give/take self-test (6) passed for mode %s: %d step(s), %d give(s), "
+					     "%d take(s), held cvars %d before and %d after, lowest GI tier @%d."),
+					LexToString(Mode), Result.Steps.Num(), Gives, Takes,
+					Result.HeldBefore.Num(), Result.HeldAfter.Num(), Result.LowestGITierSeen);
+
+				// ★ A WALK THAT MOVED NOTHING WOULD PASS ALL THREE PROOFS TRIVIALLY. That is the dead
+				// instrument shape, so a zero here is a failure and not a clean bill.
+				if (Gives == 0 || Takes == 0)
+				{
+					UE_LOG(LogFicsitsPerformanceManager, Error,
+						TEXT("[FPM] give/take self-test (6) FAILED for mode %s: the walk converged "
+						     "with %d give(s) and %d take(s). A walk that moved nothing satisfies "
+						     "every proof above without proving anything."),
+						LexToString(Mode), Gives, Takes);
+					bOk = false;
+				}
+			}
+		}
+
+		// THE NO-WRITE COMPARATOR'S OWN LIVENESS. It must be able to say NO, or every "identical"
+		// verdict above is worth nothing. Feed it a perturbed copy of a real snapshot.
+		TArray<FString> Held;
+		FPMCVarWriter::Get().GetHeldCVars(Held);
+		TArray<FString> Perturbed = Held;
+		Perturbed.Add(TEXT("__SelfTest.CVarThatIsNotHeld"));
+		FString SameDelta;
+		FString DiffDelta;
+		const bool bSaysSame = FPMStageInvariants::SameNameSet(Held, Held, SameDelta);
+		const bool bSaysDifferent = !FPMStageInvariants::SameNameSet(Held, Perturbed, DiffDelta);
+		if (!bSaysSame || !bSaysDifferent)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] give/take self-test (6) FAILED: the held-cvar comparator called an "
+				     "identical pair %s (want identical) and a perturbed pair %s (want different). "
+				     "A comparator that cannot say NO turns every no-write proof into a formality."),
+				bSaysSame ? TEXT("identical") : TEXT("DIFFERENT"),
+				bSaysDifferent ? TEXT("different") : TEXT("IDENTICAL"));
+			bOk = false;
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] give/take self-test (6) comparator liveness passed: it reported the "
+				     "perturbed pair as different with '%s'."), *DiffDelta);
+		}
+	}
+
 	FMemory::Memcpy(bEngaged, SavedEngaged, sizeof(bEngaged));
 	OverBudgetSince = SavedOver;
 	HeadroomSince = SavedHead;
@@ -1173,11 +1686,59 @@ void FFPMGiveTakeWalk::SimulateAndPrint(const TArray<FString>& Args, FOutputDevi
 {
 	FPMScopedConsoleEcho Echo(&Ar);
 
+	// ---- THE MULTI-STEP DRY WALK. Same command, because a second console command over the same
+	// ---- inputs is a second thing to keep in step with this one.
+	if (Args.Num() >= 1 && Args[0].ToLower() == TEXT("walk"))
+	{
+		const FString WalkMode = Args.Num() > 1 ? Args[1].ToLower() : FString(TEXT("all"));
+		const int32 MaxSteps = Args.Num() > 2 ? FMath::Max(1, FCString::Atoi(*Args[2])) : 300;
+
+		TArray<EFPMGovernorMode> Modes;
+		if (WalkMode == TEXT("a") || WalkMode == TEXT("resolution")) { Modes.Add(EFPMGovernorMode::ResolutionFirst); }
+		else if (WalkMode == TEXT("b") || WalkMode == TEXT("graphics")) { Modes.Add(EFPMGovernorMode::GraphicsFirst); }
+		else if (WalkMode == TEXT("c") || WalkMode == TEXT("lighting")) { Modes.Add(EFPMGovernorMode::LightingFirst); }
+		else if (WalkMode == TEXT("balanced")) { Modes.Add(EFPMGovernorMode::Balanced); }
+		else
+		{
+			Modes.Add(EFPMGovernorMode::ResolutionFirst);
+			Modes.Add(EFPMGovernorMode::GraphicsFirst);
+			Modes.Add(EFPMGovernorMode::LightingFirst);
+		}
+
+		for (const EFPMGovernorMode Mode : Modes)
+		{
+			FFPMDryWalkResult Result;
+			DryRunWalk(Mode, MaxSteps, Result);
+			PrintDryRun(Result, Ar);
+		}
+
+		// The owed rulings, printed with the walk, because a reader who has just watched the ladder
+		// move is exactly the reader who needs to know which parts of it are not settled.
+		TArray<FString> Rulings;
+		FFPMStageTables::Get().GetAwaitingRulings(Rulings);
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   AWAITING RULING -- %d lever(s) below, plus two rulings that are not "
+			     "per-lever: K4g derives to the empty set on this engine build, and the "
+			     "bench-worthwhile second disjunct is a delta from the design as written."),
+			Rulings.Num());
+		for (const FString& Line : Rulings)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM]        %s"), *Line);
+		}
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]        AWAITING RULING [K4g-empty] %s"),
+			*FFPMStageTables::Get().GetK4gDerivationNote());
+		return;
+	}
+
 	if (Args.Num() < 2)
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Display,
 			TEXT("[FPM] usage: FPM.Stage.Simulate <balanced|a|b|c> <meanMs> [budgetMs=16.667] "
 			     "[gpu|cpu|unknown] [atFloor 0|1] [atMax 0|1] [profile 0|1]"));
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]    or: FPM.Stage.Simulate walk [a|b|c|balanced|all] [maxSteps=300] -- the full "
+			     "dry ladder walk. Applies nothing and leaves the ladder untouched."));
 		return;
 	}
 

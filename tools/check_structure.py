@@ -382,6 +382,82 @@ def check_raw_subscribe() -> None:
                 err(f"{f.relative_to(REPO)}:{i} uses a raw SUBSCRIBE_ macro — go through FPM_SUBSCRIBE*")
 
 
+def check_hook_counting() -> None:
+    """Every hook FPM installs must carry a REACHED counter, and nothing may reach past the macros.
+
+    WHY. Before 2026-08-15 the ledger could say that an install returned a handle. It could not say
+    that the handler ever ran, so an armed line proved the install and nothing else. A grep for
+    REACHED across the whole Source tree returned zero files. The counting wrapper closed that, and
+    this check is what keeps it closed.
+
+    THE FAILURE THIS CATCHES IS SILENT BY CONSTRUCTION. A new FPM_SUBSCRIBE variant that forgets
+    FPMHookCount::Wrap compiles clean and installs a working hook. Its REACHED column then reads 0
+    forever, which is exactly the shape of a handler that never runs. A direct call to
+    FPMHookLedger::Install from a .cpp does the same thing.
+
+    ⚠ IT ERRORS ON FINDING NO MACROS AT ALL. A pattern that matches nothing and reports success is an
+    absence-claim generator, and this repo has already paid for one: check_disarm_coverage silently
+    skipped six fixes for a day while printing 0 errors.
+    """
+    hdr = SRC / "Public" / "Core" / "FPMHookLedger.h"
+    cpp = SRC / "Private" / "Core" / "FPMHookLedger.cpp"
+    if not (hdr.exists() and cpp.exists()):
+        err("FPMHookLedger.h / FPMHookLedger.cpp not found — the ledger is the only sanctioned hook path")
+        return
+
+    text = read(hdr)
+    for symbol in ("struct FPMHookCounter", "namespace FPMHookCount", "AuditCountingWrappers", "IsCounted"):
+        if symbol not in text:
+            err(f"FPMHookLedger.h no longer declares {symbol!r} — the REACHED counters are gone")
+
+    # Line continuations joined, so each macro body is one string to search.
+    joined = re.sub(r"\\\n", " ", text)
+    macros = re.findall(r"^#define\s+(FPM_SUBSCRIBE\w*)\(([^)]*)\)(.*)$", joined, re.M)
+    if not macros:
+        err(
+            "FPMHookLedger.h defines no FPM_SUBSCRIBE* macro. Either the ledger was gutted or this "
+            "check's pattern stopped matching — do not read the silence as a pass."
+        )
+        return
+
+    for name, params, body in macros:
+        if "SUBSCRIBE_METHOD" not in body:
+            continue
+        if "FPMHookCount::Wrap(" not in body:
+            err(
+                f"{name} installs an SML hook without passing its handler through FPMHookCount::Wrap. "
+                "The hook works and its REACHED count stays 0 forever, which reads exactly like a "
+                "handler that never runs."
+            )
+        if "..." in params or "__VA_ARGS__" in body:
+            err(
+                f"{name} still takes __VA_ARGS__. The counting wrapper needs ONE named handler "
+                "expression to wrap, and __VA_ARGS__ re-expands as separate arguments."
+            )
+
+    body = read(cpp)
+    if "are hook-counted" not in body:
+        err(
+            "FPMHookLedger.cpp no longer prints the coverage line ('N of M armed fixes are "
+            "hook-counted'). Several armed fixes install no hook at all, and a hook list without that "
+            "line lets a reader read the difference as breakage."
+        )
+
+    for f in sorted(SRC.rglob("*.cpp")):
+        if f == cpp:
+            continue  # the definition itself
+        for i, line in enumerate(read(f).splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith(("*", "//", "/*")):
+                continue
+            if "FPMHookLedger::Install(" in line:
+                err(
+                    f"{f.relative_to(REPO)}:{i} calls FPMHookLedger::Install directly. Go through an "
+                    "FPM_SUBSCRIBE* macro — a hand-written call installs a hook with no REACHED "
+                    "counter, and the inventory then reports a permanent 0 for it."
+                )
+
+
 def check_nested_block_comments() -> None:
     """clang -Wcomment is an ERROR under -Werror; MSVC does not even warn.
 
@@ -587,6 +663,7 @@ def main() -> int:
     check_no_network()
     check_licence_headers()
     check_raw_subscribe()
+    check_hook_counting()
     check_nested_block_comments()
     check_disarm_coverage()
     check_write_path()
