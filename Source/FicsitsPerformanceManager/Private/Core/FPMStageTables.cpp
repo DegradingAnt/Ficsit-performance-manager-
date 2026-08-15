@@ -4,6 +4,7 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMConsoleEcho.h"
+#include "Core/FPMDiag.h"
 #include "Core/FPMLeverRegistry.h"
 #include "Core/FPMUserSettingMap.h"
 #include "Fixes/Interop/FPMTexturePoolGuard.h"   // FPMTexturePool::QueryTotalVramMB, the one VRAM site
@@ -58,11 +59,11 @@ const TCHAR* LexToString(const EFPMGovernorMode Mode)
 
 namespace
 {
-	int32 Idx(const EFPMStageTier Tier) { return static_cast<int32>(Tier); }
-	int32 Idx(const EFPMGovernorMode Mode) { return static_cast<int32>(Mode); }
+	int32 StageIdx(const EFPMStageTier Tier) { return static_cast<int32>(Tier); }
+	int32 StageIdx(const EFPMGovernorMode Mode) { return static_cast<int32>(Mode); }
 
 	/** One declaration site for the group name the GI floor law (design section 3.4) is about. */
-	const TCHAR* GIGroupName() { return TEXT("GlobalIlluminationQuality"); }
+	const TCHAR* StageGIGroupName() { return TEXT("GlobalIlluminationQuality"); }
 
 	/**
 	 * The design's "@11.5GB" and "@15GB" annotations, turned into numbers a probe can use.
@@ -70,12 +71,12 @@ namespace
 	 * design carries that receipt at :312 precisely because the tighter number silently disabled the
 	 * tier on the exact hardware it was written for.
 	 */
-	constexpr int64 Vram11500MB = 11500;
-	constexpr int64 Vram15000MB = 15000;
+	constexpr int64 StageVram11500MB = 11500;
+	constexpr int64 StageVram15000MB = 15000;
 
 	/** Policies that compare against a baseline. Mirrors the registry's own list; repeated here only
 	 *  to CHOOSE a BaselineSource before registration, and the registry still refuses if it is wrong. */
-	bool NeedsBaseline(const EFPMLeverPolicy Policy)
+	bool StageNeedsBaseline(const EFPMLeverPolicy Policy)
 	{
 		return Policy == EFPMLeverPolicy::MaxOf || Policy == EFPMLeverPolicy::MinOf
 			|| Policy == EFPMLeverPolicy::BaseScale || Policy == EFPMLeverPolicy::BaseDelta;
@@ -91,22 +92,22 @@ FFPMStageTables& FFPMStageTables::Get()
 const TArray<FFPMStageLever>& FFPMStageTables::LeversIn(const EFPMStageTier Tier) const
 {
 	static const TArray<FFPMStageLever> Empty;
-	const int32 I = Idx(Tier);
-	return (I >= 0 && I < Idx(EFPMStageTier::Count)) ? TierLevers[I] : Empty;
+	const int32 I = StageIdx(Tier);
+	return (I >= 0 && I < StageIdx(EFPMStageTier::Count)) ? TierLevers[I] : Empty;
 }
 
 const TArray<EFPMStageTier>& FFPMStageTables::GiveOrder(const EFPMGovernorMode Mode) const
 {
 	static const TArray<EFPMStageTier> Empty;
-	const int32 I = Idx(Mode);
-	return (I >= 0 && I < Idx(EFPMGovernorMode::Count)) ? GiveOrders[I] : Empty;
+	const int32 I = StageIdx(Mode);
+	return (I >= 0 && I < StageIdx(EFPMGovernorMode::Count)) ? GiveOrders[I] : Empty;
 }
 
 const TArray<EFPMStageTier>& FFPMStageTables::TakeOrder(const EFPMGovernorMode Mode) const
 {
 	static const TArray<EFPMStageTier> Empty;
-	const int32 I = Idx(Mode);
-	return (I >= 0 && I < Idx(EFPMGovernorMode::Count)) ? TakeOrders[I] : Empty;
+	const int32 I = StageIdx(Mode);
+	return (I >= 0 && I < StageIdx(EFPMGovernorMode::Count)) ? TakeOrders[I] : Empty;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -120,23 +121,23 @@ void FFPMStageTables::BuildOrders()
 	using T = EFPMStageTier;
 
 	// A: "B6 to B1 demote, R: Max to AppliedMin (slew, concurrent), K1 K2 K3 K4g K4f".
-	GiveOrders[Idx(EFPMGovernorMode::ResolutionFirst)] =
+	GiveOrders[StageIdx(EFPMGovernorMode::ResolutionFirst)] =
 		{ T::B6, T::B5, T::B4, T::B3, T::B2, T::B1, T::Resolution, T::K1, T::K2, T::K3, T::K4g, T::K4f };
 
 	// B: "R to AppliedMin FIRST (fast slew; cuts suppressed until pinned), B6 to B1, K1 to K4f".
-	GiveOrders[Idx(EFPMGovernorMode::GraphicsFirst)] =
+	GiveOrders[StageIdx(EFPMGovernorMode::GraphicsFirst)] =
 		{ T::Resolution, T::B6, T::B5, T::B4, T::B3, T::B2, T::B1, T::K1, T::K2, T::K3, T::K4g, T::K4f };
 
 	// C: "R to AppliedMin, demote B6,B4,B5,B3,B2,B1, cuts K1,K2,K4f,K3,K4g".
-	GiveOrders[Idx(EFPMGovernorMode::LightingFirst)] =
+	GiveOrders[StageIdx(EFPMGovernorMode::LightingFirst)] =
 		{ T::Resolution, T::B6, T::B4, T::B5, T::B3, T::B2, T::B1, T::K1, T::K2, T::K4f, T::K3, T::K4g };
 
 	// Balanced: section 3.5a (:441-447) is explicit. "Levers it may move: NONE of the stage tables",
 	// and resolution is "the only GPU-SIDE lever Balanced steers". So its order is one entry long.
 	// This is not a stub: a Balanced walk that offered a cut would be the pre-bench lock leaking.
-	GiveOrders[Idx(EFPMGovernorMode::Balanced)] = { T::Resolution };
+	GiveOrders[StageIdx(EFPMGovernorMode::Balanced)] = { T::Resolution };
 
-	for (int32 M = 0; M < Idx(EFPMGovernorMode::Count); ++M)
+	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
 	{
 		TakeOrders[M] = GiveOrders[M];
 		Algo::Reverse(TakeOrders[M]);
@@ -185,7 +186,7 @@ void FFPMStageTables::RegisterOne(const EFPMStageTier Tier, FFPMStageLever Lever
 	// where FFPMLeverRegistry::CaptureBaselineOnce refuses to read while FPM already holds the cvar.
 	// That refusal IS the anti-ratchet guard: without it a second capture reads our own previous
 	// write back as the player's baseline.
-	Def.BaselineSource = NeedsBaseline(Def.Policy)
+	Def.BaselineSource = StageNeedsBaseline(Def.Policy)
 		? EFPMLeverBaselineSource::CapturedOnce
 		: EFPMLeverBaselineSource::NotApplicable;
 
@@ -216,7 +217,7 @@ void FFPMStageTables::RegisterOne(const EFPMStageTier Tier, FFPMStageLever Lever
 		return;
 	}
 
-	TierLevers[Idx(Tier)].Add(MoveTemp(Lever));
+	TierLevers[StageIdx(Tier)].Add(MoveTemp(Lever));
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -321,7 +322,7 @@ void FFPMStageTables::RegisterTables()
 		RegisterOne(T::B3, L(TEXT("r.Lumen.TraceMeshSDFs"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
 		RegisterOne(T::B3, L(TEXT("r.Lumen.TraceMeshSDFs.Allow"), TEXT("1"), P::MaxOf, InferMax), Gpu, C, V);
 		RegisterOne(T::B3, Vram(L(TEXT("r.LumenScene.SurfaceCache.CardTexelDensityScale"), TEXT("800"), P::Absolute,
-			TEXT("design gates this at 11.5GB VRAM")), Vram11500MB), GpuVram, C, V);
+			TEXT("design gates this at 11.5GB VRAM")), StageVram11500MB), GpuVram, C, V);
 		RegisterOne(T::B3, L(TEXT("r.LumenScene.GlobalSDF.Resolution"), TEXT("256"), P::MaxOf), Gpu, C, V);
 		RegisterOne(T::B3, L(TEXT("r.VolumetricFog.GridPixelSize"), TEXT("6"), P::MinOf), Gpu, C, V);
 	}
@@ -344,7 +345,7 @@ void FFPMStageTables::RegisterTables()
 	// The registry enforces that structurally: this registers as ScalabilityGroup backing, and the
 	// real writes are the alias table's MEMBER cvars.
 	{
-		RegisterOne(T::B5, Group(GIGroupName(), +1,
+		RegisterOne(T::B5, Group(StageGIGroupName(), +1,
 			TEXT("one CSS tier up from the player's own; the direct sg.* write is US_*-backed and forbidden")),
 			Gpu,
 			TEXT("+5 tier, 4.0ms, deliberately pessimistic"),
@@ -356,7 +357,7 @@ void FFPMStageTables::RegisterTables()
 		const TCHAR* C = TEXT("+6 tier, about 3.0ms shared across 13 cvars");
 		const TCHAR* V = TEXT("carried FPM1 table, design :312 (archive FPMQualityStages.cpp:565-615)");
 		RegisterOne(T::B6, Vram(L(TEXT("r.Shadow.Virtual.MaxPhysicalPages"), TEXT("12288"), P::MaxOf,
-			TEXT("design gates this at 11.5GB VRAM")), Vram11500MB), GpuVram, C, V);
+			TEXT("design gates this at 11.5GB VRAM")), StageVram11500MB), GpuVram, C, V);
 		RegisterOne(T::B6, L(TEXT("r.Lumen.Reflections.DownsampleFactor"), TEXT("1"), P::MinOf), Gpu, C, V);
 		RegisterOne(T::B6, L(TEXT("r.Lumen.ScreenProbeGather.DownsampleFactor"), TEXT("4"), P::MinOf), Gpu, C, V);
 		RegisterOne(T::B6, L(TEXT("r.Lumen.ScreenProbeGather.TracingOctahedronResolution"), TEXT("16"), P::MaxOf), Gpu, C, V);
@@ -365,7 +366,7 @@ void FFPMStageTables::RegisterTables()
 		RegisterOne(T::B6, L(TEXT("r.Lumen.TraceMeshSDFs.TraceDistance"), TEXT("250"), P::Absolute), Gpu, C, V);
 		RegisterOne(T::B6, Vram(L(TEXT("r.LumenScene.SurfaceCache.CardTexelDensityScale"), TEXT("2000"), P::Absolute,
 			TEXT("design gates this at 15GB VRAM, and the gate number is 15000 not 15500 because a 16GB "
-			     "card reports about 15209MB")), Vram15000MB), GpuVram, C, V);
+			     "card reports about 15209MB")), StageVram15000MB), GpuVram, C, V);
 		RegisterOne(T::B6, L(TEXT("r.VolumetricFog.GridSizeZ"), TEXT("192"), P::MaxOf), Gpu, C, V);
 		RegisterOne(T::B6, L(TEXT("r.VolumetricFog.HistoryMissSupersampleCount"), TEXT("16"), P::MaxOf), Gpu, C, V);
 		RegisterOne(T::B6, L(TEXT("r.Nanite.MaxPixelsPerEdge"), TEXT("0.6"), P::MinOf), Gpu, C, V);
@@ -407,7 +408,7 @@ void FFPMStageTables::RegisterTables()
 	{
 		const TCHAR* C = TEXT("K3 tier, about 1.4ms shared across the group step and 17 hand levers");
 		const TCHAR* V = TEXT("carried FPM1 table, design :330 (archive FPMQualityStages.cpp:690-753)");
-		RegisterOne(T::K3, Group(GIGroupName(), -1,
+		RegisterOne(T::K3, Group(StageGIGroupName(), -1,
 			TEXT("floor-clamped at @2; if the step would land below the floor it reports 'at GI floor, "
 			     "skipped' and the walk proceeds to the next lever")), Gpu, C, V);
 		RegisterOne(T::K3, Clamp(L(TEXT("r.Lumen.ScreenProbeGather.DownsampleFactor"), TEXT("2.0"), P::BaseScale), 8.0f, 32.0f), Gpu, C, V);
@@ -496,11 +497,11 @@ void FFPMStageTables::RegisterTables()
 void FFPMStageTables::DeriveK4gMembers()
 {
 	K4gMembers.Reset();
-	TierLevers[Idx(EFPMStageTier::K4g)].Reset();
+	TierLevers[StageIdx(EFPMStageTier::K4g)].Reset();
 
 	const FFPMLeverRegistry& Registry = FFPMLeverRegistry::Get();
-	const TArray<FString>* MembersAt1 = Registry.GetAliasMembers(GIGroupName(), 1);
-	const TArray<FString>* MembersAt2 = Registry.GetAliasMembers(GIGroupName(), 2);
+	const TArray<FString>* MembersAt1 = Registry.GetAliasMembers(StageGIGroupName(), 1);
+	const TArray<FString>* MembersAt2 = Registry.GetAliasMembers(StageGIGroupName(), 2);
 
 	if (!MembersAt1 || !MembersAt2)
 	{
@@ -515,8 +516,8 @@ void FFPMStageTables::DeriveK4gMembers()
 		return;
 	}
 
-	const FString Section1 = FString::Printf(TEXT("%s@1"), GIGroupName());
-	const FString Section2 = FString::Printf(TEXT("%s@2"), GIGroupName());
+	const FString Section1 = FString::Printf(TEXT("%s@1"), StageGIGroupName());
+	const FString Section2 = FString::Printf(TEXT("%s@2"), StageGIGroupName());
 
 	int32 Considered = 0;
 	int32 SameValue = 0;
@@ -607,7 +608,7 @@ namespace
 	 * order as well as the shipped ones. A check that is only ever run on data it passes is
 	 * indistinguishable from a check that returns true.
 	 */
-	bool OrderPairsClear(const TArray<EFPMStageTier>& Canonical,
+	bool StageOrderPairsClear(const TArray<EFPMStageTier>& Canonical,
 	                     const TArray<EFPMStageTier>& Candidate,
 	                     const TFunctionRef<void(EFPMStageTier, TSet<FString>&)> Underlying,
 	                     const TCHAR* Label,
@@ -665,11 +666,11 @@ bool FFPMStageTables::CheckOrderInversions(FString& OutFailure) const
 	// pair involving it is clear by construction rather than by luck.
 	const TArray<EFPMStageTier>& Canonical = GiveOrder(EFPMGovernorMode::ResolutionFirst);
 
-	for (int32 M = 0; M < Idx(EFPMGovernorMode::Count); ++M)
+	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
 	{
 		const EFPMGovernorMode Mode = static_cast<EFPMGovernorMode>(M);
 		if (Mode == EFPMGovernorMode::ResolutionFirst) { continue; }
-		if (!OrderPairsClear(Canonical, GiveOrder(Mode), Underlying, LexToString(Mode), OutFailure))
+		if (!StageOrderPairsClear(Canonical, GiveOrder(Mode), Underlying, LexToString(Mode), OutFailure))
 		{
 			return false;
 		}
@@ -693,7 +694,7 @@ int32 FFPMStageTables::ResolveGroupTarget(const FFPMStageLever& Lever, const int
 	// The floor is a property of the GROUP, not of the lever, and only GlobalIlluminationQuality has
 	// one today (section 3.4). A different group added later gets its own answer here rather than
 	// inheriting GI's, which would be a floor nobody chose.
-	const int32 Floor = Lever.GroupName.Equals(GIGroupName(), ESearchCase::IgnoreCase)
+	const int32 Floor = Lever.GroupName.Equals(StageGIGroupName(), ESearchCase::IgnoreCase)
 		? GIGroupFloorTier() : 0;
 	const int32 Target = LiveTier + Lever.GroupStep;
 
@@ -746,7 +747,7 @@ bool FFPMStageTables::IsTierInert(const EFPMStageTier Tier, FString& OutReason) 
 		OutReason = K4gDerivationNote.IsEmpty()
 			? FString(TEXT("K4g has not been derived yet (world load has not run)"))
 			: K4gDerivationNote;
-		return TierLevers[Idx(Tier)].Num() == 0;
+		return TierLevers[StageIdx(Tier)].Num() == 0;
 	}
 	if (!bProbed)
 	{
@@ -781,7 +782,7 @@ bool FFPMStageTables::SelfTest()
 
 	// (1) TAKE is the exact reverse of GIVE, element by element, for every mode. Section 3.1 states
 	// it as a rule; this is the rule measured rather than trusted.
-	for (int32 M = 0; M < Idx(EFPMGovernorMode::Count); ++M)
+	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
 	{
 		const EFPMGovernorMode Mode = static_cast<EFPMGovernorMode>(M);
 		const TArray<EFPMStageTier>& Give = GiveOrder(Mode);
@@ -802,7 +803,7 @@ bool FFPMStageTables::SelfTest()
 
 	// (2) Every tier an order names is a real tier. A typo in an order table would otherwise reach the
 	// walk as a step that matches nothing and is skipped in silence.
-	for (int32 M = 0; M < Idx(EFPMGovernorMode::Count); ++M)
+	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
 	{
 		for (const EFPMStageTier Tier : GiveOrder(static_cast<EFPMGovernorMode>(M)))
 		{
@@ -870,7 +871,7 @@ bool FFPMStageTables::SelfTest()
 				UnderlyingCVars(Tier, Out);
 			};
 			FString SyntheticFailure;
-			const bool bSyntheticCleared = OrderPairsClear(
+			const bool bSyntheticCleared = StageOrderPairsClear(
 				GiveOrder(EFPMGovernorMode::ResolutionFirst), Synthetic, Underlying,
 				TEXT("synthetic B5/B6 swap"), SyntheticFailure);
 			if (bSyntheticCleared)
@@ -931,7 +932,7 @@ bool FFPMStageTables::SelfTest()
 	{
 		const FFPMLeverRegistry& Registry = FFPMLeverRegistry::Get();
 		int32 Orphans = 0;
-		for (int32 TierIndex = 0; TierIndex < Idx(EFPMStageTier::Count); ++TierIndex)
+		for (int32 TierIndex = 0; TierIndex < StageIdx(EFPMStageTier::Count); ++TierIndex)
 		{
 			for (const FFPMStageLever& Lever : TierLevers[TierIndex])
 			{
@@ -963,9 +964,17 @@ void FFPMStageTables::Arm()
 	RegisterTables();
 
 	int32 Total = 0;
-	for (int32 TierIndex = 0; TierIndex < Idx(EFPMStageTier::Count); ++TierIndex)
+	for (int32 TierIndex = 0; TierIndex < StageIdx(EFPMStageTier::Count); ++TierIndex)
 	{
 		Total += TierLevers[TierIndex].Num();
+	}
+
+	// FPM.Diag.Steering gates the arm and world-load lines at level 1. The console reports below are
+	// deliberately NOT gated: an operator asking what the ladder holds must get an answer with
+	// diagnostics off, the same reasoning HostTier and Detect already carry.
+	if (!FPMDiag::IsOn(FPMDiag::EChannel::Steering))
+	{
+		return;
 	}
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
@@ -989,7 +998,7 @@ void FFPMStageTables::OnWorldLoad(UWorld* World)
 	bSelfTestPassed = SelfTest();
 
 	int32 InertTiers = 0;
-	for (int32 TierIndex = 0; TierIndex < Idx(EFPMStageTier::Count); ++TierIndex)
+	for (int32 TierIndex = 0; TierIndex < StageIdx(EFPMStageTier::Count); ++TierIndex)
 	{
 		const EFPMStageTier Tier = static_cast<EFPMStageTier>(TierIndex);
 		if (!FPMIsBonusTier(Tier) && !FPMIsCutTier(Tier)) { continue; }
@@ -997,12 +1006,12 @@ void FFPMStageTables::OnWorldLoad(UWorld* World)
 		if (IsTierInert(Tier, Reason))
 		{
 			++InertTiers;
-			UE_LOG(LogFicsitsPerformanceManager, Warning,
+			UE_CLOG(FPMDiag::IsOn(FPMDiag::EChannel::Steering), LogFicsitsPerformanceManager, Warning,
 				TEXT("[FPM] stage tier %s is INERT: %s"), LexToString(Tier), *Reason);
 		}
 	}
 
-	UE_LOG(LogFicsitsPerformanceManager, Display,
+	UE_CLOG(FPMDiag::IsOn(FPMDiag::EChannel::Steering), LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] stage tables: self-test %s, %d of the 11 stage tiers are inert on this machine. "
 		     "K4g derivation: %s"),
 		bSelfTestPassed ? TEXT("PASSED") : TEXT("FAILED"), InertTiers, *K4gDerivationNote);
@@ -1010,11 +1019,11 @@ void FFPMStageTables::OnWorldLoad(UWorld* World)
 
 void FFPMStageTables::Disarm()
 {
-	for (int32 TierIndex = 0; TierIndex < Idx(EFPMStageTier::Count); ++TierIndex)
+	for (int32 TierIndex = 0; TierIndex < StageIdx(EFPMStageTier::Count); ++TierIndex)
 	{
 		TierLevers[TierIndex].Reset();
 	}
-	for (int32 M = 0; M < Idx(EFPMGovernorMode::Count); ++M)
+	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
 	{
 		GiveOrders[M].Reset();
 		TakeOrders[M].Reset();
@@ -1045,7 +1054,7 @@ void FFPMStageTables::ReportNow(FOutputDevice& Ar) const
 
 	int32 Total = 0;
 	int32 Available = 0;
-	for (int32 TierIndex = 0; TierIndex < Idx(EFPMStageTier::Count); ++TierIndex)
+	for (int32 TierIndex = 0; TierIndex < StageIdx(EFPMStageTier::Count); ++TierIndex)
 	{
 		const EFPMStageTier Tier = static_cast<EFPMStageTier>(TierIndex);
 		Total += TierLevers[TierIndex].Num();
@@ -1058,7 +1067,7 @@ void FFPMStageTables::ReportNow(FOutputDevice& Ar) const
 		     "value, and the walk that decides when to move a tier is FPMGiveTake."),
 		Total, Available, RefusedByRegistry.Num());
 
-	for (int32 TierIndex = 0; TierIndex < Idx(EFPMStageTier::Count); ++TierIndex)
+	for (int32 TierIndex = 0; TierIndex < StageIdx(EFPMStageTier::Count); ++TierIndex)
 	{
 		const EFPMStageTier Tier = static_cast<EFPMStageTier>(TierIndex);
 		if (!FPMIsBonusTier(Tier) && !FPMIsCutTier(Tier)) { continue; }
@@ -1082,7 +1091,7 @@ void FFPMStageTables::ReportNow(FOutputDevice& Ar) const
 		}
 	}
 
-	for (int32 M = 0; M < Idx(EFPMGovernorMode::Count); ++M)
+	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
 	{
 		const EFPMGovernorMode Mode = static_cast<EFPMGovernorMode>(M);
 		FString Line;

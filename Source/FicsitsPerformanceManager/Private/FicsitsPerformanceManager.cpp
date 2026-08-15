@@ -15,6 +15,8 @@
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMJoinVersionEcho.h"
 #include "Core/FPMLeverRegistry.h"
+#include "Core/FPMStageTables.h"
+#include "Core/FPMGiveTake.h"
 #include "Core/FPMOverlay.h"
 #include "Core/FPMSaveSettingsInterceptor.h"
 #include "Core/FPMUserSettingMap.h"
@@ -439,6 +441,18 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// with self-test fixture levers only in this slice — the production stage tables are a separate,
 	// later item. Any — the container is side-agnostic; each registered lever states its own side.
 	FPMFixes::Arm(FFPMLeverRegistry::Get());
+
+	// Slice 2, the other half. THE ORDER HERE IS LOAD-BEARING, not cosmetic. FPMFixes::OnWorldLoadAll
+	// walks the armed list in ARM ORDER, and each of these three depends on the previous one having
+	// already run its world-load pass:
+	//   registry   -> builds the alias table from the live BaseScalability.ini, then probes every lever
+	//   tables     -> derive K4g from that alias table, then self-test the order gate against it
+	//   walk       -> self-test the give/take decisions against orders already proven consistent
+	// Registration still happens at Arm (the tables register into the registry before it probes), so
+	// arm order and world-load order carry different halves of the same dependency.
+	// NeverOnDedicatedServer on both: these are GPU-side quality levers and a server has no renderer.
+	FPMFixes::Arm(FFPMStageTables::Get());
+	FPMFixes::Arm(FFPMGiveTakeWalk::Get());
 
 	// Slice 4, §5.9: the host probe + tier line. Any — an authoritative world (dedicated/listen/
 	// singleplayer) declares FULL immediately and self-tests its own registration; a client waits up

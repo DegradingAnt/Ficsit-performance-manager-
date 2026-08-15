@@ -339,6 +339,16 @@ static TAutoConsoleVariable<int32> CVarDiagDetect(
 	     "channel must still be readable with diagnostics off, same reasoning as HostTier."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagSteering(
+	TEXT("FPM.Diag.Steering"), 1,
+	TEXT("Slice 2 steering: the stage tables (B and K tier content, its probe coverage and every inert "
+	     "tier with its reason) and the give/take walk (each decision, its gate terms and the stall "
+	     "detector). 0 = silent, 1 = the arm lines, both self-test results and every STALL episode, "
+	     "2 = also per-decision detail. FPM.Stage.Report, FPM.Stage.Walk and FPM.Stage.Simulate are "
+	     "NOT gated by this - an operator asking what the ladder is doing must get an answer with "
+	     "diagnostics off, same reasoning as HostTier and Detect."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -386,6 +396,7 @@ namespace
 		&CVarDiagNetGuidCensus,
 		&CVarDiagThirdPersonToggle,
 		&CVarDiagDetect,
+		&CVarDiagSteering,
 	};
 
 	/*
@@ -447,6 +458,7 @@ namespace
 		case FPMDiag::EChannel::NetGuidCensus:  return TEXT("FPM.Diag.NetGuidCensus");
 		case FPMDiag::EChannel::ThirdPersonToggle: return TEXT("FPM.Diag.ThirdPersonToggle");
 		case FPMDiag::EChannel::Detect:         return TEXT("FPM.Diag.Detect");
+		case FPMDiag::EChannel::Steering:       return TEXT("FPM.Diag.Steering");
 		default:                                return TEXT("<unknown>");
 		}
 	}

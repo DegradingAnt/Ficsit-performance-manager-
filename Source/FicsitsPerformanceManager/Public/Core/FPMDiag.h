@@ -100,6 +100,7 @@ public:
 		NetGuidCensus,    // FPM.Diag.NetGuidCensus -- object references the net GUID cache refuses to address
 		ThirdPersonToggle, // FPM.Diag.ThirdPersonToggle -- Slice 5 (§6.7): the third-person camera keybind
 		Detect,           // FPM.Diag.Detect -- Slice 4: M-DETECT, the cost-attribution registry + traps
+		Steering,         // FPM.Diag.Steering -- Slice 2: the stage tables and the give/take walk
 		Count
 	};
 
