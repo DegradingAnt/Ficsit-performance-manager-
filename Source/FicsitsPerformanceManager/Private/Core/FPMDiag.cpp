@@ -485,6 +485,94 @@ bool FPMDiag::IsSilenced()
 	return CVarDiagMaster.GetValueOnAnyThread() == 0;
 }
 
+/*
+ * ★ THE NAMESPACE GATE. Review 2026-08-15, M3.
+ *
+ * WHAT HAPPENED. FPMBootProbes registered `FPM.Diag.TimeOfDay` and `FPM.Diag.Sockets` as console
+ * COMMANDS inside `FPM.Diag.*`, the namespace this file owns for channel VARIABLES, while another agent
+ * was adding channels to it. There was no functional collision, because nothing here prefix-scans:
+ * `GChannelCVars` is walked by index and guarded by the static_assert above plus the order check below.
+ * But one namespace had two owners and nothing in the code said so, which is how a channel switch and a
+ * report command end up one typo apart.
+ *
+ * THE RULE, WRITTEN DOWN SO IT CAN BE CHECKED. Under `FPM.Diag.`:
+ *   - a console VARIABLE is expected. Every diagnostic channel is one, and so are the overlay knobs
+ *     (`FPM.Diag.Overlay`, `.OverlayTop`, `.OverlayKey`) that control the diagnostics surface itself.
+ *   - a console COMMAND is allowed only for the three that act on the diagnostics system as a whole:
+ *     `FPM.Diag.List` (this file), `FPM.Diag.Dump` (the fix inventory, FPMFixContract.cpp) and
+ *     `FPM.Diag.Clear` (the overlay, FPMOverlay.cpp). Anything else belongs in its own `FPM.<Area>.*`
+ *     namespace, the shape `FPM.Wrist.Report`, `FPM.Server.Levers`, `FPM.ThirdPerson.Report`,
+ *     `FPM.JoinVersion.Report` and now `FPM.Probe.*` all already use.
+ *
+ * WHY THIS RUNS FROM `LogAll` RATHER THAN AT STATIC INIT. Console objects register from static
+ * initialisers across every translation unit in an unspecified order, so a check at static-init time
+ * would read a half-built console and report a different answer every build. `FPM.Diag.List` runs long
+ * after every registration has completed, and it is the command someone types when they are already
+ * asking what exists.
+ *
+ * It PRINTS ITS OWN DENOMINATOR either way, so "no foreign commands" is distinguishable from "the scan
+ * found nothing to look at" — the failure the ServerLevers coverage line exists to prevent.
+ */
+static void FPMAuditDiagNamespace()
+{
+	static const TCHAR* const OwnedCommands[] =
+	{
+		TEXT("FPM.Diag.List"),
+		TEXT("FPM.Diag.Dump"),
+		TEXT("FPM.Diag.Clear"),
+	};
+
+	int32 Objects = 0;
+	int32 Variables = 0;
+	int32 Commands = 0;
+	TArray<FString> Foreign;
+
+	IConsoleManager::Get().ForEachConsoleObjectThatStartsWith(
+		FConsoleObjectVisitor::CreateLambda(
+			[&Objects, &Variables, &Commands, &Foreign](const TCHAR* Name, IConsoleObject* Object)
+			{
+				++Objects;
+				if (Object == nullptr)
+				{
+					return;
+				}
+				if (Object->AsCommand() != nullptr)
+				{
+					++Commands;
+					for (const TCHAR* const Owned : OwnedCommands)
+					{
+						if (FCString::Stricmp(Name, Owned) == 0)
+						{
+							return;
+						}
+					}
+					Foreign.Add(Name);
+				}
+				else if (Object->AsVariable() != nullptr)
+				{
+					++Variables;
+				}
+			}),
+		TEXT("FPM.Diag."));
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   namespace audit: FPM.Diag.* holds %d console object(s) - %d variable(s), %d "
+		     "command(s), of which %d owned by the diagnostics system and %d foreign."),
+		Objects, Variables, Commands, Commands - Foreign.Num(), Foreign.Num());
+
+	UE_CLOG(Objects == 0, LogFicsitsPerformanceManager, Error,
+		TEXT("[FPM]   ^^ THE AUDIT FOUND NOTHING AT ALL, which cannot be true while this command is "
+		     "running from inside that namespace. The scan itself is broken; the zero above is not a "
+		     "clean result."));
+
+	UE_CLOG(Foreign.Num() > 0, LogFicsitsPerformanceManager, Error,
+		TEXT("[FPM]   ^^ FPM.Diag.* HAS A SECOND OWNER: %s registered as console COMMAND(s) in the "
+		     "namespace this file owns for channel variables. Move them to their own FPM.<Area>.* "
+		     "namespace, or add them to OwnedCommands in FPMDiag.cpp if they really do act on the "
+		     "diagnostics system as a whole. Do not leave it undeclared."),
+		*FString::Join(Foreign, TEXT(", ")));
+}
+
 void FPMDiag::LogAll()
 {
 	const int32 Master = CVarDiagMaster.GetValueOnAnyThread();
@@ -514,6 +602,8 @@ void FPMDiag::LogAll()
 			     "Fix the enum / GChannelCVars / ChannelName ordering in FPMDiag before trusting any of it."),
 			i, ChannelName(Ch), *Registered);
 	}
+
+	FPMAuditDiagNamespace();
 }
 
 /*

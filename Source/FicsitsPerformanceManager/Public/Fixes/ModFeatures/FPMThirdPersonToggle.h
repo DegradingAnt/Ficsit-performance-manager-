@@ -63,6 +63,25 @@ public:
 	/** Camera mode is a local rendering concern. A dedicated server has no camera to toggle. */
 	virtual EFPMFixSide Side() const override { return EFPMFixSide::NeverOnDedicatedServer; }
 
+	/**
+	 * SHIPS INERT, and this is not timidity: its content half does not exist yet.
+	 *
+	 * The C++ is complete, but it loads /FicsitsPerformanceManager/Input/IA_ThirdPersonToggle
+	 * and IMC_FPM, and Content/ currently holds one .uasset plus a Settings folder. There is no
+	 * Input directory at all. With the base-class default of true (FPMFixContract.h:228) this
+	 * armed on every boot and logged an Error every boot, for a feature nobody could use.
+	 *
+	 * ⚠ The Error itself is CORRECT and stays. Suppressing a log line is banned here: it deletes
+	 * the evidence and leaves the fault. What was wrong was ARMING a fix whose precondition is
+	 * known-absent, so the precondition is what changed.
+	 *
+	 * FLIP THIS TO true once both assets exist. The editor steps, with click counts, are in
+	 * 60-CONTEXT/agent-findings/2026-08-15/slice5-indoors-ui.md.
+	 *
+	 * Same shape as FFPMServerLevers and FFPMNetGuidCensus, which also ship inert.
+	 */
+	virtual bool DefaultArmed() const override { return false; }
+
 	/** The cause is named: vanilla exposes ToggleCameraMode but binds no dedicated key to it. */
 	virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::OriginNamed; }
 

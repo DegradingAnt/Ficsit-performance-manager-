@@ -159,6 +159,16 @@ enum class EFPMLeverAvailability : uint8
 FICSITSPERFORMANCEMANAGER_API const TCHAR* LexToString(EFPMLeverAvailability Availability);
 
 /**
+ * THE RESERVED SELF-TEST NAME PREFIX. Review 2026-08-15, M2: the registry's five self-test fixtures
+ * live in the SAME table as production levers, so `Levers.Num()` counted them and the disclosure line
+ * "every lever below is a self-test fixture" was true only until the first production lever landed,
+ * at which point it would have become false SILENTLY. The fixture flag is now DERIVED from this
+ * prefix at registration rather than hand-set, so it cannot be forgotten on a new fixture, and a
+ * production lever must never be named with it.
+ */
+inline const TCHAR* FPMLeverSelfTestPrefix() { return TEXT("__SelfTest."); }
+
+/**
  * ONE LEVER. Plain data -- no behaviour lives here, matching FPMCVarWriter::FHoldView's shape
  * (a flat struct the registry owns, not a class with its own logic).
  */
@@ -220,6 +230,11 @@ struct FICSITSPERFORMANCEMANAGER_API FFPMLeverDefinition
 	/** True only if this definition reached the live registry through RegisterWritable and was not
 	 *  refused. A RegisterReadOnly entry is always false here. */
 	bool bWritable = false;
+
+	/** SET BY THE REGISTRY, NEVER BY THE CALLER. True when `Name` starts with
+	 *  `FPMLeverSelfTestPrefix()`. Keeps the fixture count out of the production count in every
+	 *  report, so the counts cannot silently start lying the day a real lever lands. */
+	bool bIsSelfTestFixture = false;
 
 	EFPMLeverAvailability Availability = EFPMLeverAvailability::Unknown;
 

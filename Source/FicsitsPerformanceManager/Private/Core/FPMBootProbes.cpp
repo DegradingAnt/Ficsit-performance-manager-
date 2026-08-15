@@ -29,7 +29,7 @@ namespace
 
 void FPMBootProbes::ReportTimeOfDay(UWorld* World, FOutputDevice* Ar)
 {
-	FPMBootProbeEmit(Ar, TEXT("---- FPM.Diag.TimeOfDay (B9: does FGTimeOfDaySubsystem expose a "
+	FPMBootProbeEmit(Ar, TEXT("---- FPM.Probe.TimeOfDay (B9: does FGTimeOfDaySubsystem expose a "
 	                          "non-cheat pin API?) ----"));
 
 	/*
@@ -70,7 +70,7 @@ void FPMBootProbes::ReportTimeOfDay(UWorld* World, FOutputDevice* Ar)
 
 void FPMBootProbes::ReportSockets(UWorld* World, FOutputDevice* Ar)
 {
-	FPMBootProbeEmit(Ar, TEXT("---- FPM.Diag.Sockets (B11: which sockets does the vanilla player skeleton "
+	FPMBootProbeEmit(Ar, TEXT("---- FPM.Probe.Sockets (B11: which sockets does the vanilla player skeleton "
 	                          "expose per forearm/hand, both sides?) ----"));
 
 	if (World == nullptr)
@@ -132,12 +132,12 @@ void FPMBootProbes::ReportSockets(UWorld* World, FOutputDevice* Ar)
 }
 
 /*
- * `FPM.Diag.TimeOfDay` and `FPM.Diag.Sockets` — plain read-only console commands, same registration
+ * `FPM.Probe.TimeOfDay` and `FPM.Probe.Sockets` — plain read-only console commands, same registration
  * shape `FPM.Crates.Report` uses (`FAutoConsoleCommandWithWorldArgsAndOutputDevice`) so the delegate is
  * handed a `UWorld*` without either probe having to find one itself.
  */
 static FAutoConsoleCommandWithWorldArgsAndOutputDevice GFPMDiagTimeOfDayCmd(
-	TEXT("FPM.Diag.TimeOfDay"),
+	TEXT("FPM.Probe.TimeOfDay"),
 	TEXT("B9: report whether AFGTimeOfDaySubsystem is reachable and confirm its pin API (SetDaySeconds / "
 	     "SetTimeSpeedMultiplier) is public and non-cheat. Read-only - calls no setter."),
 	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(
@@ -147,7 +147,7 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GFPMDiagTimeOfDayCmd(
 		}));
 
 static FAutoConsoleCommandWithWorldArgsAndOutputDevice GFPMDiagSocketsCmd(
-	TEXT("FPM.Diag.Sockets"),
+	TEXT("FPM.Probe.Sockets"),
 	TEXT("B11: enumerate socket names on the local player's first- and third-person mesh, and check "
 	     "FPMWristItemBase's hand_lSocket/hand_rSocket guess against both. Requires a spawned character."),
 	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(

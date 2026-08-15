@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/OutputDevice.h"
 
 #include "Core/FPMFixContract.h"
 
@@ -53,15 +54,37 @@
  * version is NOT available here — full stop. The message says exactly that; it never infers, guesses, or
  * states a version for a side that did not send one. A confident wrong message is worse than none.
  *
- * ★ THE SELF-TEST. `Arm()` happens in `StartupModule`, before any world or `UGameInstance` exists
- * (FPMHookLedger.h:37), and the classifier needs `UModLoadingLibrary`, a `UGameInstanceSubsystem` — so
- * the dead-instrument proof cannot run at arm time and runs once from `OnWorldLoad` instead, the
- * contract's own designated "a GameInstance now exists" moment. It feeds the SAME `FVersionRange::Matches`
- * SML itself calls a known-MATCH probe (our own live version), a known-MISMATCH probe (that version with
- * the patch bumped by one) and a known-ABSENT probe (no entry at all), and asserts all three classify
- * correctly — mirroring FPMSaveSettingsInterceptor.cpp's known-positive/known-negative pattern. If it
- * ever fails, the runtime handler keeps logging the raw facts (never suppressed) but stops asserting a
- * match/mismatch verdict it cannot back up.
+ * ★ THE TWO CLASSIFIERS, AND WHAT PROVES EACH. This fix makes two decisions, not one, and the review of
+ * 2026-08-15 (HIGH 2) caught that only the first was ever proven.
+ *
+ * 1. THE VERSION CLASSIFIER. `Arm()` happens in `StartupModule`, before any world or `UGameInstance`
+ * exists (`FPMHookLedger.h:37`), and this classifier needs `UModLoadingLibrary`, a
+ * `UGameInstanceSubsystem` — so the dead-instrument proof cannot run at arm time and runs once from
+ * `OnWorldLoad` instead, the contract's own designated "a GameInstance now exists" moment. It feeds the
+ * SAME `FVersionRange::Matches` SML itself calls a known-MATCH probe (our own live version) and a
+ * known-MISMATCH probe (that version with the patch DECREMENTED, which stays a mismatch under an exact
+ * pin and under an open-ended range alike), and asserts both classify correctly. A known-ABSENT probe is
+ * deliberately NOT re-tested: an empty `TMap::Find` returning nullptr is container behaviour this fix
+ * cannot break. That is stated as a checked assumption in the `.cpp`, not silently skipped.
+ *
+ * 2. THE SIDE CLASSIFIER, WHICH EVERY USER-FACING STRING IS BUILT FROM. It used to read
+ * `Connection->ClientLoginState == EClientLoginState::Invalid`, which is an INFERENCE from a state
+ * machine that exists for a different purpose. SML never infers the side: it passes the answer down from
+ * WHICH delegate fired (`SMLNetworkManager.cpp:58-64`), and this hook point does not carry that
+ * parameter. So the side is now taken from the engine's own connection topology, which is what the
+ * delegate split ultimately reflects, and from TWO INDEPENDENT containers rather than one field:
+ * `UNetDriver::ServerConnection` (`NetDriver.h:951`, "connection to the server, this net driver is a
+ * client") and `UNetDriver::ClientConnections` (`NetDriver.h:955`, "array of connections to clients,
+ * this net driver is a host"). Exactly one of them may know a given connection. When both agree the side
+ * is named; when they DISAGREE the side is not named at all, the message says so, and the disagreement
+ * is COUNTED — the same shape `FPMGCMeter` uses for its two independent classifiers, which is the only
+ * thing that could catch either going wrong. The decision itself is split into a pure function of two
+ * bools so it can be driven with known values, and `OnWorldLoad` drives all four cases every boot.
+ *
+ * COVERAGE, WITH ITS DENOMINATOR. `FPM.JoinVersion.Report` prints both self-tests and how many
+ * handshakes were classified against how many were contradictory. If either self-test fails, the runtime
+ * handler keeps logging the raw facts (never suppressed) but stops asserting the verdict it cannot back
+ * up.
  */
 class FICSITSPERFORMANCEMANAGER_API FFPMJoinVersionEcho final : public IFPMFix
 {
@@ -92,12 +115,19 @@ public:
 	 *  `FPM.Enabled 0` would report the fix disarmed while it kept observing every join. */
 	virtual void Disarm() override;
 
-	/** Runs the classifier self-test exactly once, the first time a GameInstance is known to exist. */
+	/** Runs both classifier self-tests exactly once, the first time a GameInstance is known to exist. */
 	virtual void OnWorldLoad(UWorld* World) override;
 
-	/** True once the self-test has run and passed. The runtime handler reads this before asserting a
+	/** True once the version self-test has run and passed. The runtime handler reads this before asserting a
 	 *  match/mismatch verdict — fail closed, same shape as `FFPMSaveSettingsInterceptor::IsHealthy()`. */
 	static bool IsClassifierProven();
+
+	/**
+	 * `FPM.JoinVersion.Report` — both self-tests, and the side-check coverage WITH ITS DENOMINATOR:
+	 * handshakes classified, of which contradictory. A zero denominator is reported as "no handshake has
+	 * been observed this session", never as a clean bill of health.
+	 */
+	static void ReportNow(FOutputDevice* Ar);
 
 private:
 	/** The real work, called from the AFTER hook once per handshake message, either side. Named rather
@@ -110,4 +140,12 @@ private:
 
 	bool bSelfTestRun = false;
 	bool bClassifierProven = false;
+
+	/** Set by the side-classifier self-test in OnWorldLoad. False means the side is never named. */
+	bool bSideClassifierProven = false;
+
+	/** Coverage for `ReportNow`. Every observed handshake increments the first; a connection that the
+	 *  driver's two containers disagree about increments the second. The second must stay 0. */
+	int32 SideChecksTotal = 0;
+	int32 SideContradictions = 0;
 };

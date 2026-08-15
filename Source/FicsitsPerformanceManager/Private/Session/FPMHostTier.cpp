@@ -10,13 +10,56 @@
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 
+namespace
+{
+	/**
+	 * WHAT SML'S OWN JOIN GATE IS DOING RIGHT NOW, READ RATHER THAN ASSUMED.
+	 *
+	 * `SMLNetworkManager.cpp:15-20` declares `SML.SkipRemoteModListCheck` (default `GIsEditor`, so OFF
+	 * in a shipped client) and `:145` reads it as `bAllowMissingMods` inside `ValidateSMLConnectionData`.
+	 * While it reads 0, FPM's `"RequiredOnRemote": true` plus its exact `RemoteVersionRange` pin means a
+	 * client CANNOT complete a join to a host that did not report FPM at that version. That one fact is
+	 * what decides whether an absent probe replica is a statement about the HOST or about FPM ITSELF, so
+	 * it is read here instead of guessed. Tri-state on purpose: "the cvar is not registered" is a third
+	 * answer, not a 0, and reporting it as a 0 would be the same class of lie this file exists to remove.
+	 *
+	 * READ ONLY. FPM never writes another mod's cvar; the pointer is const and no setter is reachable.
+	 */
+	enum class EFPMRemoteModListCheck : uint8 { Enforced, Skipped, CVarNotFound };
+
+	EFPMRemoteModListCheck ReadRemoteModListCheck()
+	{
+		const IConsoleVariable* Var =
+			IConsoleManager::Get().FindConsoleVariable(TEXT("SML.SkipRemoteModListCheck"), false);
+		if (Var == nullptr)
+		{
+			return EFPMRemoteModListCheck::CVarNotFound;
+		}
+		return Var->GetInt() != 0 ? EFPMRemoteModListCheck::Skipped : EFPMRemoteModListCheck::Enforced;
+	}
+
+	/** One line for `FPM.Status`, naming the cvar so a reader can check it without this source. */
+	const TCHAR* DescribeRemoteModListCheck()
+	{
+		switch (ReadRemoteModListCheck())
+		{
+		case EFPMRemoteModListCheck::Enforced:
+			return TEXT("ON (SML.SkipRemoteModListCheck=0, the shipped default)");
+		case EFPMRemoteModListCheck::Skipped:
+			return TEXT("OFF (SML.SkipRemoteModListCheck=1): the join gate is BYPASSED on this machine");
+		default:
+			return TEXT("UNKNOWN: SML.SkipRemoteModListCheck is not registered in this console");
+		}
+	}
+}
+
 const TCHAR* LexToString(EFPMHostTier Tier)
 {
 	switch (Tier)
 	{
 	case EFPMHostTier::Probing: return TEXT("PROBING");
 	case EFPMHostTier::Full:    return TEXT("FULL");
-	case EFPMHostTier::Vanilla: return TEXT("VANILLA");
+	case EFPMHostTier::NoHostReplica: return TEXT("NO-HOST-REPLICA");
 	default:                    return TEXT("<unclassified>");
 	}
 }
@@ -27,7 +70,7 @@ EFPMHostTier FPMClassifyHostTier(bool bSelfIsHost, bool bReplicaObserved, double
 	{
 		return EFPMHostTier::Full;
 	}
-	return ElapsedSeconds >= TimeoutSeconds ? EFPMHostTier::Vanilla : EFPMHostTier::Probing;
+	return ElapsedSeconds >= TimeoutSeconds ? EFPMHostTier::NoHostReplica : EFPMHostTier::Probing;
 }
 
 FFPMHostTier& FFPMHostTier::Get()
@@ -149,13 +192,13 @@ bool FFPMHostTier::PollTick(float)
 
 	if (Classified != Prev)
 	{
-		const bool bLateArrival = Prev == EFPMHostTier::Vanilla && Classified == EFPMHostTier::Full;
+		const bool bLateArrival = Prev == EFPMHostTier::NoHostReplica && Classified == EFPMHostTier::Full;
 		Tier = Classified;
 		if (bLateArrival)
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,
 				TEXT("[FPM] host probe: late arrival. The host's replica appeared %.0fs after join, "
-				     "%.0fs past the %.0fs budget. Session upgrades VANILLA -> FULL."),
+				     "%.0fs past the %.0fs budget. Session upgrades NO-HOST-REPLICA -> FULL."),
 				Elapsed, Elapsed - TimeoutSeconds, TimeoutSeconds);
 		}
 		ReportTierLine();
@@ -179,8 +222,16 @@ FString FFPMHostTier::ComposeTierLine() const
 			: TEXT("FULL — the host's FPM replica was observed via the game's own replication. KNOWN "
 			       "(observed presence), not inferred from a cvar or a guess.");
 	}
-	case EFPMHostTier::Vanilla:
+	case EFPMHostTier::NoHostReplica:
 	{
+		/*
+		 * ★ THE HONESTY FIX, review 2026-08-15 HIGH 1. This branch used to open "VANILLA" and assert
+		 * "The host has no FPM at all". That sentence names an input this state cannot receive on a
+		 * shipped client: see the REACHABILITY block in FPMHostTier.h for the SML line numbers. The
+		 * observation is that no replica arrived. WHO that indicts depends entirely on whether SML's
+		 * join gate was enforced, so that is read (DescribeRemoteModListCheck, above) rather than
+		 * assumed, and the three answers are kept apart instead of collapsed into the convenient one.
+		 */
 		TArray<FString> AnySideNames;
 		for (const IFPMFix* Fix : FPMFixes::Armed())
 		{
@@ -189,13 +240,40 @@ FString FFPMHostTier::ComposeTierLine() const
 				AnySideNames.Add(Fix->Name());
 			}
 		}
+
+		FString Cause;
+		switch (ReadRemoteModListCheck())
+		{
+		case EFPMRemoteModListCheck::Enforced:
+			Cause = TEXT("SML's remote mod-list check is ON, and FPM is RequiredOnRemote at an exact "
+			             "version pin, so this join could NOT have completed against a host without "
+			             "FPM. The host is therefore NOT what failed here: what failed is FPM's OWN "
+			             "probe path, on the host or in transit (registration, spawn, or replication "
+			             "of AFPMHostProbeSubsystem). Report this as an FPM bug, and do not read it "
+			             "as a statement about the server.");
+			break;
+		case EFPMRemoteModListCheck::Skipped:
+			Cause = TEXT("SML's remote mod-list check is OFF on this machine "
+			             "(SML.SkipRemoteModListCheck=1), which is the one configuration where a host "
+			             "genuinely without FPM can be joined at all. So EITHER the host really has no "
+			             "FPM, OR FPM's own probe path failed. This probe cannot separate those two "
+			             "and will not guess between them.");
+			break;
+		default:
+			Cause = TEXT("SML.SkipRemoteModListCheck is not registered in this console, so whether the "
+			             "join gate was enforced is UNKNOWN here. A genuinely FPM-less host and a "
+			             "failure of FPM's own probe path both remain possible, and this probe will "
+			             "not guess between them.");
+			break;
+		}
+
 		return FString::Printf(
-			TEXT("VANILLA — no FPM replica from the host within %.0fs. KNOWN absence, observed via the "
-			     "game's own replication timing out, not inferred. The host has no FPM at all, so the "
-			     "server-authoritative half of every ANY-SIDE fix does not run there: %s (%d of %d "
-			     "currently armed fixes). Client-side-only (NeverOnDedicatedServer) fixes are "
-			     "unaffected. This tier can still upgrade to FULL if the host's FPM arrives late."),
-			TimeoutSeconds, *FString::Join(AnySideNames, TEXT(", ")), AnySideNames.Num(),
+			TEXT("NO HOST REPLICA: no FPM probe actor arrived from the host within %.0fs. That is the "
+			     "OBSERVATION, not a verdict about the host. %s IF the host does turn out to lack FPM, "
+			     "these ANY-SIDE fixes lose their server-authoritative half: %s (%d of %d currently "
+			     "armed fixes); client-side-only (NeverOnDedicatedServer) fixes are unaffected either "
+			     "way. This tier can still upgrade to FULL if the replica arrives late."),
+			TimeoutSeconds, *Cause, *FString::Join(AnySideNames, TEXT(", ")), AnySideNames.Num(),
 			FPMFixes::Armed().Num());
 	}
 	case EFPMHostTier::Probing:
@@ -257,13 +335,17 @@ void FFPMHostTier::ReportStatus(FOutputDevice& Ar)
 		Self.bLocalAuthorityCheckRan
 			? (Self.bLocalAuthorityCheckPassed ? TEXT("ran, PASSED") : TEXT("ran, FAILED — see the Error above"))
 			: TEXT("NOT RUN — this machine is a client; there is no local host to check itself against"));
-	Ar.Log(TEXT("  this probe reports PRESENCE ONLY. It does not read or compare the host's FPM VERSION"));
-	Ar.Log(TEXT("  - a version mismatch is refused at JOIN TIME by SML's RemoteVersionRange gate, a"));
-	Ar.Log(TEXT("  separate, earlier decision this command does not speak to."));
+	Ar.Log(TEXT("  this probe reports PRESENCE ONLY. It does not read or compare the host's FPM VERSION;"));
+	Ar.Log(TEXT("  a version mismatch is refused earlier, at JOIN TIME, by SML's RemoteVersionRange gate."));
+	Ar.Logf(TEXT("  SML remote mod-list check, read right now     : %s"), DescribeRemoteModListCheck());
+	Ar.Log(TEXT("  While that check is ON, a client that COMPLETED a join is provably on a host that"));
+	Ar.Log(TEXT("  reported FPM at the pinned version, so NO-HOST-REPLICA means FPM's own probe path"));
+	Ar.Log(TEXT("  failed. It does NOT mean the host is vanilla; that input cannot reach this state."));
+	Ar.Log(TEXT("  See the REACHABILITY block in FPMHostTier.h for the SML line numbers behind that."));
 	Ar.Log(TEXT("  EXISTENCE-proven this build: the classifier and the local wiring self-test (above)."));
 	Ar.Log(TEXT("  NOT execution-proven: the 30s remote timeout, the late-upgrade path, and the"));
-	Ar.Log(TEXT("  mid-session vanish warning all need a real second machine (a genuinely vanilla"));
-	Ar.Log(TEXT("  dedicated server, or one whose FPM starts late) to exercise for real."));
+	Ar.Log(TEXT("  mid-session vanish warning all need a real second machine to exercise for real:"));
+	Ar.Log(TEXT("  a host whose FPM is present but not replicating, or a client with the gate off."));
 	Ar.Log(TEXT("================ END FPM STATUS ================"));
 }
 
@@ -276,13 +358,14 @@ bool FFPMHostTier::SelfTest(FOutputDevice* Ar)
 	const EFPMHostTier PastBudget = FPMClassifyHostTier(false, false, 31.0, TimeoutSeconds);
 	const EFPMHostTier LateArrive = FPMClassifyHostTier(false, true,  45.0, TimeoutSeconds);
 
-	// The known-negative is InBudget == Probing (NOT Vanilla) — a correct FULL host whose replica just
-	// has not arrived yet must never be misread as VANILLA. LateArrive proves presence always wins,
+	// The known-negative is InBudget == Probing (NOT NoHostReplica) — a correct FULL host whose replica
+	// has simply not arrived yet must never be misread as an absent one. LateArrive proves presence
+	// always wins,
 	// which is what makes the late-upgrade path in PollTick safe.
 	const bool bOk =
 		SelfHost   == EFPMHostTier::Full &&
 		InBudget   == EFPMHostTier::Probing &&
-		PastBudget == EFPMHostTier::Vanilla &&
+		PastBudget == EFPMHostTier::NoHostReplica &&
 		LateArrive == EFPMHostTier::Full;
 
 	const FFPMHostTier& Self = Get();
@@ -294,7 +377,7 @@ bool FFPMHostTier::SelfTest(FOutputDevice* Ar)
 	{
 		const FString Line = FString::Printf(
 			TEXT("[FPM] host-tier self-test PASSED: self-is-host=FULL, absent-in-budget=PROBING (not "
-			     "an early VANILLA — the mirror case), absent-past-budget=VANILLA, "
+			     "an early NO-HOST-REPLICA — the mirror case), absent-past-budget=NO-HOST-REPLICA, "
 			     "present-past-budget=FULL (late arrival wins). Local-authority wiring check this "
 			     "session: %s."), Coverage);
 		Emit(Line);
@@ -304,7 +387,7 @@ bool FFPMHostTier::SelfTest(FOutputDevice* Ar)
 
 	const FString Line = FString::Printf(
 		TEXT("[FPM] host-tier self-test FAILED: self-is-host=%s (want FULL), absent-in-budget=%s (want "
-		     "PROBING), absent-past-budget=%s (want VANILLA), present-past-budget=%s (want FULL). "
+		     "PROBING), absent-past-budget=%s (want NO-HOST-REPLICA), present-past-budget=%s (want FULL). "
 		     "Local-authority wiring check this session: %s. The tier line is UNVERIFIED this boot - "
 		     "do not trust it."),
 		LexToString(SelfHost), LexToString(InBudget), LexToString(PastBudget), LexToString(LateArrive),

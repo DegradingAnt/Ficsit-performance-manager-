@@ -23,14 +23,14 @@
  *
  * KEEP IT THIN. Engine-level work that must arm before any world exists belongs in
  * FFicsitsPerformanceManagerModule::StartupModule, not here.
- */
-/**
- * Slice 4, §5.9: registers `AFPMHostProbeSubsystem` into `ModSubsystems` from the constructor below —
- * the same declarative shape `mChatCommands` already documents. `UGameWorldModule::DispatchLifecycleEvent`
- * walks `ModSubsystems` during `RegisterConstructionPhaseContent`, called from `Super::` BEFORE
- * `FPMFixes::NotifyWorldLoad` runs (this file's `.cpp`) — so by the time any fix's `OnWorldLoad` sees a
- * world, the probe has already spawned there if this machine is authoritative. See `FFPMHostTier`
- * (`Session/FPMHostTier.h`) for what turns that into the FULL/VANILLA tier.
+ *
+ * SLICE 4, §5.9. This module registers `AFPMHostProbeSubsystem` into `ModSubsystems` from the
+ * constructor below, the same declarative shape `mChatCommands` already documents.
+ * `UGameWorldModule::DispatchLifecycleEvent` walks `ModSubsystems` during
+ * `RegisterConstructionPhaseContent`, called from `Super::` BEFORE `FPMFixes::NotifyWorldLoad` runs
+ * (this file's `.cpp`), so by the time any fix's `OnWorldLoad` sees a world, the probe has already
+ * spawned there if this machine is authoritative. See `FFPMHostTier` (`Session/FPMHostTier.h`) for what
+ * turns that into the FULL / NO-HOST-REPLICA tier.
  */
 UCLASS()
 class FICSITSPERFORMANCEMANAGER_API URootGameWorld_FicsitsPerformanceManager : public UGameWorldModule

@@ -21,9 +21,14 @@ enum class EFPMHostTier : uint8
 	 *  replica via the game's own replication. KNOWN, never inferred from a cvar or a guess. */
 	Full,
 
-	/** Client only: no replica within the budget. KNOWN absence — observed via the game's own
-	 *  replication timing out, not a guess. Can still upgrade to Full if the replica arrives late. */
-	Vanilla,
+	/**
+	 * Client only: the budget elapsed and NO host replica arrived. This is the OBSERVATION, not a
+	 * verdict about the host. It was called `Vanilla` until the 2026-08-15 review (HIGH 1) showed that
+	 * "the host has no FPM" is an input this state cannot receive on a shipped client, so the name
+	 * asserted something the wiring could never carry. See the ★ REACHABILITY block below.
+	 * Can still upgrade to Full if the replica arrives late.
+	 */
+	NoHostReplica,
 };
 
 /** For log lines and the tier line. */
@@ -43,9 +48,9 @@ FICSITSPERFORMANCEMANAGER_API const TCHAR* LexToString(EFPMHostTier Tier);
  * function has no memory of a previous call and cannot do that job; see `FFPMHostTier::PollTick`.
  *
  * ★ THE MIRROR CASE THIS FUNCTION EXISTS TO REFUSE: a correct FULL host whose replica simply has not
- * replicated YET (ordinary join latency) must classify PROBING, never VANILLA, while still inside the
- * budget — misclassifying that host VANILLA would tell the player crash guards are off when they are
- * not. That is `SelfTest`'s known-negative case.
+ * replicated YET (ordinary join latency) must classify PROBING, never `NoHostReplica`, while still
+ * inside the budget — calling that host's replica ABSENT would tell the player crash guards are off
+ * when they are not. That is `SelfTest`'s known-negative case.
  */
 FICSITSPERFORMANCEMANAGER_API EFPMHostTier FPMClassifyHostTier(
 	bool bSelfIsHost, bool bReplicaObserved, double ElapsedSeconds, double TimeoutSeconds);
@@ -62,8 +67,8 @@ FICSITSPERFORMANCEMANAGER_API EFPMHostTier FPMClassifyHostTier(
  *     branch ALSO runs the local-authority self-test below.
  *   - A client: starts a 1 Hz poll (`FTSTicker`, matching `FPMOverlay`'s own ticking pattern) that
  *     checks whether `AFPMHostProbeSubsystem` has replicated in yet. Present -> `Full`. Absent past the
- *     30s budget -> `Vanilla`. The poll keeps running afterwards, unbounded, so a late-arriving replica
- *     still upgrades the session live, and so a replica that later vanishes is caught as a WARNING
+ *     30s budget -> `NoHostReplica`. The poll keeps running afterwards, unbounded, so a late-arriving
+ *     replica still upgrades the session live, and so a replica that later vanishes is caught as a WARNING
  *     rather than silently believed.
  *
  * ★ THE LOCAL-AUTHORITY SELF-TEST, THE ANSWER TO "WHAT PROVES THE WIRING WORKS WITHOUT A SECOND
@@ -78,11 +83,39 @@ FICSITSPERFORMANCEMANAGER_API EFPMHostTier FPMClassifyHostTier(
  * singleplayer session, every dedicated-server boot, every listen host), which is what makes it a real
  * known-positive rather than a synthetic one.
  *
+ * ★ REACHABILITY, AND WHY THE THIRD TIER IS NOT "THE HOST IS VANILLA". Review finding 2026-08-15,
+ * HIGH 1. It is the dead-instrument mirror: a state reachable ONLY through this instrument's own
+ * failure, printed as a fact about the world.
+ *
+ * `FicsitsPerformanceManager.uplugin:56` sets `"RequiredOnRemote": true` and `:55` pins
+ * `"RemoteVersionRange": "=0.11.26"`. Ant has ruled that BOTH stay; the descriptor is correct and it
+ * was the readout that was wrong. SML enforces that pin on BOTH ends, not just the server:
+ * `HandleWelcomePlayer` -> `ValidateSMLConnectionData(Connection, true)` and
+ * `HandleWelcomePlayer_Client` -> `ValidateSMLConnectionData(Connection, false)`
+ * (`SMLNetworkManager.cpp:58-64`). Inside it, any local mod the remote never reported is added to
+ * `RemoteMissingMods` unless `!bRequiredOnRemote`, with an exemption for SML's own name on the client
+ * side only (`:66-77`), and a non-empty list closes the connection (`:89-94`). A client that is
+ * reading this tier line has therefore ALREADY completed a join, which no host lacking FPM at the
+ * pinned version could have allowed.
+ *
+ * The single documented escape is SML's own `SML.SkipRemoteModListCheck` (`SMLNetworkManager.cpp:15-20`,
+ * default off outside the editor), which disables that gate on the machine it is set on.
+ *
+ * So `ComposeTierLine` READS that cvar instead of assuming, and says which of the two worlds it is in:
+ * gate on means an absent replica is FPM's OWN registration / spawn / replication failing and must be
+ * reported as an FPM bug; gate off means a genuinely FPM-less host is reachable and this probe cannot
+ * separate the two causes, which it states rather than guessing. `FPMHostProbeSubsystem.h` calls the
+ * join channel "a SEPARATE, EARLIER decision" and that is still true: the join echo makes a refusal
+ * legible, this probe answers a later question for a join that SUCCEEDED. What was missing was the
+ * consequence of the earlier decision on this one, which is this block.
+ *
  * ★ WHAT REMAINS UNPROVEN WITHOUT A SECOND MACHINE, SAID OUT LOUD. The client-side 30s timeout, the
  * late-arrival upgrade, and the mid-session-vanish warning all need an actual remote host to exercise
- * for real — a genuinely vanilla dedicated server, or one whose FPM starts late. `SelfTest` proves the
- * CLASSIFIER those branches are built on, and the local-authority check proves the WIRING they share;
- * neither is a substitute for an execution-proven two-machine join, and `FPM.Status` says so.
+ * for real. Per the block above, the only host that can produce the timeout on a shipped client is one
+ * whose own FPM is present but not replicating, or a client running `SML.SkipRemoteModListCheck 1`.
+ * `SelfTest` proves the CLASSIFIER those branches are built on, and the local-authority check proves
+ * the WIRING they share; neither is a substitute for an execution-proven two-machine join, and
+ * `FPM.Status` says so.
  *
  * DOWNGRADE REFUSAL. Design §5.9: "a vanishing subsystem mid-session is a fault to surface, not a tier
  * change." `PollTick` enforces this directly — once `Tier` reads `Full`, only a WARNING is emitted for

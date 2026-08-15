@@ -24,7 +24,7 @@
  * editor preview", which is exactly a pin use case, and native FPM code can call either once it holds
  * a valid `AFGTimeOfDaySubsystem*` from `Get(UWorld*)` (`:61`).
  *
- * `FPM.Diag.TimeOfDay` proves REACHABILITY (a valid subsystem instance exists at runtime, its read
+ * `FPM.Probe.TimeOfDay` proves REACHABILITY (a valid subsystem instance exists at runtime, its read
  * accessors resolve) without calling either setter — flipping the day/night cycle from a diagnostic
  * command has a real player-visible side effect and this probe is not the place to spend that.
  * Confirming the PIN behaviour itself (call `SetDaySeconds`, observe the clock hold) is left as a
@@ -42,18 +42,18 @@
  * (`GetMesh3P()`) — printed beside the full socket list so an operator can read off the real name if
  * the guess is wrong, in the same command, without a second boot.
  *
- * `FPM.Diag.Sockets` requires a spawned local player character to answer anything; run it after
+ * `FPM.Probe.Sockets` requires a spawned local player character to answer anything; run it after
  * loading into a world, never from the main menu. Coverage is stated explicitly when that precondition
  * fails, per this project's own "an instrument must print its own coverage" rule.
  */
 class FPMBootProbes
 {
 public:
-	/** `FPM.Diag.TimeOfDay` — read the day/night subsystem's current state and report the pin API's
+	/** `FPM.Probe.TimeOfDay` — read the day/night subsystem's current state and report the pin API's
 	 *  reachability. Writes nothing; calls no setter. */
 	static void ReportTimeOfDay(class UWorld* World, class FOutputDevice* Ar);
 
-	/** `FPM.Diag.Sockets` — enumerate socket names on the local player's first- and third-person mesh,
+	/** `FPM.Probe.Sockets` — enumerate socket names on the local player's first- and third-person mesh,
 	 *  and check the two names FPMWristItemBase already assumes on each. */
 	static void ReportSockets(class UWorld* World, class FOutputDevice* Ar);
 };

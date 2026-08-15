@@ -160,6 +160,9 @@ const FFPMLeverDefinition* FFPMLeverRegistry::RegisterWritable(FFPMLeverDefiniti
 
 	Definition.bWritable = true;
 	Definition.Availability = EFPMLeverAvailability::Unknown;
+	// M2: derived, never hand-set. See FPMLeverSelfTestPrefix's comment in FPMLeverTypes.h.
+	Definition.bIsSelfTestFixture =
+		Definition.Name.ToString().StartsWith(FPMLeverSelfTestPrefix(), ESearchCase::CaseSensitive);
 	const FName Key = Definition.Name;
 	FFPMLeverDefinition& Stored = Levers.Add(Key, MoveTemp(Definition));
 
@@ -185,12 +188,29 @@ const FFPMLeverDefinition* FFPMLeverRegistry::RegisterReadOnly(FFPMLeverDefiniti
 
 	Definition.bWritable = false;
 	Definition.Availability = EFPMLeverAvailability::Unknown;
+	Definition.bIsSelfTestFixture =
+		Definition.Name.ToString().StartsWith(FPMLeverSelfTestPrefix(), ESearchCase::CaseSensitive);
 	const FName Key = Definition.Name;
 	FFPMLeverDefinition& Stored = Levers.Add(Key, MoveTemp(Definition));
 
 	UE_LOG(LogFicsitsPerformanceManager, Verbose,
 		TEXT("[FPM] lever registry: '%s' registered READ-ONLY"), *Stored.Name.ToString());
 	return &Stored;
+}
+
+int32 FFPMLeverRegistry::CountSelfTestFixtures() const
+{
+	int32 Count = 0;
+	for (const auto& Pair : Levers)
+	{
+		if (Pair.Value.bIsSelfTestFixture) { ++Count; }
+	}
+	return Count;
+}
+
+int32 FFPMLeverRegistry::CountProduction() const
+{
+	return Levers.Num() - CountSelfTestFixtures();
 }
 
 const FFPMLeverDefinition* FFPMLeverRegistry::Find(const FName LeverName) const
@@ -576,10 +596,12 @@ void FFPMLeverRegistry::Arm()
 	bSelfTestPassed = SelfTest();
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] lever registry armed (self-test %s). %d lever(s) registered, %d refused. "
-		     "Capability probing and the alias table build are deferred to world load -- a cvar "
-		     "owned by a module that has not finished loading does not exist yet here."),
-		bSelfTestPassed ? TEXT("PASSED") : TEXT("FAILED"), Levers.Num(), RefusedRegistrations.Num());
+		TEXT("[FPM] lever registry armed (self-test %s). %d lever(s) registered - %d PRODUCTION, %d "
+		     "self-test fixture(s) - and %d refused. Capability probing and the alias table build are "
+		     "deferred to world load -- a cvar owned by a module that has not finished loading does "
+		     "not exist yet here."),
+		bSelfTestPassed ? TEXT("PASSED") : TEXT("FAILED"), Levers.Num(),
+		CountProduction(), CountSelfTestFixtures(), RefusedRegistrations.Num());
 }
 
 void FFPMLeverRegistry::OnWorldLoad(UWorld* World)
@@ -607,8 +629,9 @@ void FFPMLeverRegistry::OnWorldLoad(UWorld* World)
 	}
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] lever registry: probe pass complete -- %d available, %d absent, of %d "
-		     "registered."), Available, Absent, Levers.Num());
+		TEXT("[FPM] lever registry: probe pass complete -- %d available, %d absent, of %d registered "
+		     "(%d of those are self-test fixtures, not shipped levers)."),
+		Available, Absent, Levers.Num(), CountSelfTestFixtures());
 }
 
 void FFPMLeverRegistry::Disarm()
@@ -658,17 +681,34 @@ void FFPMLeverRegistry::ReportNow(FOutputDevice& Ar) const
 	}
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] lever registry -- %d lever(s) registered (%d writable, %d read-only), %d "
-		     "refused at registration. Probe state: %d available, %d absent, %d not yet probed. "
-		     "THIS SLICE SHIPS THE REGISTRY MECHANISM ONLY -- every lever below is a self-test "
-		     "fixture; the production stage tables (B1-B6/K1-K4) are a separate, not-yet-built item."),
-		Levers.Num(), Writable, ReadOnly, RefusedRegistrations.Num(), Available, Absent, Unprobed);
+	/*
+	 * THE DISCLOSURE IS NOW COMPUTED, NOT WRITTEN DOWN (M2). The old line asserted "every lever below
+	 * is a self-test fixture" in prose. That was true the day it was written and would have become
+	 * false, silently, the day the first production lever registered. Counting is the only version of
+	 * that sentence that cannot go stale.
+	 */
+	const int32 Fixtures = CountSelfTestFixtures();
+	const int32 Production = CountProduction();
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] lever registry -- %d lever(s) registered: %d PRODUCTION, %d self-test fixture(s). "
+		     "%d writable, %d read-only, %d refused at registration. Probe state: %d available, %d "
+		     "absent, %d not yet probed."),
+		Levers.Num(), Production, Fixtures, Writable, ReadOnly, RefusedRegistrations.Num(),
+		Available, Absent, Unprobed);
+
+	UE_CLOG(Production == 0, LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM]   NO PRODUCTION LEVER IS REGISTERED YET. This build ships the registry MECHANISM "
+		     "only; every row below is a fixture (reserved name prefix %s). The production stage "
+		     "tables (B1-B6/K1-K4) are a separate, not-yet-built item."),
+		FPMLeverSelfTestPrefix());
 
 	for (const auto& Pair : Levers)
 	{
 		const FFPMLeverDefinition& Def = Pair.Value;
 		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM]   %-34s %-9s %-10s policy=%-16s currency=%-16s baseline=%s"),
+			TEXT("[FPM]   %-11s %-34s %-9s %-10s policy=%-16s currency=%-16s baseline=%s"),
+			Def.bIsSelfTestFixture ? TEXT("[fixture]") : TEXT("[production]"),
 			*Def.Name.ToString(),
 			Def.bWritable ? TEXT("writable") : TEXT("read-only"),
 			LexToString(Def.Availability),

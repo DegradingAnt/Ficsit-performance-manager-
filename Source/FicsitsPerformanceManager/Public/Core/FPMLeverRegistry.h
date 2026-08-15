@@ -153,6 +153,15 @@ public:
 	 *  nothing else) if the self-test has not passed. */
 	void ReportNow(FOutputDevice& Ar) const;
 
+	/**
+	 * How many registry entries are SELF-TEST FIXTURES, and how many are shipped levers. Review
+	 * 2026-08-15, M2: the fixtures live in the same table, so every count printed anywhere must say
+	 * which it is counting. Derived from FPMLeverSelfTestPrefix at registration, so a new fixture
+	 * cannot be miscounted by an author who forgot a flag.
+	 */
+	int32 CountSelfTestFixtures() const;
+	int32 CountProduction() const;
+
 private:
 	bool RefuseIfUnsafeToWrite(const FFPMLeverDefinition& Def, FString& OutReason) const;
 	void ProbeOne(FFPMLeverDefinition& Def) const;
