@@ -91,6 +91,16 @@ public:
 	FPMHookLedger::Install(TEXT(Owner), TEXT(#MethodReference), \
 		[&]() -> FDelegateHandle { return SUBSCRIBE_METHOD(MethodReference, __VA_ARGS__); })
 
+/**
+ * AFTER variant of FPM_SUBSCRIBE, for a non-virtual (free or static member) function. Added for
+ * join-version-echo, which has to read a function's OUTPUT (an out-param already filled by the real
+ * call) rather than intercept its input — none of the three wrappers above cover that, and this is the
+ * "add a variant when a fix needs one" case the note above already invites.
+ */
+#define FPM_SUBSCRIBE_AFTER(Owner, MethodReference, ...) \
+	FPMHookLedger::Install(TEXT(Owner), TEXT(#MethodReference), \
+		[&]() -> FDelegateHandle { return SUBSCRIBE_METHOD_AFTER(MethodReference, __VA_ARGS__); })
+
 #define FPM_SUBSCRIBE_VIRTUAL(Owner, MethodReference, SampleObject, ...) \
 	FPMHookLedger::Install(TEXT(Owner), TEXT(#MethodReference), \
 		[&]() -> FDelegateHandle { return SUBSCRIBE_METHOD_VIRTUAL(MethodReference, SampleObject, __VA_ARGS__); })

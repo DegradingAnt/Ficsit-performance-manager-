@@ -424,6 +424,15 @@ bool TickInternal(float /*DeltaSeconds*/)
 	// 1. NOTHING LISTENING, NOTHING RUNS. Zero cost, not merely low cost.
 	if (GActiveConsumers <= 0) { return true; }
 
+	/*
+	 * ★ EXPLICIT REFUSAL, PER §9.7. This used to be true only because a dedicated server has no local
+	 * player controller, so the pawn-null branch further down happened to return early. That is an
+	 * incidental no-op wearing a "client-side by nature" comment, and Ant's ruling on the enclosure work
+	 * named that reasoning FALSE as a stated refusal. Checked first and by name, so the refusal survives
+	 * even if the pawn lookup below is ever rewritten.
+	 */
+	if (IsRunningDedicatedServer()) { return true; }
+
 	if (GBatch.bInFlight)
 	{
 		// A batch whose callbacks are never coming must not wedge the sampler shut. See the timeout.

@@ -281,6 +281,64 @@ static TAutoConsoleVariable<int32> CVarDiagServerLevers(
 	     "individual lever with its value and SetBy layer. Reads only; writes nothing."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagJoinVersion(
+	TEXT("FPM.Diag.JoinVersion"), 1,
+	TEXT("Join-time version echo: what THIS side and the REMOTE side reported for FicsitsPerformanceManager "
+	     "at handshake, read from the same mod-list exchange SML itself validates. Governs ONLY the routine "
+	     "matched-case log line: 0/1 = silent, 2 = also log a matched join. A mismatch or an absent-remote "
+	     "finding always reaches FPMOverlay (screen + log) regardless of this cvar - it is FPMOverlay::Post's "
+	     "own stated policy (FPMOverlay.h) to answer only to the FPM.Diag master switch, not a per-channel "
+	     "one, and a join refusal is not the kind of diagnostic this switch should be able to hide. Reads "
+	     "only; writes nothing."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagHostTier(
+	TEXT("FPM.Diag.HostTier"), 1,
+	TEXT("Slice 4 host probe: FULL/VANILLA/PROBING tier decisions. 0 = silent, 1 = the arm line, every "
+	     "tier CHANGE (including late-arrival upgrades) and the mid-session vanish warning, 2 = also "
+	     "the per-poll classification while probing. The persistent overlay row and FPM.Status are NOT "
+	     "gated by this - a player must be able to see what tier is active even with diagnostics off."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagLeverRegistry(
+	TEXT("FPM.Diag.LeverRegistry"), 1,
+	TEXT("Slice 2 lever registry: registration refusals (Law 1 / clause 2), capability-probe verdicts "
+	     "and the alias table. 0 = silent, 1 = the arm line, the self-test result and the probe-pass "
+	     "summary, 2 = also every individual lever's verdict. Reads only; writes nothing itself -- "
+	     "applying a lever's value goes through FPMCVarWriter, a separate write path."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagIndoorFog(
+	TEXT("FPM.Diag.IndoorFog"), 1,
+	TEXT("Slice 5 (Section 9.7) indoor fog: the shared enclosure roof verdict, the StartDistance write "
+	     "and its read-back. 0 = silent, 1 = the arm line and every roof-state CHANGE, 2 = also the "
+	     "per-tick StartDistance value while under a roof."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagNetGuidCensus(
+	TEXT("FPM.Diag.NetGuidCensus"), 1,
+	TEXT("Net GUID census: object references the net GUID cache refuses to address, which the engine "
+	     "then warns about once each. 0 = silent, 1 = first sighting of each class plus a throttled "
+	     "running total. The class-list-FULL warning and FPM.NetGuidCensus.Report are NOT gated by "
+	     "this: a bounded list going quiet must never be silenceable into looking complete. The census "
+	     "itself is off by default and is armed with FPM.Fix.NetGuidCensus 1."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagThirdPersonToggle(
+	TEXT("FPM.Diag.ThirdPersonToggle"), 1,
+	TEXT("Slice 5 (Section 6.7) third-person camera keybind. 0 = silent, 1 = the arm line, whether both "
+	     "input assets resolved, and every time the bound action fires."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagDetect(
+	TEXT("FPM.Diag.Detect"), 1,
+	TEXT("Slice 4 M-DETECT: the four community-trap detectors, the audio-voice probe, and the "
+	     "registry's own self-test. 0 = silent, 1 = the arm line and each detector's per-run "
+	     "coverage line, 2 = also per-flagged-class detail. FPM.Detect.Report and the UObject "
+	     "watermark warning (FPMGCMeter, section 7.3) are NOT gated by this channel - a report-only "
+	     "channel must still be readable with diagnostics off, same reasoning as HostTier."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -321,6 +379,13 @@ namespace
 		&CVarDiagBlueprintContentSnap,
 		&CVarDiagWristSlot,
 		&CVarDiagServerLevers,
+		&CVarDiagJoinVersion,
+		&CVarDiagHostTier,
+		&CVarDiagLeverRegistry,
+		&CVarDiagIndoorFog,
+		&CVarDiagNetGuidCensus,
+		&CVarDiagThirdPersonToggle,
+		&CVarDiagDetect,
 	};
 
 	/*
@@ -375,6 +440,13 @@ namespace
 		case FPMDiag::EChannel::BlueprintContentSnap: return TEXT("FPM.Diag.BlueprintContentSnap");
 		case FPMDiag::EChannel::WristSlot:      return TEXT("FPM.Diag.WristSlot");
 		case FPMDiag::EChannel::ServerLevers:   return TEXT("FPM.Diag.ServerLevers");
+		case FPMDiag::EChannel::JoinVersion:    return TEXT("FPM.Diag.JoinVersion");
+		case FPMDiag::EChannel::HostTier:       return TEXT("FPM.Diag.HostTier");
+		case FPMDiag::EChannel::LeverRegistry:  return TEXT("FPM.Diag.LeverRegistry");
+		case FPMDiag::EChannel::IndoorFog:      return TEXT("FPM.Diag.IndoorFog");
+		case FPMDiag::EChannel::NetGuidCensus:  return TEXT("FPM.Diag.NetGuidCensus");
+		case FPMDiag::EChannel::ThirdPersonToggle: return TEXT("FPM.Diag.ThirdPersonToggle");
+		case FPMDiag::EChannel::Detect:         return TEXT("FPM.Diag.Detect");
 		default:                                return TEXT("<unknown>");
 		}
 	}

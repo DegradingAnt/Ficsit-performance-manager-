@@ -4,6 +4,7 @@
 
 #include "Core/FPMBoxCache.h"
 #include "Core/FPMCVarWriter.h"
+#include "Core/FPMDetectorRegistry.h"
 #include "Core/FPMFixContract.h"
 #include "Core/FPMGCMeter.h"
 #include "Core/FPMStallSampler.h"
@@ -12,15 +13,23 @@
 #include "Core/FPMSettingsAudit.h"
 #include "Core/FPMMasterSwitch.h"
 #include "Core/FPMHookLedger.h"
+#include "Core/FPMJoinVersionEcho.h"
+#include "Core/FPMLeverRegistry.h"
 #include "Core/FPMOverlay.h"
 #include "Core/FPMSaveSettingsInterceptor.h"
 #include "Core/FPMUserSettingMap.h"
+#include "Fixes/Interop/FPMAudioVoiceDetector.h"
+#include "Fixes/Interop/FPMConveyorGrabDetector.h"
 #include "Fixes/Interop/FPMDistanceFieldAudit.h"
 #include "Fixes/Interop/FPMHologramNetGuard.h"
 #include "Fixes/Interop/FPMHudHookGuard.h"
 #include "Fixes/Interop/FPMInventoryInitGuard.h"
+#include "Fixes/Interop/FPMLightweightCensusDetector.h"
+#include "Fixes/Interop/FPMMasterMaterialDetector.h"
 #include "Fixes/Interop/FPMMaterialEffectProbe.h"
+#include "Fixes/Interop/FPMNetGuidCensus.h"
 #include "Fixes/Interop/FPMNoOwnerRpcGate.h"
+#include "Fixes/Interop/FPMWidgetTickDetector.h"
 #include "Fixes/Interop/FPMNavMeshCeiling.h"
 #include "Fixes/Interop/FPMRailConnectionGuard.h"
 #include "Fixes/Interop/FPMRainOcclusionFix.h"
@@ -35,14 +44,17 @@
 #include "Fixes/Interop/FPMZiplineVolume.h"
 #include "Core/FPMCrashStamp.h"
 #include "Fixes/Interop/FPMWeatherIndoorGate.h"
+#include "Fixes/Interop/FPMIndoorFog.h"
 #include "Fixes/Interop/FPMWwiseServerGate.h"
 #include "Fixes/ModFeatures/FPMGlassQuality.h"
 #include "Fixes/ModFeatures/FPMNaniteStreamingGuard.h"
+#include "Fixes/ModFeatures/FPMThirdPersonToggle.h"
 #include "Fixes/Vanilla/FPMCloneSensor.h"
 #include "Fixes/Vanilla/FPMPowerWarningProbe.h"
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
 #include "Streaming/FPMAssetResidency.h"
 #include "Server/FPMServerLevers.h"
+#include "Session/FPMHostTier.h"
 #include "Wrist/FPMWristSlotComponent.h"
 #include "Fixes/Vanilla/FPMBlueprintContentSnap.h"
 
@@ -93,6 +105,16 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// ledger so a future collision is a readable log line rather than a mystery.
 	FPMFixes::Arm(FFPMStaticBaseFix::Get());
 	FPMFixes::Arm(FFPMNoOwnerRpcGate::Get());
+
+	/*
+	 * Net measurement, registered beside the RPC gate because they share a hazard rather than a
+	 * subsystem: both would hold a detour on a path every replicated message crosses. This one is
+	 * DefaultArmed() == false for exactly the reason the gate above was turned off on 2026-08-11, so
+	 * registering it costs nothing until somebody types FPM.Fix.NetGuidCensus 1.
+	 * Its FPM.Net.Report companion needs no arming at all: that command installs no hook and reads the
+	 * engine's own unconditional byte counters, so it answers even with every fix disarmed.
+	 */
+	FPMFixes::Arm(FFPMNetGuidCensus::Get());
 	FPMFixes::Arm(FFPMCloneSensor::Get());
 	FPMFixes::Arm(FFPMRainOcclusionFix::Get());
 
@@ -185,6 +207,14 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * ⚠ Arming it is what STARTS the enclosure sampler. Nothing traces until something asks.
 	 */
 	FPMFixes::Arm(FFPMWeatherIndoorGate::Get());
+
+	/*
+	 * §9.7 fog third of the same "one system, not three patches" ruling. Registers its own Overhead
+	 * consumer on the enclosure sensor the line above already started; pushes the map's height fog
+	 * StartDistance back while the player is under a player-built roof, SetStartDistance only, never
+	 * volumetric. See FPMIndoorFog.h for the full design.
+	 */
+	FPMFixes::Arm(FFPMIndoorFog::Get());
 
 	// Re-port of a fix the rewrite orphaned (FPM1 RegisterWwiseServerAudioGate). Installs a hook ONLY
 	// on a dedicated server, where UAkGameplayStatics::StopActor cannot reach an audio device and so
@@ -368,6 +398,14 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 */
 	FPMFixes::Arm(FFPMNaniteStreamingGuard::Get());
 
+	/*
+	 * §6.7 / m6737334 — third-person view as a button setting. Binds IA_ThirdPersonToggle to
+	 * AFGCharacterPlayer::ToggleCameraMode() the same way FPMWristSlotComponent already binds
+	 * OnPlayerInputInitialized for handedness. Reports loudly and does nothing else if the two
+	 * editor-authored input assets do not exist yet - see FPMThirdPersonToggle.h.
+	 */
+	FPMFixes::Arm(FFPMThirdPersonToggle::Get());
+
 	// Slice W. Adds UFPMWristSlotComponent to every AFGCharacterPlayer on the authority; it replicates
 	// to clients from there. Arms everywhere including the dedicated server — the slot is
 	// server-authoritative state, not renderer/audio/input work.
@@ -395,6 +433,33 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 		FPMOverlay::Post(TEXT("startup"), FString::Printf(TEXT("FPM %s loaded, %d hook(s) armed"),
 			*VersionName, FPMHookLedger::Records().Num()));
 	}
+
+	// Slice 2. The lever registry: the data model and its enforcement (Law 1's US_*/sg.* refusal,
+	// the anti-ratchet baseline guard, capability probing, the ScalabilityGroup alias table). Ships
+	// with self-test fixture levers only in this slice — the production stage tables are a separate,
+	// later item. Any — the container is side-agnostic; each registered lever states its own side.
+	FPMFixes::Arm(FFPMLeverRegistry::Get());
+
+	// Slice 4, §5.9: the host probe + tier line. Any — an authoritative world (dedicated/listen/
+	// singleplayer) declares FULL immediately and self-tests its own registration; a client waits up
+	// to 30s for the host's replicated probe before declaring VANILLA, and keeps watching for a late
+	// arrival afterwards. FPM.Status prints the tier; FPM.HostProbe.SelfTest re-runs the classifier
+	// proof on demand.
+	FPMFixes::Arm(FFPMHostTier::Get());
+
+	/*
+	 * Slice 4, section 9.3/7.3: M-DETECT. The registry (report-only sink, never fixes/hooks
+	 * anything) arms first so every detector below has somewhere to report into. Then the four
+	 * community traps plus the audio-voice probe. Any - each states its own Side(); the container
+	 * is side-agnostic. Independent of the lever registry (M-LEVER) above; nothing here reads or
+	 * writes a lever.
+	 */
+	FPMFixes::Arm(FFPMDetectorRegistry::Get());
+	FPMFixes::Arm(FFPMConveyorGrabDetector::Get());
+	FPMFixes::Arm(FFPMMasterMaterialDetector::Get());
+	FPMFixes::Arm(FFPMWidgetTickDetector::Get());
+	FPMFixes::Arm(FFPMLightweightCensusDetector::Get());
+	FPMFixes::Arm(FFPMAudioVoiceDetector::Get());
 
 	/*
 	 * ★ P4.2's master switch, installed after every Arm() above for the same reason the crash stamp

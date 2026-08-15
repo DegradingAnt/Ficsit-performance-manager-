@@ -64,8 +64,11 @@
  * latency and buy nothing. The design states this directly in its rain counter-example. A doorway also
  * needs a sub-second response, which rules out anything with a round trip.
  *
- * CLIENT-SIDE BY NATURE: it traces from the local camera, so a dedicated server has nothing to ask.
- * `Start()` refuses there.
+ * ⚠ THE SERVER REFUSAL IS EXPLICIT, NOT INCIDENTAL. §9.7 named the old wording here — "client-side by
+ * nature" — as FALSE read as a refusal claim: the no-op was only ever a SIDE EFFECT of
+ * `GetFirstLocalPlayerController` returning null on a dedicated server, which happens to produce the
+ * right behaviour today but documents the wrong reason and would silently stop refusing if that lookup
+ * ever changed. `TickInternal` now checks `IsRunningDedicatedServer()` first, before anything else runs.
  *
  * ZERO RESIDUE: line traces and integers. No console variable, no ini, no actor touched, nothing
  * written to any object in the world.

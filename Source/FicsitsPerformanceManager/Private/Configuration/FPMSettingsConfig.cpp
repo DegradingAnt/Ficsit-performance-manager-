@@ -163,7 +163,13 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 		if (UCP_Section* W = Cast<UCP_Section>(S))
 		{
 			W->WidgetType = ECP_SectionWidgetType::CPS_Vertical;
-			W->HasHeader  = true;
+			W->HasHeader   = true;
+			/*
+			 * ⚠ HasHeader ALONE DRAWS AN EMPTY BAR. The widget renders HeaderText (CP_Section.h:23), a
+			 * field separate from the base UConfigProperty::DisplayName set above - setting only
+			 * DisplayName left every section (Upscaler, Weather, Diagnostics) with a blank header.
+			 */
+			W->HeaderText  = Display;
 		}
 		if (UConfigPropertySection* Root = Cast<UConfigPropertySection>(RootSection))
 		{

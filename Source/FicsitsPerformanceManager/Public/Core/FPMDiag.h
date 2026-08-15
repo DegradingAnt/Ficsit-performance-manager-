@@ -93,6 +93,13 @@ public:
 		BlueprintContentSnap, // FPM.Diag.BlueprintContentSnap — blueprint-to-blueprint content snap mating
 			WristSlot,        // FPM.Diag.WristSlot -- Slice W: the wrist-slot add-hook, equip/deploy, persistence
 		ServerLevers,     // FPM.Diag.ServerLevers -- which dedicated-server governor levers exist here
+		JoinVersion,      // FPM.Diag.JoinVersion -- the join-time version echo (both sides, or absent)
+		HostTier,         // FPM.Diag.HostTier -- Slice 4: the host probe and the FULL/VANILLA tier line
+		LeverRegistry,    // FPM.Diag.LeverRegistry -- Slice 2: the lever registry's registration + probe coverage
+		IndoorFog,        // FPM.Diag.IndoorFog -- Slice 5 (§9.7): the indoor fog StartDistance guard
+		NetGuidCensus,    // FPM.Diag.NetGuidCensus -- object references the net GUID cache refuses to address
+		ThirdPersonToggle, // FPM.Diag.ThirdPersonToggle -- Slice 5 (§6.7): the third-person camera keybind
+		Detect,           // FPM.Diag.Detect -- Slice 4: M-DETECT, the cost-attribution registry + traps
 		Count
 	};
 

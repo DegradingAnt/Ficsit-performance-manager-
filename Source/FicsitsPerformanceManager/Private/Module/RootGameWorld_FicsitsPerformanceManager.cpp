@@ -6,6 +6,7 @@
 #include "Core/FPMFixContract.h"
 #include "Core/FPMUserSettingMap.h"
 #include "Engine/World.h"
+#include "Session/FPMHostProbeSubsystem.h"
 
 namespace
 {
@@ -33,6 +34,11 @@ URootGameWorld_FicsitsPerformanceManager::URootGameWorld_FicsitsPerformanceManag
 	// reachable — ChatCommands.adoc:46-47. The old mod shipped a correct, complete chat command that
 	// was never added to any such array, so it could not be invoked, and its own header claimed it
 	// worked. An implementation is not a feature until something registers it.
+
+	// Slice 4, §5.9: the ONLY line that makes AFPMHostProbeSubsystem reachable. Same lesson as the
+	// comment above — GameWorldModule.cpp:51-55 walks this array during RegisterConstructionPhaseContent,
+	// which runs from Super::DispatchLifecycleEvent below, before FPMFixes::NotifyWorldLoad.
+	ModSubsystems.Add(AFPMHostProbeSubsystem::StaticClass());
 }
 
 void URootGameWorld_FicsitsPerformanceManager::DispatchLifecycleEvent(ELifecyclePhase Phase)
