@@ -44,6 +44,7 @@
 #include "Streaming/FPMAssetResidency.h"
 #include "Server/FPMServerLevers.h"
 #include "Wrist/FPMWristSlotComponent.h"
+#include "Fixes/Vanilla/FPMBlueprintContentSnap.h"
 
 #include "Interfaces/IPluginManager.h"
 
@@ -371,6 +372,16 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// to clients from there. Arms everywhere including the dedicated server — the slot is
 	// server-authoritative state, not renderer/audio/input work.
 	FPMFixes::Arm(FFPMWristSlotHook::Get());
+
+	// Lane D Hook A + Hook B. The DESCRIPTOR (FPMBlueprintContentSnapMode) deliberately holds no
+	// logic; these are the hooks. v1 is connection-anchor snapping only, no foundation lattice,
+	// because design S12 Q3 is unruled by Ant and picking it silently would be worse than the cut.
+	FPMFixes::Arm(FFPMBlueprintContentSnap::Get());
+
+	// Makes a version-pin join refusal legible: names THIS side's version and the REMOTE's reported
+	// version (or says plainly that the remote never reported one) before SML's own handshake can close
+	// the connection. Any — a dedicated server has no viewport but still has FactoryGame.log.
+	FPMFixes::Arm(FFPMJoinVersionEcho::Get());
 
 	// The debug feed, on by default while the mod is pre-release. Ant: "i want UI to show when and what
 	// the rain fix thing is doing so i can see that its working." It attaches as soon as a viewport
