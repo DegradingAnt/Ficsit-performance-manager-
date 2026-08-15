@@ -4,7 +4,9 @@
 
 #include "FicsitsPerformanceManager.h"
 #include "Core/FPMBoxCache.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMCVarWriter.h"
+#include "Core/FPMSaveSettingsInterceptor.h"
 #include "UI/FPMChatRelay.h"   // the drill's verdict goes to chat as well as the log (Ant, 2026-08-09)
 
 #include "HAL/FileManager.h"
@@ -33,17 +35,18 @@ namespace
 	 * ★ THE CLASSIFIER'S LIVENESS PROOF — Ant, 2026-08-09: *"dead instruments are not my preferred item
 	 * to exist."*
 	 *
-	 * The audit's US_* check can never fire in normal operation, because clause 6 REFUSES the writes that
-	 * would trip it. That is correct behaviour and it leaves the detector unproven — the exact shape that
-	 * has now cost this project six incidents. The real failure path cannot be staged safely (the sentinel
-	 * must not leak on purpose), so the CLASSIFIER is proven instead: a known-positive must return true
-	 * and a known-negative must return false. If either stops holding, the audit has gone blind and says
-	 * so, rather than reporting a confident clean sheet forever.
+	 * The audit's US_* check CAN fire in normal operation. Clause 6 refuses a US_*-backed write only while
+	 * the SaveSettings interceptor is UNHEALTHY (FPMCVarWriter.cpp, IsUserSettingBacked(CVarName) &&
+	 * !FFPMSaveSettingsInterceptor::IsHealthy()). A healthy hold is a SANCTIONED state since 2026-08-09
+	 * and reaches this check the same as an unhealthy one. So the real failure path cannot be staged
+	 * safely (the sentinel must not leak on purpose), and the CLASSIFIER is proven instead: a known-
+	 * positive must return true and a known-negative must return false. If either stops holding, the
+	 * audit has gone blind and says so, rather than reporting a confident clean sheet forever.
 	 */
 	bool FPMSentinelClassifierIsAlive()
 	{
 		const bool bPositive = FPMCVarWriter::IsUserSettingBacked(TEXT("t.MaxFPS"));
-		const bool bNegative = FPMCVarWriter::IsUserSettingBacked(TEXT("FPM.SelfTest.Probe"));
+		const bool bNegative = FPMCVarWriter::IsUserSettingBacked(FPMCVarWriter::SelfTestProbeName());
 		if (bPositive && !bNegative) { return true; }
 
 		UE_LOG(LogFicsitsPerformanceManager, Error,
@@ -81,10 +84,11 @@ int32 FPMResidueSentinel::Audit()
 	/*
 	 * INPUT 3 — would any held cvar be CAPTURED by the game's own save?
 	 *
-	 * The writer already refuses the US_*-backed set outright (clause 6), so the expected count is zero
-	 * and this loop is the check that the refusal actually held. It is not redundant with the refusal:
-	 * the denylist is known-incomplete by 242 entries, and a lever added through some future path that
-	 * forgot the writer would never have hit the refusal at all.
+	 * The writer refuses a US_*-backed write only while the SaveSettings interceptor is UNHEALTHY
+	 * (clause 6). A HEALTHY hold on a US_*-backed cvar is sanctioned, so the expected count here is not
+	 * always zero, and this loop must tell a sanctioned healthy hold apart from an unhealthy leak. It is
+	 * not redundant with the refusal: the denylist is known-incomplete by 242 entries, and a lever added
+	 * through some future path that forgot the writer would never have hit the refusal at all.
 	 */
 	/*
 	 * ⚠ THE FIRST DRAFT OF THIS FUNCTION COULD NOT FAIL, and that is worth recording rather than quietly
@@ -193,9 +197,26 @@ int32 FPMResidueSentinel::Audit()
 	}
 	else
 	{
-		UE_CLOG(WouldRemain > 0, LogFicsitsPerformanceManager, Error,
+		/*
+		 * ⚠ A HEALTHY HOLD IS NOT A LEAK. Branch added because the first version of this check raised
+		 * Error on ANY held US_*-backed cvar, with no branch on IsHealthy(). Clause 6 was lifted
+		 * 2026-08-09 by Ant's ruling: a US_*-backed cvar held WHILE the SaveSettings interceptor is
+		 * healthy is a SANCTIONED P1.5 hold state, because the interceptor suspends it before the game's
+		 * next save. Printing Error there was a false alarm at release-gate time, and a gate that cries
+		 * wolf on legitimate work gets ignored. An UNHEALTHY hold still raises Error: nothing is standing
+		 * between that value and the player's settings file.
+		 */
+		const bool bHoldSanctioned = WouldRemain > 0 && FFPMSaveSettingsInterceptor::IsHealthy();
+
+		UE_CLOG(WouldRemain > 0 && !bHoldSanctioned, LogFicsitsPerformanceManager, Error,
 			TEXT("[FPM]   RESULT: %d UNDECLARED cvar hold(s) would survive. This is not acceptable - a "
-			     "US_*-backed cvar is being held, so find the write path that bypassed clause 6."),
+			     "US_*-backed cvar is being held and the SaveSettings interceptor is not healthy, so find "
+			     "the write path that bypassed clause 6."),
+			WouldRemain);
+		UE_CLOG(bHoldSanctioned, LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM]   RESULT: %d US_*-backed cvar hold(s) present, but the SaveSettings interceptor is "
+			     "healthy. This is a sanctioned hold, not a leak: the interceptor suspends it before the "
+			     "game's next save."),
 			WouldRemain);
 		UE_CLOG(FileResidue > 0, LogFicsitsPerformanceManager, Warning,
 			TEXT("[FPM]   RESULT: %d declared file exception(s) would survive. Expected when the plugin "
@@ -214,7 +235,7 @@ int32 FPMResidueSentinel::Audit()
 bool FPMResidueSentinel::Drill()
 {
 	static const FName Owner(TEXT("residue-drill"));
-	const TCHAR* const Probe = TEXT("FPM.SelfTest.Probe");
+	const TCHAR* const Probe = FPMCVarWriter::SelfTestProbeName();
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] ---- residue drill ----"));
@@ -317,12 +338,20 @@ bool FPMResidueSentinel::Drill()
 	return bPass;
 }
 
-static FAutoConsoleCommand GResidueAuditCmd(
+static FAutoConsoleCommandWithOutputDevice GResidueAuditCmd(
 	TEXT("FPM.Residue"),
 	TEXT("Audit what would remain on this machine if settings saved now and FPM were deleted."),
-	FConsoleCommandDelegate::CreateStatic([]() { FPMResidueSentinel::Audit(); }));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FPMResidueSentinel::Audit();
+	}));
 
-static FAutoConsoleCommand GResidueDrillCmd(
+static FAutoConsoleCommandWithOutputDevice GResidueDrillCmd(
 	TEXT("FPM.ResidueDrill"),
 	TEXT("Run the residue drill: hold, audit, release, audit, and prove the machine is back where it started."),
-	FConsoleCommandDelegate::CreateStatic([]() { FPMResidueSentinel::Drill(); }));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FPMResidueSentinel::Drill();
+	}));

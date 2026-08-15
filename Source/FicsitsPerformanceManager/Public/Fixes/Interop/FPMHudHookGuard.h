@@ -80,12 +80,17 @@ public:
 	 *  value means some mod lost more than one descriptor. */
 	static void GetCounts(int32& OutSeen, int32& OutStripped, int32& OutAllowed, int32& OutCancelled);
 
+	/** `FPM.HudGuard.Report` prints these. A guard that has never fired must look like one. */
+	static void LogReport(class FOutputDevice* Ar = nullptr);
+
 	/**
 	 * Removes the hook.
 	 *
 	 * ⚠ Without this, `FPMFixes::DisarmAll()` reports this fix disarmed while its handler keeps
-	 * running. Near-harmless at process exit, which is the only place DisarmAll has ever been called
-	 * from and why the omission survived; it is what blocked P4.2's master OFF switch.
+	 * running. Near-harmless at process exit, which is where DisarmAll was called from until P4.2
+	 * shipped the master OFF switch (`FPM.Enabled 0`, `FPMMasterSwitch.cpp`) - that is why the
+	 * omission survived that long. DisarmAll now also runs mid-session from that switch, which is
+	 * exactly why this override has to be correct.
 	 */
 	virtual void Disarm() override;
 

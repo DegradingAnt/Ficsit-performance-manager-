@@ -65,5 +65,17 @@ void URootInstance_FicsitsPerformanceManager::DispatchLifecycleEvent(ELifecycleP
 		{
 			Settings->SyncAllToCVars();
 		}
+		else
+		{
+			// Matches FFPMSaveSettingsInterceptor::Arm()'s CDO-null branch (FPMSaveSettingsInterceptor.cpp)
+			// - name the failure and log it rather than silently skipping. Without this line, a player's
+			// saved FPM settings (e.g. FPM.Upscaler.DLSSPreset) never reach their cvars this boot, the
+			// options menu still shows the saved value, and nothing in the log says the restore was
+			// skipped.
+			UE_LOG(LogFicsitsPerformanceManager, Error,
+				TEXT("[FPM] could not reach the UFPMSettingsConfig CDO at POST_INITIALIZATION - saved "
+				     "settings were NOT applied to their cvars this boot. Every row will read its "
+				     "compiled default until the game is restarted."));
+		}
 	}
 }

@@ -3,6 +3,7 @@
 #include "Fixes/ModFeatures/FPMUpscalerPreset.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMCVarWriter.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMUpscaler.h"
@@ -108,13 +109,23 @@ void FFPMUpscalerPreset::Arm()
 
 	// Ungated by the diag channel: the stated Arm()-line exception. It separates "held nothing because
 	// the player asked for nothing" from "never armed".
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] upscaler preset ARMED. Satisfactory asks NGX for Preset C (its own log line reads "
-		     "'NGXDLSSPreset=Preset C(3)'), the old CNN model and the one that ghosts on movers. "
-		     "FPM.Upscaler.DLSSPreset 10 forces preset J, 11 forces K - both transformer models. The "
-		     "write goes through FPMCVarWriter at plugin-high priority so the options menu cannot "
-		     "clobber it and the save interceptor keeps it out of GameUserSettings.ini, which is the "
-		     "ownership hazard that kept this lever unbuilt."));
+	if (ApplyHookHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] upscaler preset ARMED. Satisfactory asks NGX for Preset C (its own log line reads "
+			     "'NGXDLSSPreset=Preset C(3)'), the old CNN model and the one that ghosts on movers. "
+			     "FPM.Upscaler.DLSSPreset 10 forces preset J, 11 forces K - both transformer models. The "
+			     "write goes through FPMCVarWriter at plugin-high priority so the options menu cannot "
+			     "clobber it and the save interceptor keeps it out of GameUserSettings.ini, which is the "
+			     "ownership hazard that kept this lever unbuilt."));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] upscaler preset NOT armed - hook install FAILED on "
+			     "UFGGameUserSettings::ApplyNonResolutionSettings. The DLSS preset hold this fix exists to "
+			     "keep will NOT be re-asserted this session."));
+	}
 
 	ApplyFromCVar(TEXT("arm"));
 }
@@ -246,7 +257,11 @@ void FFPMUpscalerPreset::ReportNow()
 		     "DLSS stencil value, so no upscaler is told which pixels are reactive. Separate work."));
 }
 
-static FAutoConsoleCommand GFPMUpscalerReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMUpscalerReportCmd(
 	TEXT("FPM.Upscaler.Report"),
 	TEXT("Which upscaler is live, the DLSS preset the game asked for, and the one FPM is holding."),
-	FConsoleCommandDelegate::CreateStatic(&FFPMUpscalerPreset::ReportNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMUpscalerPreset::ReportNow();
+	}));

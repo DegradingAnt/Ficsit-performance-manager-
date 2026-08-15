@@ -92,6 +92,9 @@ public:
 	 *  number is the one that matters: it is how this fix proves it is not its predecessor. */
 	static void GetCounts(int32& OutSeen, int32& OutRaised, int32& OutFailedReadback);
 
+	/** `FPM.NavMesh.Report` prints these. A guard that has never fired must look like one. */
+	static void LogReport(class FOutputDevice* Ar = nullptr);
+
 	/** Drops a pending delayed verify, so a disarm cannot leave a ticker firing into a dead world. */
 	virtual void Disarm() override;
 

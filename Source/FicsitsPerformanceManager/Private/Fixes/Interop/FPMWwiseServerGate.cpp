@@ -3,6 +3,7 @@
 #include "Fixes/Interop/FPMWwiseServerGate.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMHookLedger.h"
 
@@ -79,10 +80,20 @@ void FFPMWwiseServerGate::Arm()
 
 	// Not gated by the channel: the stated Arm()-line exception in FPMDiag.h. This is the line that
 	// separates "suppressed nothing because the gate is working" from "never armed".
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] Wwise server audio gate armed (dedicated server). StopActor cannot reach an audio "
-		     "device here (AkGameplayStatics.cpp:974-979), so cancelling it is behaviour-identical "
-		     "minus the log write. Measured 681 such warnings in the 2026-08-09 server session."));
+	if (StopActorHookHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] Wwise server audio gate armed (dedicated server). StopActor cannot reach an audio "
+			     "device here (AkGameplayStatics.cpp:974-979), so cancelling it is behaviour-identical "
+			     "minus the log write. Measured 681 such warnings in the 2026-08-09 server session."));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] Wwise server audio gate NOT armed - hook install FAILED on "
+			     "UAkGameplayStatics::StopActor. The dedicated-server no-op warnings this gate suppresses "
+			     "will NOT be suppressed this session."));
+	}
 }
 
 void FFPMWwiseServerGate::Disarm()
@@ -118,11 +129,12 @@ void FFPMWwiseServerGate::Disarm()
  *
  * On a client this correctly reports 0 and says why, rather than looking like a broken gate.
  */
-static FAutoConsoleCommand GWwiseGateReportCmd(
+static FAutoConsoleCommandWithOutputDevice GWwiseGateReportCmd(
 	TEXT("FPM.WwiseGate.Report"),
 	TEXT("Print how many Wwise StopActor no-ops the server gate has suppressed this session."),
-	FConsoleCommandDelegate::CreateStatic([]()
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMScopedConsoleEcho Echo(&Ar);
 		if (!IsRunningDedicatedServer())
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,

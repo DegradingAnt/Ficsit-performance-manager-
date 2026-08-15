@@ -90,6 +90,8 @@ public:
 		Reflex,           // FPM.Diag.Reflex - NVIDIA Reflex mode, and WHICH route reached it
 		UpscalerPreset,   // FPM.Diag.UpscalerPreset - DLSS preset held against the game's own choice
 		InstanceSwap,     // FPM.Diag.InstanceSwap — AbstractInstance mesh components put back on RemoveAtSwap
+		BlueprintContentSnap, // FPM.Diag.BlueprintContentSnap — blueprint-to-blueprint content snap mating
+			WristSlot,        // FPM.Diag.WristSlot -- Slice W: the wrist-slot add-hook, equip/deploy, persistence
 		Count
 	};
 

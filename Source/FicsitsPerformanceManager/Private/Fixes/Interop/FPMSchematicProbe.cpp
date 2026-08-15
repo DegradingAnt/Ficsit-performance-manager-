@@ -10,6 +10,8 @@
 #include "FGSchematic.h"
 #include "FGSchematicManager.h"
 
+#include "HAL/IConsoleManager.h"
+
 #include <atomic>
 
 namespace
@@ -165,18 +167,38 @@ void FFPMSchematicProbe::Arm()
 	 * installed", and why a feature nobody could prove was running survived three narrowings. Anything
 	 * that claims to observe must first prove it is there.
 	 */
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] schematic-probe ARMED - LOG ONLY on both CanGiveAccessToSchematic entry points. It "
-		     "overrides nothing and refuses nothing; every answer is vanilla's. Watching for a null "
-		     "default object, which is the theory the retired guard rested on."));
+	/*
+	 * ⚠ BOTH handles, not one. This fix installs TWO hooks, and an earlier version of this gate
+	 * checked only the manager one. That reported full ARMED while the schematic-side hook had
+	 * failed, and the log text below claims coverage of "both" entry points, so a half-installed
+	 * probe read as a whole one. That is the same never-fired-versus-never-installed ambiguity this
+	 * ARMED line exists to kill, reintroduced one hook smaller. It fails OPEN, so it is gated on
+	 * the conjunction and the failure branch names WHICH hook is missing.
+	 */
+	if (SchematicQueryHandle.IsValid() && ManagerQueryHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] schematic-probe ARMED - LOG ONLY on both CanGiveAccessToSchematic entry points. It "
+			     "overrides nothing and refuses nothing; every answer is vanilla's. Watching for a null "
+			     "default object, which is the theory the retired guard rested on."));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] schematic-probe NOT fully armed - UFGSchematic hook %s, AFGSchematicManager hook %s. "
+			     "Coverage is PARTIAL or absent, so a quiet session does not mean a clean one this time."),
+			SchematicQueryHandle.IsValid() ? TEXT("ok") : TEXT("FAILED"),
+			ManagerQueryHandle.IsValid() ? TEXT("ok") : TEXT("FAILED"));
+	}
 }
 
 void FFPMSchematicProbe::Disarm()
 {
 	/*
-	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
-	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
-	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 * UNSUBSCRIBE_METHOD is correct here even though both Arm() subscribes used plain SUBSCRIBE_METHOD,
+	 * not the _VIRTUAL form (see the note at Arm(), above): both drive the same
+	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps alike,
+	 * uninstalling the detour once both are empty (NativeHookManager.h:359-378).
 	 *
 	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
 	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
@@ -192,3 +214,45 @@ void FFPMSchematicProbe::Disarm()
 		ManagerQueryHandle.Reset();
 	}
 }
+
+void FFPMSchematicProbe::GetCounts(int32& OutQueries, int32& OutMgrQueries, int32& OutNullClass, int32& OutNullCdo)
+{
+	OutQueries = GQueries.load();
+	OutMgrQueries = GMgrQueries.load();
+	OutNullClass = GNullClass.load();
+	OutNullCdo = GNullCdo.load();
+}
+
+void FFPMSchematicProbe::LogReport(FOutputDevice* Ar)
+{
+	int32 Queries = 0, MgrQueries = 0, NullClass = 0, NullCdo = 0;
+	GetCounts(Queries, MgrQueries, NullClass, NullCdo);
+
+	const FString Line = FString::Printf(
+		TEXT("[FPM] schematic-probe: %d call(s) seen on the static CanGiveAccessToSchematic path (%d on "
+		     "the manager path) - %d null class, %d NULL DEFAULT OBJECT. Queries is the denominator: 0 "
+		     "means the probe has not been exercised yet, not that nothing is wrong. NullCdo is the "
+		     "retired guard's predicted-fatal case - if it is non-zero and no 0x2c0 crash follows, the "
+		     "theory is dead; if a crash lands while it is still zero, the theory is dead the other way."),
+		Queries, MgrQueries, NullClass, NullCdo);
+
+	if (Ar != nullptr)
+	{
+		Ar->Log(Line);
+	}
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.SchematicProbe.Report` — takes the output device so it prints in the console she is looking at
+ * as well as the log. A Display-level UE_LOG alone does not echo to the in-game console, and a command
+ * that answers somewhere the operator is not looking reads as a broken command.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMSchematicProbeReportCmd(
+	TEXT("FPM.SchematicProbe.Report"),
+	TEXT("Print how many CanGiveAccessToSchematic calls the probe has seen on each of its two hooks, and "
+	     "its null-class / null-default-object anomaly counts, this session."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMSchematicProbe::LogReport(&Ar);
+	}));

@@ -107,10 +107,22 @@ public:
 	 * Removes the hook.
 	 *
 	 * ⚠ Without this, `FPMFixes::DisarmAll()` reports this fix disarmed while its handler keeps
-	 * running. Near-harmless at process exit, which is the only place DisarmAll has ever been called
-	 * from and why the omission survived; it is what blocked P4.2's master OFF switch.
+	 * running. Near-harmless at process exit, which is where DisarmAll was called from until P4.2
+	 * shipped the master OFF switch (`FPM.Enabled 0`, `FPMMasterSwitch.cpp`) - that is why the
+	 * omission survived that long. DisarmAll now also runs mid-session from that switch, which is
+	 * exactly why this override has to be correct.
 	 */
 	virtual void Disarm() override;
+
+	/** Repaired · already-intact · vanilla-with-no-points (normal, falls through) · cancelled (skipped
+	 *  BeginPlay - expected ZERO). Their sum is every replicated simulated-proxy hologram this session
+	 *  got as far as the origin split; actors filtered out earlier (wrong role, not a hologram at all)
+	 *  are not counted here on purpose - that population is every actor in the game and counting it
+	 *  unconditionally is the cost this file's own design note warns against. */
+	static void GetCounts(int32& OutRepaired, int32& OutIntact, int32& OutVanillaNoPoints, int32& OutCancelled);
+
+	/** `FPM.HologramNet.Report` prints these. A guard that has never fired must look like one. */
+	static void LogReport(class FOutputDevice* Ar = nullptr);
 
 private:
 	/** Handle from Arm(), so Disarm() removes exactly this handler. */

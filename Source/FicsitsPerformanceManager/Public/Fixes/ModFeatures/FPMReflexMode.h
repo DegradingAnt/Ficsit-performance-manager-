@@ -108,11 +108,4 @@ private:
 	FString RouteFound;
 
 	int32 AppliedMode = -1;
-
-	/**
-	 * What `t.Streamline.Reflex.Enable` / `.Mode` held BEFORE our first write, so Disarm restores what
-	 * was actually there rather than what the DLL documents as the default. -1 = not captured yet.
-	 */
-	int32 PriorEnable = -1;
-	int32 PriorMode = -1;
 };

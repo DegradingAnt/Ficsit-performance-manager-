@@ -82,12 +82,36 @@ public:
 	 */
 	static void GetCounts(int32& OutAverted, int32& OutPassedThrough);
 
+	/** `FPM.RailGuard.Report` prints these. A guard that has never fired must look like one. */
+	static void LogReport(class FOutputDevice* Ar = nullptr);
+
+	/**
+	 * `FPM.RailGuard.Scan` — REPORT ONLY, never writes anything. `LogReport()` above only replays this
+	 * session's reactive counters, which name owner classes and nothing else; this walks the world
+	 * directly and prints a WORLD POSITION for every damaged connection, so a damaged piece can actually
+	 * be found and looked at.
+	 *
+	 * Reproduces the exact `bWired` test `Arm()`'s hook uses, proactively instead of reactively, over
+	 * every `AFGBuildableRailroadTrack` currently loaded (`TActorIterator`, so hologram previews - a
+	 * different actor class entirely - are never visited).
+	 *
+	 * ⚠ KNOWN BLIND SPOT, PRINTED RATHER THAN HIDDEN: this only visits actors that derive from
+	 * `AFGBuildableRailroadTrack`. Two of the five owner classes the 2026-08-15 triage found damaged
+	 * (`Build_Road04_C`, `Build_Road01_C`) are Road buildables; the design pass could not confirm from
+	 * source whether they are Blueprint children of `AFGBuildableRailroadTrack` (in which case this scan
+	 * reaches them) or something else entirely (in which case it cannot). The scan measures which of the
+	 * two is true THIS RUN and states it, rather than assuming either.
+	 */
+	static void RunScan(class FOutputDevice* Ar = nullptr);
+
 	/**
 	 * Removes the hook.
 	 *
 	 * ⚠ Without this, `FPMFixes::DisarmAll()` reports this fix disarmed while its handler keeps
-	 * running. Near-harmless at process exit, which is the only place DisarmAll has ever been called
-	 * from and why the omission survived; it is what blocked P4.2's master OFF switch.
+	 * running. Near-harmless at process exit, which is where DisarmAll was called from until P4.2
+	 * shipped the master OFF switch (`FPM.Enabled 0`, `FPMMasterSwitch.cpp`) - that is why the
+	 * omission survived that long. DisarmAll now also runs mid-session from that switch, which is
+	 * exactly why this override has to be correct.
 	 */
 	virtual void Disarm() override;
 

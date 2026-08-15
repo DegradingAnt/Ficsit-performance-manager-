@@ -9,6 +9,8 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 
+#include "HAL/IConsoleManager.h"
+
 namespace
 {
 	/**
@@ -303,3 +305,35 @@ void FFPMNavMeshCeiling::Disarm()
 		VerifyHandle.Reset();
 	}
 }
+
+void FFPMNavMeshCeiling::LogReport(FOutputDevice* Ar)
+{
+	int32 Seen = 0, Raised = 0, FailedReadback = 0;
+	GetCounts(Seen, Raised, FailedReadback);
+
+	const FString Line = FString::Printf(
+		TEXT("[FPM] navmesh ceiling: %d navmesh actor(s) seen · %d tile ceiling raise(s) written · %d "
+		     "write(s) that did NOT stick on read-back. The last number is the one that matters: it is "
+		     "how this fix proves it is not its predecessor."),
+		Seen, Raised, FailedReadback);
+
+	if (Ar != nullptr)
+	{
+		Ar->Log(Line);
+	}
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.NavMesh.Report` — takes the output device so it prints in the console she is looking at as well
+ * as the log. A Display-level UE_LOG alone does not echo to the in-game console, and a command that
+ * answers somewhere the operator is not looking reads as a broken command.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMNavMeshReportCmd(
+	TEXT("FPM.NavMesh.Report"),
+	TEXT("Print how many navmesh actors the tile-ceiling raise has seen, raised, and failed to verify "
+	     "this session."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMNavMeshCeiling::LogReport(&Ar);
+	}));

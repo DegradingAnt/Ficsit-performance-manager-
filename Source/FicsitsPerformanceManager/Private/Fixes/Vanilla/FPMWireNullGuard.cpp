@@ -3,6 +3,7 @@
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMHookLedger.h"
 
@@ -75,11 +76,20 @@ void FFPMWireNullGuard::Arm()
 
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
 	// that separates "swept and found nothing" from "never swept".
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] wire null guard armed - sweeps at every world save AND on world load, repair %s. "
-		     "Guards the autosave path that SIGSEGV'd the dedicated server on 2026-08-09 (null UClass in "
-		     "FFastSaveReferenceCollector::HandleObjectReference)."),
-		CVarWireGuardRepair.GetValueOnAnyThread() != 0 ? TEXT("ON") : TEXT("OFF (report only)"));
+	if (SaveHookHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] wire null guard armed - sweeps at every world save AND on world load, repair %s. "
+			     "Guards the autosave path that SIGSEGV'd the dedicated server on 2026-08-09 (null UClass in "
+			     "FFastSaveReferenceCollector::HandleObjectReference)."),
+			CVarWireGuardRepair.GetValueOnAnyThread() != 0 ? TEXT("ON") : TEXT("OFF (report only)"));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] wire null guard NOT armed - hook install FAILED on UFGSaveSession::SaveWorldEndOfFrame. "
+			     "The autosave path that SIGSEGV'd the dedicated server on 2026-08-09 is UNPROTECTED this session."));
+	}
 }
 
 void FFPMWireNullGuard::Disarm()
@@ -266,20 +276,22 @@ void FFPMWireNullGuard::LogSummary(const TCHAR* Reason) const
  * in-game console, and a command that looks dead when it actually ran has cost this project whole boot
  * cycles. Ant reads the result in the console; the log keeps the detail.
  */
-static FAutoConsoleCommandWithWorldAndArgs GWireGuardSweepCmd(
+static FAutoConsoleCommandWithWorldArgsAndOutputDevice GWireGuardSweepCmd(
 	TEXT("FPM.WireGuard.Sweep"),
 	TEXT("Sweep this world's power-wire arrays for NULL entries now, and report what was found."),
-	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(
-		[](const TArray<FString>& /*Args*/, UWorld* World)
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(
+		[](const TArray<FString>& /*Args*/, UWorld* World, FOutputDevice& Ar)
 		{
+			FPMScopedConsoleEcho Echo(&Ar);
 			FFPMWireNullGuard::Get().SweepWorld(World);
 			FFPMWireNullGuard::Get().LogSummary(TEXT("on request"));
 		}));
 
-static FAutoConsoleCommand GWireGuardReportCmd(
+static FAutoConsoleCommandWithOutputDevice GWireGuardReportCmd(
 	TEXT("FPM.WireGuard.Report"),
 	TEXT("Print the wire null guard's running totals without sweeping again."),
-	FConsoleCommandDelegate::CreateStatic([]()
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMScopedConsoleEcho Echo(&Ar);
 		FFPMWireNullGuard::Get().LogSummary(TEXT("on request"));
 	}));

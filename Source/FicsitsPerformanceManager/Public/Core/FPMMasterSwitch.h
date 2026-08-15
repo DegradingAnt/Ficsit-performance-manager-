@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Templates/Function.h"
 
 /**
  * THE MASTER ON/OFF SWITCH — and OFF has to mean RELEASED, not merely "stopped writing".
@@ -46,6 +47,18 @@ namespace FPMMasterSwitch
 
 	/** True when FPM is currently enabled. Reads the live cvar, not a cached copy. */
 	FICSITSPERFORMANCEMANAGER_API bool IsEnabled();
+
+	/**
+	 * Register a callback to run when the switch goes OFF, BEFORE FPMFixes::DisarmAll() and
+	 * FPMCVarWriter::ReleaseAll(). Item 2: FPM.Bisect / FPM.Prove write outside the writer's tagged
+	 * 0x07 hold (the accepted ECVF_SetByConsole exception, FPMCVarProbe.cpp:1-21), so ReleaseAll's
+	 * tag-based Unset cannot reach an active run. "FPM.Off releases everything including an active
+	 * Bisect" is the DONE condition this exists to satisfy.
+	 *
+	 * Call from a file-scope static initializer in the OWNING translation unit (see FPMCVarProbe.cpp)
+	 * so the hook exists before StartupModule can ever reach the OFF branch.
+	 */
+	FICSITSPERFORMANCEMANAGER_API void RegisterStopHook(TFunction<void()> Hook);
 }
 
 /**

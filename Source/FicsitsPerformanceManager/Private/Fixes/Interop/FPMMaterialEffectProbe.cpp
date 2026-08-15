@@ -125,13 +125,22 @@ void FFPMMaterialEffectProbe::Arm()
 	GSetMeshesHandle = FPM_SUBSCRIBE("material-effect-probe",
 		UFGMaterialEffectComponent::SetMeshes, OnSetMeshes);
 
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] material-effect probe ARMED - READ ONLY, never cancels. Vanilla logs "
-		     "'SetMeshes, This cannot be called after PreStarted' 431 times in one of Ant's sessions "
-		     "(FGMaterialEffectComponent.h:66 documents the contract), which means the meshes are never "
-		     "set and the dismantle effect runs on an empty set. The caller is unknown because the .cpp "
-		     "is a stub, so this names the OWNING ACTOR CLASS PATH of every call - the mount point in "
-		     "that path identifies the mod. FPM.MaterialEffect.Report."));
+	if (GSetMeshesHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] material-effect probe ARMED - READ ONLY, never cancels. Vanilla logs "
+			     "'SetMeshes, This cannot be called after PreStarted' 431 times in one of Ant's sessions "
+			     "(FGMaterialEffectComponent.h:66 documents the contract), which means the meshes are never "
+			     "set and the dismantle effect runs on an empty set. The caller is unknown because the .cpp "
+			     "is a stub, so this names the OWNING ACTOR CLASS PATH of every call - the mount point in "
+			     "that path identifies the mod. FPM.MaterialEffect.Report."));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] material-effect probe NOT armed - hook install FAILED on "
+			     "UFGMaterialEffectComponent::SetMeshes. No caller data will be collected this session."));
+	}
 }
 
 void FFPMMaterialEffectProbe::Disarm()

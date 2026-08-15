@@ -181,12 +181,22 @@ void FFPMGlassQuality::Arm()
 	ApplyHookHandle = FPM_SUBSCRIBE_VIRTUAL_AFTER("glass-quality",
 		UFGGameUserSettings::ApplyNonResolutionSettings, Sample, OnSettingsApplied);
 
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] glass quality ARMED. Lumen front-layer translucency needs BOTH .Allow and .Enable - "
-		     "BaseScalability.ini:393 sets .Allow=0 at sg.ReflectionQuality@2, which is why setting only "
-		     ".Enable did nothing on High. No ini is written and nothing polls; the hold sits above "
-		     "scalability in the cvar priority ladder, and a check after every settings apply proves "
-		     "whether that is actually true. FPM.Glass.Report."));
+	if (ApplyHookHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] glass quality ARMED. Lumen front-layer translucency needs BOTH .Allow and .Enable - "
+			     "BaseScalability.ini:393 sets .Allow=0 at sg.ReflectionQuality@2, which is why setting only "
+			     ".Enable did nothing on High. No ini is written and nothing polls; the hold sits above "
+			     "scalability in the cvar priority ladder, and a check after every settings apply proves "
+			     "whether that is actually true. FPM.Glass.Report."));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] glass quality NOT armed - hook install FAILED on "
+			     "UFGGameUserSettings::ApplyNonResolutionSettings. The Lumen translucency re-assert this fix "
+			     "exists to do will NOT happen this session."));
+	}
 }
 
 void FFPMGlassQuality::Disarm()

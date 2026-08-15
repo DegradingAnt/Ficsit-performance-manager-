@@ -8,6 +8,8 @@
 #include "Buildables/FGBuildable.h"
 #include "Engine/NetDriver.h"
 
+#include "HAL/IConsoleManager.h"
+
 #include <atomic>
 
 namespace
@@ -47,9 +49,13 @@ namespace
 	 * fixing at the source so we actually fix issues and not just quiet logs."
 	 *
 	 * ⚠ IT IS AN ERROR LOG AND NOT A check(), DELIBERATELY. Reproducing the engine's checkf would mean
-	 * FPM crashing a build that vanilla would have crashed anyway — a crash FPM then owns, in a mod
-	 * whose whole job is reading other people's crash reports. Ant plays Shipping, where the engine's
-	 * own check is compiled out entirely and a log line is the only diagnostic that can exist at all.
+	 * FPM crashing a build that vanilla would have crashed anyway, a crash FPM then owns, in a mod
+	 * whose whole job is reading other people's crash reports. Ant plays Shipping, where THIS specific
+	 * checkf (NetDriver.cpp:7821, guarded by #if !UE_BUILD_SHIPPING) is compiled out, so a log line is
+	 * the only diagnostic this gate itself can produce for it. That does NOT mean every check-style
+	 * assertion vanishes in Shipping: FactoryGame's own `fgcheck()` survives in Shipping builds, this
+	 * file just never calls one, so the point above is scoped to this one engine checkf, not to
+	 * Shipping builds in general.
 	 * The line is UNGATED by the diag channel: a suppressed engine assertion must not be silenceable by
 	 * a verbosity setting.
 	 *
@@ -172,3 +178,51 @@ void FFPMNoOwnerRpcGate::Disarm()
 		ProcessRemoteFunctionHandle.Reset();
 	}
 }
+
+void FFPMNoOwnerRpcGate::GetCounts(uint64& OutSuppressedTotal, int32& OutSeenClasses, bool& OutCensusSaturated)
+{
+	OutSuppressedTotal = GSuppressedTotal.load();
+	OutSeenClasses = GSeenClasses.Num();
+	OutCensusSaturated = bGCensusSaturationReported;
+}
+
+void FFPMNoOwnerRpcGate::LogReport(FOutputDevice* Ar)
+{
+	uint64 SuppressedTotal = 0;
+	int32 SeenClasses = 0;
+	bool CensusSaturated = false;
+	GetCounts(SuppressedTotal, SeenClasses, CensusSaturated);
+
+	const FString Line = SuppressedTotal == 0
+		? FString::Printf(
+			TEXT("[FPM] no-owner RPC gate: 0 dispatches suppressed this session. This gate is OFF BY "
+			     "DEFAULT (see DefaultArmed) - a zero here may mean it was never armed, not that nothing "
+			     "would have been caught. Run FPM.Fix.NoOwnerRpcGate 1 first if you need a live answer."))
+		: FString::Printf(
+			TEXT("[FPM] no-owner RPC gate: %llu buildable dispatch(es) suppressed this session, from %d "
+			     "distinct offending class(es)%s."),
+			SuppressedTotal, SeenClasses,
+			CensusSaturated
+				? TEXT(" - census FULL, further offenders were suppressed but NOT individually named")
+				: TEXT(""));
+
+	if (Ar != nullptr)
+	{
+		Ar->Log(Line);
+	}
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.NoOwnerRpcGate.Report` — takes the output device so it prints in the console she is looking at
+ * as well as the log. A Display-level UE_LOG alone does not echo to the in-game console, and a command
+ * that answers somewhere the operator is not looking reads as a broken command.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMNoOwnerRpcGateReportCmd(
+	TEXT("FPM.NoOwnerRpcGate.Report"),
+	TEXT("Print how many no-owner buildable RPC dispatches this gate has suppressed this session, and "
+	     "how many distinct offending classes its bounded census has named."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMNoOwnerRpcGate::LogReport(&Ar);
+	}));

@@ -41,7 +41,12 @@ public class FicsitsPerformanceManager : ModuleRules
 			// name matches the comment and silently decides it is already there. Caught by the
 			// linker, but only because something used it.
 			"Niagara", "NiagaraCore",
-			//"EnhancedInput",
+			// Slice 0 item 5. The wrist slot needs a real input action, and the wrist slot gates 1.0.0.
+			// ⚠ NOTHING CONSUMES THIS YET, which is deliberate rather than an oversight: the module is
+			// declared first so the slot work compiles from its first commit. SML ships no keybind API
+			// of its own (grepped its whole tree), and FPM's existing F8 is a Slate IInputProcessor, not
+			// Enhanced Input, so there is no in-repo precedent to copy from.
+			"EnhancedInput",
 			//"GameplayCameras",
 			//"TemplateSequence",
 			"NetCore",

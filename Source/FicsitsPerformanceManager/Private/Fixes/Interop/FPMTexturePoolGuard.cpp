@@ -179,6 +179,37 @@ void FFPMTexturePoolGuard::Disarm()
 	FPMCVarWriter::Get().ReleaseOwner(GPoolOwner);
 }
 
+void FFPMTexturePoolGuard::LogReport(FOutputDevice* Ar)
+{
+	int32 Raises = 0, ClobbersRepaired = 0, LastTargetMB = 0;
+	GetCounts(Raises, ClobbersRepaired, LastTargetMB);
+
+	const FString Line = FString::Printf(
+		TEXT("[FPM] texture-pool guard: %d raise(s) issued · %d clobber(s) repaired · last computed "
+		     "target %d MB."),
+		Raises, ClobbersRepaired, LastTargetMB);
+
+	if (Ar != nullptr)
+	{
+		Ar->Log(Line);
+	}
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.TexturePool.Report` — takes the output device so it prints in the console she is looking at as
+ * well as the log. A Display-level UE_LOG alone does not echo to the in-game console, and a command
+ * that answers somewhere the operator is not looking reads as a broken command.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMTexturePoolReportCmd(
+	TEXT("FPM.TexturePool.Report"),
+	TEXT("Print how many streaming-pool raises this guard has issued, how many clobbers it repaired, "
+	     "and the last computed target, this session."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMTexturePoolGuard::LogReport(&Ar);
+	}));
+
 bool FFPMTexturePoolGuard::Tick(float /*DeltaTime*/)
 {
 	if (bStoodDown) { return false; }   // latched: stop ticking, decision already stated

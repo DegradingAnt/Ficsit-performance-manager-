@@ -26,7 +26,7 @@ namespace
 	 * variable is what makes the test exercise the actual engine path rather than a mock of it.
 	 */
 	TAutoConsoleVariable<int32> CVarWriterProbe(
-		TEXT("FPM.SelfTest.Probe"), 0,
+		FPMCVarWriter::SelfTestProbeName(), 0,
 		TEXT("FPM's own scratch variable. It steers nothing and is read by nothing; the cvar writer's "
 		     "boot self-test writes and releases it so the release path is proven on every boot rather "
 		     "than assumed. Safe to ignore."),
@@ -125,6 +125,13 @@ bool FPMCVarWriter::IsUserSettingBacked(const TCHAR* CVarName)
 	 * is now literally true rather than maintained by hand.
 	 */
 	return FPMUserSettingMap::IsBacked(CVarName);
+}
+
+const TCHAR* FPMCVarWriter::SelfTestProbeName()
+{
+	// The ONE place this literal is hand-typed. §5.2 exists because it used to be typed four times.
+	static const TCHAR* const Name = TEXT("FPM.SelfTest.Probe");
+	return Name;
 }
 
 void FPMCVarWriter::GetHeldCVars(TArray<FString>& Out) const
@@ -357,7 +364,7 @@ void FPMCVarWriter::LogLedger(FOutputDevice* Ar) const
 bool FPMCVarWriter::SelfTest()
 {
 	static const FName Owner(TEXT("writer-selftest"));
-	const TCHAR* const Probe = TEXT("FPM.SelfTest.Probe");
+	const TCHAR* const Probe = FPMCVarWriter::SelfTestProbeName();
 
 	IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(Probe);
 	if (!Var)

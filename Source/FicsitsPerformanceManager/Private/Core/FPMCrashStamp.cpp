@@ -3,6 +3,7 @@
 #include "Core/FPMCrashStamp.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMFixContract.h"
 #include "Core/FPMHookLedger.h"
 
@@ -109,7 +110,11 @@ void FPMCrashStamp::LogStamped()
  * either to crash on purpose or to ask. The design deleted the scheduled deliberate-crash boot once
  * the 31-dump census supplied the receipt, so asking is what is left — and it costs nothing.
  */
-static FAutoConsoleCommand GCrashStampCmd(
+static FAutoConsoleCommandWithOutputDevice GCrashStampCmd(
 	TEXT("FPM.CrashStamp"),
 	TEXT("Print the keys FPM registered into this process's crash context at startup."),
-	FConsoleCommandDelegate::CreateStatic([]() { FPMCrashStamp::LogStamped(); }));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FPMCrashStamp::LogStamped();
+	}));

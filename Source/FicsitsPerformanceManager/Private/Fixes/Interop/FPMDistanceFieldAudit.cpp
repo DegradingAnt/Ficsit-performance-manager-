@@ -3,6 +3,7 @@
 #include "Fixes/Interop/FPMDistanceFieldAudit.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMOverlay.h"
 
@@ -735,8 +736,12 @@ void FFPMDistanceFieldAudit::AuditNow()
 	Report(C, Worst, TEXT("on demand"));
 }
 
-static FAutoConsoleCommand GFPMDfAuditCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMDfAuditCmd(
 	TEXT("FPM.DistanceField.Audit"),
 	TEXT("Count instanced mesh components that are not contributing to distance fields, and name the "
 	     "worst by instance count."),
-	FConsoleCommandDelegate::CreateStatic(&FFPMDistanceFieldAudit::AuditNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMDistanceFieldAudit::AuditNow();
+	}));

@@ -63,6 +63,23 @@
  * path this fix declines to repair now FALLS THROUGH to vanilla unchanged — the outcome an unmodded
  * game would produce, which is loud and recoverable rather than silent and permanent.
  *
+ * ★ THE ORIGIN DIAGNOSTIC (Ruling 7, item 30) — READ-ONLY, ADDITIVE, FEEDS B12 WITHOUT WAITING ON IT.
+ *
+ * Ant's ruling attaches the origin-naming diagnostic to this fix, because it already sits at the choke
+ * point. `OnWorldLoad` schedules one delayed, one-shot coverage print per world load (early, and honest
+ * about being early — nothing has ticked yet at that phase); `FPM.Inventory.Report` prints the same
+ * tally on demand, at any point in the session, which is what actually answers B12 after a SunFry join.
+ *
+ * Each of the five existing per-event log sites now also prints the owner's CLASS name and PATH (the
+ * old lines carried only the owner's short instance NAME via `GetNameSafe`), an explicit `side=`
+ * token, and whether the owner is an `AFGCrate` — computed ONLY inside the same throttle/diag gate the
+ * line already used, because this hook runs on every `UFGInventoryComponent` in the game and building
+ * an `FString` from `GetClass()->GetName()` / `GetPathName()` on every call would be exactly the
+ * unbounded cost `FPMDiag.h` warns against. A brand-new, fully unconditional counter,
+ * `GTotalBeginPlayObserved`, is incremented as the FIRST statement in hook 1 — before even the
+ * null-Self check — so the coverage line can say how many inventories were looked at, not only how many
+ * were abnormal. A count of zero from an instrument that examined nothing is worse than no instrument.
+ *
  * ⚠⚠ SIDE IS `Any` SO IT ARMS AND OBSERVES EVERYWHERE, BUT IT NEVER MUTATES ON THE AUTHORITY.
  * `Resize()` writes SaveGame state — vanilla's own header, FGInventoryComponent.h:624-626: "When we
  * resize the inventory we save how much bigger or smaller the inventory was made", `UPROPERTY(SaveGame)
@@ -93,13 +110,30 @@ public:
 	virtual void Arm() override;
 
 	/**
+	 * Schedules the per-session coverage print (the origin diagnostic's automatic half). Called once per
+	 * world load by the shared fix contract (`FPMFixContract.cpp`), while the loading screen is up — see
+	 * the class header for why the print itself is deferred rather than fired here directly.
+	 */
+	virtual void OnWorldLoad(UWorld* World) override;
+
+	/**
 	 * Removes all 2 hooks.
 	 *
 	 * ⚠ Without this, `FPMFixes::DisarmAll()` reports this fix disarmed while its handler keeps
-	 * running. Near-harmless at process exit, which is the only place DisarmAll has ever been called
-	 * from and why the omission survived; it is what blocked P4.2's master OFF switch.
+	 * running. Near-harmless at process exit, which is where DisarmAll was called from until P4.2
+	 * shipped the master OFF switch (`FPM.Enabled 0`, `FPMMasterSwitch.cpp`) - that is why the
+	 * omission survived that long. DisarmAll now also runs mid-session from that switch, which is
+	 * exactly why this override has to be correct.
 	 */
 	virtual void Disarm() override;
+
+	/**
+	 * Prints the origin-naming coverage tally: how many inventories hook 1 has observed at BeginPlay this
+	 * session, the outcome counters, and how many of the SAMPLED rows were AFGCrate-owned. Bound to
+	 * `FPM.Inventory.Report`, and also called (with `Ar == nullptr`) from the delayed per-world-load
+	 * print. Safe to run at any time - it reads counters only, never touches a hook or a component.
+	 */
+	static void LogCoverage(const TCHAR* Reason, FOutputDevice* Ar = nullptr);
 
 private:
 	/** Handle from Arm(), so Disarm() removes exactly this handler. */

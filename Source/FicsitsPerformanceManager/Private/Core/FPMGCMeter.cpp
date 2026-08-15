@@ -3,6 +3,7 @@
 #include "Core/FPMGCMeter.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMOverlay.h"
 
@@ -251,8 +252,12 @@ void FFPMGCMeter::ReportNow()
 		     "who asked, so it is inferred from arrival time against the %.1f s target."), TargetInterval());
 }
 
-static FAutoConsoleCommand GFPMGCReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMGCReportCmd(
 	TEXT("FPM.GC.Report"),
 	TEXT("Garbage collection: pass count, mean and worst pause, and the timer-vs-forced split that "
 	     "decides whether the pacing lever is worth writing."),
-	FConsoleCommandDelegate::CreateStatic(&FFPMGCMeter::ReportNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMGCMeter::ReportNow();
+	}));

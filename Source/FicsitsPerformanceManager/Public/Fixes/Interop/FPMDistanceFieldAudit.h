@@ -149,10 +149,12 @@ public:
 	/**
 	 * Removes the sample ticker.
 	 *
-	 * ⚠ WITHOUT THIS, `FPMFixes::DisarmAll()` REPORTS THIS FIX DISARMED WHILE ITS TICKER KEEPS FIRING —
-	 * into a module that is being torn down. Harmless at process exit, which is the only place
-	 * DisarmAll has ever been called from, and exactly why nobody noticed; fatal to P4.2's master OFF
-	 * switch, which needs Disarm to mean something mid-session.
+	 * ⚠ WITHOUT THIS, `FPMFixes::DisarmAll()` REPORTS THIS FIX DISARMED WHILE ITS TICKER KEEPS FIRING,
+	 * into a module that is being torn down. Harmless at process exit, which is where DisarmAll was
+	 * called from until P4.2 shipped the master OFF switch (`FPM.Enabled 0`, `FPMMasterSwitch.cpp`) -
+	 * that is exactly why nobody noticed. DisarmAll now also runs mid-session from that switch, and
+	 * without this override that mid-session call means nothing: the ticker keeps firing into a module
+	 * that thinks it has disarmed.
 	 */
 	virtual void Disarm() override;
 

@@ -494,6 +494,81 @@ def check_disarm_coverage() -> None:
         )
 
 
+def check_write_path() -> None:
+    """§5.1 / item 4 (D3). One write path: FPMCVarWriter. Everything else is a named, documented
+    exception rather than a silent bypass - a second `->Set(...ECVF_...)` site is exactly how a value
+    escapes the writer's tag-based release and becomes residue.
+
+    Three files are exempt, and each earned its exemption in the source itself, not here:
+      * Private/Core/FPMCVarWriter.cpp - the writer's own internals.
+      * Private/Core/FPMCVarProbe.cpp - "THE ECVF_SetByConsole EXCEPTION - RULED BY ANT 2026-08-09"
+        (its own file header, lines 1-21): FPM.Bisect / FPM.Prove are console commands, a human typed
+        them, and the write IS the experiment P1.5 Leg A's protocol calls for.
+      * Private/Configuration/FPMSettingsConfig.cpp - FPM's OWN settings cvars, at ECVF_SetByCode,
+        deliberately NOT routed through the release-tracked writer (its own comment: "these are the
+        PLAYER'S choices... writing our own settings through the release-tracked path would put the
+        player's preferences into the ledger that ReleaseAll empties").
+
+    FPMReflexMode.cpp is deliberately NOT on this list. D3 removed its bypass; if this check ever
+    finds a raw ->Set(...ECVF_...) there again, that is a regression, not a new exception to add.
+    """
+    exempt = {
+        SRC / "Private" / "Core" / "FPMCVarWriter.cpp",
+        SRC / "Private" / "Core" / "FPMCVarProbe.cpp",
+        SRC / "Private" / "Configuration" / "FPMSettingsConfig.cpp",
+    }
+    pattern = re.compile(r"->Set\([^;]*\bECVF_")
+    for f in sorted(SRC.rglob("*.cpp")):
+        if f in exempt:
+            continue
+        for i, line in enumerate(read(f).splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith(("*", "//", "/*")):
+                continue
+            if pattern.search(line):
+                err(
+                    f"{f.relative_to(REPO)}:{i} writes a console variable outside FPMCVarWriter - "
+                    "route it through FPMCVarWriter::Hold/Release, or record a new named exception "
+                    "in check_write_path() with the same reasoning FPMCVarProbe.cpp and "
+                    "FPMSettingsConfig.cpp already carry"
+                )
+
+
+def check_probe_name_single_site() -> None:
+    """§5.2 / item 3. A cvar-name string literal hand-typed at multiple call sites can drift from the
+    declaration silently - exactly what happened to 'FPM.SelfTest.Probe' (four sites, two files, one
+    Slice-0 audit to notice).
+
+    SCOPED TO 4+ OCCURRENCES, NOT "seen in more than one file", ON PURPOSE.
+
+    Re-measured directly against this tree on 2026-08-15, AFTER items 2-4 landed (not just planned):
+    every other FPM.* cvar name in this tree tops out at THREE legitimate occurrences -
+    'FPM.Diag.Overlay' is declared once (FPMDiag.cpp), referenced once more in FPMDiag.cpp's own
+    channel-name lookup switch (the same 2-site shape every other FPM.Diag.* channel has), AND a
+    third time in FPMSettingsConfig.cpp's settings-menu registration, because Overlay is also a
+    player-facing settings toggle. A 3-or-more threshold flags that legitimate triple-registration
+    the moment it ships; 4-or-more does not, and still catches the actual bug at its own multiplicity
+    (Probe hit exactly four). A bare "seen in >1 file" rule is even wider - it would flag every
+    Diag.* channel with a settings-menu entry, about half a dozen right now, none of them the bug
+    this check exists to catch.
+    """
+    from collections import defaultdict
+
+    sites: dict[str, list[str]] = defaultdict(list)
+    pattern = re.compile(r'TEXT\("(FPM\.[A-Za-z0-9_.]+)"')
+    for f in sorted(SRC.rglob("*.cpp")) + sorted(SRC.rglob("*.h")):
+        for i, line in enumerate(read(f).splitlines(), 1):
+            for m in pattern.finditer(line):
+                sites[m.group(1)].append(f"{f.relative_to(REPO)}:{i}")
+
+    for name, locations in sites.items():
+        if len(locations) >= 4:
+            err(
+                f"'{name}' is hand-typed at {len(locations)} sites instead of one named constant: "
+                + ", ".join(locations)
+            )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -514,6 +589,8 @@ def main() -> int:
     check_raw_subscribe()
     check_nested_block_comments()
     check_disarm_coverage()
+    check_write_path()
+    check_probe_name_single_site()
 
     for w in WARNINGS:
         print(f"WARN  {w}")

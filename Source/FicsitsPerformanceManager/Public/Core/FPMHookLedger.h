@@ -78,7 +78,10 @@ public:
  *     for (const TPair<EOnlineServices, FAccountId>&  -> same, on the template's comma
  * `__VA_ARGS__` here cannot save you: it re-expands into the inner macro as separate arguments.
  *
- * THE FIX IS TO NAME THE LAMBDA FIRST and pass the name, which is what FPM does:
+ * THE FIX IS TO NAME THE LAMBDA FIRST and pass the name. FPM does this at every subscribe site except
+ * two: FPMWwiseServerGate.cpp and FPMWireNullGuard.cpp still pass an inline lambda straight into the
+ * macro. Both bodies were checked and hold no top-level comma today, so they compile, but they are not
+ * proof against a future edit adding one. Convert them the same way as everywhere else:
  *     auto OnJoin = [](auto& Scope, AFGGameMode* Self, APlayerController* PC) { ...commas fine... };
  *     FPM_SUBSCRIBE_VIRTUAL("my-fix", AFGGameMode::FindInactivePlayer, Sample, OnJoin);
  * The lambda body is then never inside a macro at all and the trap disappears rather than being

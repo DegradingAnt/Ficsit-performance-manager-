@@ -9,6 +9,8 @@
 #include "Patching/BlueprintHookManager.h"
 #include "Patching/BlueprintHookBlueprint.h"
 
+#include "HAL/IConsoleManager.h"
+
 namespace
 {
 	/** The vanilla widget whose Construct injection asserts. Matched with Contains: the blueprint class
@@ -179,20 +181,30 @@ void FFPMHudHookGuard::Arm()
 	 * on every widget add, for information we do not currently need. If the census is ever wanted it can
 	 * come back as its own log-only fix with its own channel — not smuggled inside a crash guard.
 	 */
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] hud guard ARMED - strips ONLY blueprint-hook descriptors targeting "
-		     "Widget_PlayerHUD::Construct, and only from assets on the known-crashing list. Everything "
-		     "else that hooks the HUD is allowed through and NAMED in the log. Two earlier versions of "
-		     "this guard were too broad and cost Ant real mod UI; this one removes one descriptor and "
-		     "lets the asset install."));
+	if (RegisterBlueprintHookHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] hud guard ARMED - strips ONLY blueprint-hook descriptors targeting "
+			     "Widget_PlayerHUD::Construct, and only from assets on the known-crashing list. Everything "
+			     "else that hooks the HUD is allowed through and NAMED in the log. Two earlier versions of "
+			     "this guard were too broad and cost Ant real mod UI; this one removes one descriptor and "
+			     "lets the asset install."));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] hud guard NOT armed - hook install FAILED on UBlueprintHookManager::RegisterBlueprintHook. "
+			     "The HUD crash this guard exists to prevent is UNPROTECTED this session."));
+	}
 }
 
 void FFPMHudHookGuard::Disarm()
 {
 	/*
-	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
-	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
-	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 * UNSUBSCRIBE_METHOD is correct here even though Arm() subscribed with plain SUBSCRIBE_METHOD, not
+	 * the _VIRTUAL form: both drive the same HookInvoker<decltype(&M), &M>, and RemoveHandler clears
+	 * the BEFORE and AFTER maps alike, uninstalling the detour once both are empty
+	 * (NativeHookManager.h:359-378).
 	 *
 	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
 	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
@@ -203,3 +215,35 @@ void FFPMHudHookGuard::Disarm()
 		RegisterBlueprintHookHandle.Reset();
 	}
 }
+
+void FFPMHudHookGuard::LogReport(FOutputDevice* Ar)
+{
+	int32 Seen = 0, Stripped = 0, Allowed = 0, Cancelled = 0;
+	GetCounts(Seen, Stripped, Allowed, Cancelled);
+
+	const FString Line = FString::Printf(
+		TEXT("[FPM] hud guard: %d registration(s) seen · %d descriptor(s) stripped · %d asset(s) allowed "
+		     "through untouched · %d asset(s) cancelled entirely. Cancelled should be ZERO - a non-zero "
+		     "value means some mod lost more than one descriptor."),
+		Seen, Stripped, Allowed, Cancelled);
+
+	if (Ar != nullptr)
+	{
+		Ar->Log(Line);
+	}
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.HudGuard.Report` — takes the output device so it prints in the console she is looking at as well
+ * as the log. A Display-level UE_LOG alone does not echo to the in-game console, and a command that
+ * answers somewhere the operator is not looking reads as a broken command.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMHudGuardReportCmd(
+	TEXT("FPM.HudGuard.Report"),
+	TEXT("Print how many blueprint-hook registrations the HUD guard has seen, stripped, allowed, and "
+	     "cancelled this session."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMHudHookGuard::LogReport(&Ar);
+	}));

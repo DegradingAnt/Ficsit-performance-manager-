@@ -12,6 +12,8 @@
 #include "GameFramework/Actor.h"
 #include "Hologram/FGBuildableHologram.h"
 
+#include "HAL/IConsoleManager.h"
+
 #include <atomic>
 
 namespace
@@ -238,9 +240,10 @@ void FFPMHologramNetGuard::Arm()
 void FFPMHologramNetGuard::Disarm()
 {
 	/*
-	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
-	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
-	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 * UNSUBSCRIBE_METHOD is correct here even though Arm() subscribed with plain SUBSCRIBE_METHOD, not
+	 * the _VIRTUAL form: both drive the same HookInvoker<decltype(&M), &M>, and RemoveHandler clears
+	 * the BEFORE and AFTER maps alike, uninstalling the detour once both are empty
+	 * (NativeHookManager.h:359-378).
 	 *
 	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
 	 * invalid handle; RemoveHandler would then walk maps SML never allocated.
@@ -251,3 +254,47 @@ void FFPMHologramNetGuard::Disarm()
 		DispatchBeginPlayHandle.Reset();
 	}
 }
+
+void FFPMHologramNetGuard::GetCounts(int32& OutRepaired, int32& OutIntact, int32& OutVanillaNoPoints, int32& OutCancelled)
+{
+	OutRepaired = GRepaired.load();
+	OutIntact = GIntact.load();
+	OutVanillaNoPoints = GVanillaNoPoints.load();
+	OutCancelled = GCancelled.load();
+}
+
+void FFPMHologramNetGuard::LogReport(FOutputDevice* Ar)
+{
+	int32 Repaired = 0, Intact = 0, VanillaNoPoints = 0, Cancelled = 0;
+	GetCounts(Repaired, Intact, VanillaNoPoints, Cancelled);
+	const int32 Denominator = Repaired + Intact + VanillaNoPoints + Cancelled;
+
+	const FString Line = FString::Printf(
+		TEXT("[FPM] hologram-net: %d replicated simulated-proxy hologram(s) reached the origin split this "
+		     "session (repaired %d, already-intact %d, vanilla-with-no-points %d, CANCELLED %d). Cancelled "
+		     "should be ZERO - a non-zero value means a join is being saved from the assert by skipping a "
+		     "preview instead. A denominator of 0 means no join has happened yet this session, not that "
+		     "the guard is clean; actors that never reach the origin split (wrong role, or not a hologram "
+		     "at all) are not counted here, on purpose - that population is every actor in the game."),
+		Denominator, Repaired, Intact, VanillaNoPoints, Cancelled);
+
+	if (Ar != nullptr)
+	{
+		Ar->Log(Line);
+	}
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.HologramNet.Report` — takes the output device so it prints in the console she is looking at as
+ * well as the log. A Display-level UE_LOG alone does not echo to the in-game console, and a command that
+ * answers somewhere the operator is not looking reads as a broken command.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMHologramNetReportCmd(
+	TEXT("FPM.HologramNet.Report"),
+	TEXT("Print how many replicated simulated-proxy holograms the join-crash guard has repaired, found "
+	     "already intact, left alone as vanilla-with-no-points, or cancelled BeginPlay for this session."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMHologramNetGuard::LogReport(&Ar);
+	}));

@@ -3,8 +3,10 @@
 #include "Fixes/Vanilla/FPMPowerWarningProbe.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMOverlay.h"
+#include "UI/FPMChatRelay.h"
 
 #include "FGCircuitSubsystem.h"
 #include "FGPowerCircuit.h"
@@ -130,6 +132,59 @@ bool FFPMPowerWarningProbe::ReadCircuitCounts(UWorld* World, int32& OutMapCircui
 	for (const TObjectPtr<UFGCircuit>& Circuit : Subsystem->mReplicatedCircuits)
 	{
 		++OutReplicatedCircuits;
+		Consider(Circuit);
+	}
+
+	return true;
+}
+
+bool FFPMPowerWarningProbe::EnumerateTrippedCircuits(UWorld* World, int32& OutExamined,
+	int32& OutUnreadable, TArray<int32>& OutTrippedCircuitIDs)
+{
+	OutExamined = OutUnreadable = 0;
+	OutTrippedCircuitIDs.Reset();
+	if (World == nullptr) { return false; }
+
+	AFGCircuitSubsystem* Subsystem = AFGCircuitSubsystem::Get(World);
+	if (Subsystem == nullptr) { return false; }
+
+	// Same dedup-by-pointer reasoning as ReadCircuitCounts above — see that function's comment.
+	TSet<const UFGCircuit*> Seen;
+
+	auto Consider = [&](UFGCircuit* Circuit)
+	{
+		if (Circuit == nullptr)
+		{
+			++OutUnreadable;   // a null slot in the container — present, but nothing to read
+			return;
+		}
+		if (Seen.Contains(Circuit)) { return; }
+		Seen.Add(Circuit);
+
+		if (UFGPowerCircuit* Power = Cast<UFGPowerCircuit>(Circuit))
+		{
+			++OutExamined;
+			if (Power->IsFuseTriggered())
+			{
+				OutTrippedCircuitIDs.Add(Power->GetCircuitID());
+			}
+		}
+		else
+		{
+			// A UFGCircuit that is not a UFGPowerCircuit. Nothing else derives from UFGCircuit in this
+			// codebase today (checked against FGPowerCircuit.h) so this branch should be unreachable —
+			// counted as unreadable rather than assumed away, so a future circuit type does not vanish
+			// from the coverage numbers.
+			++OutUnreadable;
+		}
+	};
+
+	for (const TPair<int32, TObjectPtr<UFGCircuit>>& Pair : Subsystem->mCircuits)
+	{
+		Consider(Pair.Value);
+	}
+	for (const TObjectPtr<UFGCircuit>& Circuit : Subsystem->mReplicatedCircuits)
+	{
 		Consider(Circuit);
 	}
 
@@ -273,6 +328,60 @@ void FFPMPowerWarningProbe::ReportNow()
 	FPMOverlay::Post(TEXT("power-probe"), Describe(S));
 }
 
+void FFPMPowerWarningProbe::ReportTrippedToChat()
+{
+	UWorld* World = GFPMPowerWorld.Get();
+	if (World == nullptr)
+	{
+		FPMChat(TEXT("[FPM] power check: no world loaded yet. Load a save first - there are no circuits "
+		             "in the menu."));
+		return;
+	}
+
+	int32 Examined = 0;
+	int32 Unreadable = 0;
+	TArray<int32> TrippedIDs;
+	const bool bOk = EnumerateTrippedCircuits(World, Examined, Unreadable, TrippedIDs);
+
+	if (!bOk)
+	{
+		// Distinct from "0 tripped" — the subsystem was not even there to ask.
+		FPMChat(TEXT("[FPM] power check: no circuit subsystem yet. CANNOT ANSWER - try again in a "
+		             "moment, this is not the same as a clean grid."));
+		return;
+	}
+
+	/*
+	 * ★ THE LOG GETS THE FULL DETAIL, CHAT GETS THE VERDICT — the same split FPMResidueSentinel already
+	 * uses (FPMResidueSentinel.cpp), and for the same reason Ant gave there: "log and chat then". A dev
+	 * reading FactoryGame.log gets every ID either way; a player gets the short answer only.
+	 */
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] power check (chat verb): %d power circuit(s) examined, %d tripped, %d unreadable. "
+		     "Tripped IDs: %s"),
+		Examined, TrippedIDs.Num(), Unreadable,
+		TrippedIDs.Num() > 0
+			? *FString::JoinBy(TrippedIDs, TEXT(", "), [](int32 ID) { return FString::FromInt(ID); })
+			: TEXT("(none)"));
+
+	// ★ SAYS SOMETHING EVEN WHEN NOTHING IS TRIPPED — silence here would read as a broken command.
+	if (TrippedIDs.Num() == 0)
+	{
+		FPMChatf(TEXT("[FPM] power check: no tripped fuses. (%d circuit(s) examined, 0 tripped, %d "
+		              "unreadable)"),
+			Examined, Unreadable);
+		return;
+	}
+
+	FPMChatf(TEXT("[FPM] power check: %d circuit(s) have a TRIPPED FUSE - ID(s): %s"),
+		TrippedIDs.Num(),
+		*FString::JoinBy(TrippedIDs, TEXT(", "), [](int32 ID) { return FString::FromInt(ID); }));
+
+	// ★ COVERAGE, ALWAYS — so "0 tripped" can be told apart from a probe that saw nothing at all.
+	FPMChatf(TEXT("[FPM] power check coverage: %d examined, %d tripped, %d unreadable."),
+		Examined, TrippedIDs.Num(), Unreadable);
+}
+
 /*
  * `FPM.Power.Report` — for the moment the popup is actually on screen.
  *
@@ -280,7 +389,38 @@ void FFPMPowerWarningProbe::ReportNow()
  * mid-session, the popup appears, and the answer is wanted for THAT instant rather than for the minute
  * after the last load.
  */
-static FAutoConsoleCommand GFPMPowerReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMPowerReportCmd(
 	TEXT("FPM.Power.Report"),
 	TEXT("Sample the power circuits now and report how many actually have a triggered fuse."),
-	FConsoleCommandDelegate::CreateStatic([]() { FFPMPowerWarningProbe::ReportNow(); }));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMPowerWarningProbe::ReportNow();
+	}));
+
+/*
+ * `FPM.Power.Chat` — the CHAT-FACING verb (board m5663571 §7.2). Same read-only sample as
+ * `FPM.Power.Report`, routed to the surface Ant actually reads: only the tripped circuits, plus a
+ * coverage line, posted to the local in-game chat window.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMPowerChatCmd(
+	TEXT("FPM.Power.Chat"),
+	TEXT("Enumerate power circuits now and post ONLY the tripped ones (plus coverage) to your in-game "
+	     "chat. Client only."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+
+		/*
+		 * FPMChat() itself no-ops on a dedicated server (FPMChatRelay.cpp) because there is no local chat
+		 * window to write into. Saying so explicitly here beats going silent — the same reasoning
+		 * FPM.Chat.Test uses for the same case.
+		 */
+		if (IsRunningDedicatedServer())
+		{
+			Ar.Log(TEXT("[FPM] power check: chat is client-only and this is a dedicated server. Use "
+			            "FPM.Power.Report here instead, or run FPM.Power.Chat from a connected client."));
+			return;
+		}
+		FFPMPowerWarningProbe::ReportTrippedToChat();
+	}));

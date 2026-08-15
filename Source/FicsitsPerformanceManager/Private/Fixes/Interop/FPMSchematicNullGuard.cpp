@@ -274,13 +274,23 @@ void FFPMSchematicNullGuard::Arm()
 
 	CanGiveAccessHandle = FPM_SUBSCRIBE("schematic-null-guard", UFGSchematic::CanGiveAccessToSchematic, OnCanGiveAccess);
 
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] schematic-null-guard ARMED on UFGSchematic::CanGiveAccessToSchematic, AFTER the probe "
-		     "so the probe still counts every call. It refuses ONLY when a schematic declares relevant "
-		     "events and the event subsystem is null - the combination 19 crash dumps died on. The "
-		     "argument-only check the design specified shipped in FPM1 0.58.52 and 14 crashes followed it; "
-		     "that check is kept here but is not what this fix rests on. FPM.SchematicGuard 0 to observe "
-		     "without refusing."));
+	if (CanGiveAccessHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] schematic-null-guard ARMED on UFGSchematic::CanGiveAccessToSchematic, AFTER the probe "
+			     "so the probe still counts every call. It refuses ONLY when a schematic declares relevant "
+			     "events and the event subsystem is null - the combination 19 crash dumps died on. The "
+			     "argument-only check the design specified shipped in FPM1 0.58.52 and 14 crashes followed it; "
+			     "that check is kept here but is not what this fix rests on. FPM.SchematicGuard 0 to observe "
+			     "without refusing."));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] schematic-null-guard NOT armed - hook install FAILED on "
+			     "UFGSchematic::CanGiveAccessToSchematic. The null-class/null-CDO crash this guard exists to "
+			     "prevent is UNPROTECTED this session."));
+	}
 }
 
 void FFPMSchematicNullGuard::LogStatus()
@@ -305,13 +315,16 @@ void FFPMSchematicNullGuard::LogStatus()
 }
 
 /*
- * `FPM.SchematicGuard.Status` — read the counters without waiting for a crash.
+ * `FPM.SchematicGuard.Report` — read the counters without waiting for a crash.
+ *
+ * Named `.Report` to match every sibling guard/gate in this family (RailGuard, HudGuard, WireGuard,
+ * WwiseGate) — it used to be `.Status`, the one name in the family that broke the suffix convention.
  *
  * Display-level UE_LOG does not echo to the in-game console, so this is for the log and for a support
  * bundle. The overlay carries the live view for a screenshot.
  */
 static FAutoConsoleCommand GFPMSchGuardStatusCmd(
-	TEXT("FPM.SchematicGuard.Status"),
+	TEXT("FPM.SchematicGuard.Report"),
 	TEXT("Print the schematic null-guard's counters: calls, null class, null CDO, refusals, and the "
 	     "eventless pass-throughs that would falsify the guard's narrowing."),
 	FConsoleCommandDelegate::CreateStatic([]() { FFPMSchematicNullGuard::LogStatus(); }));
@@ -319,9 +332,10 @@ static FAutoConsoleCommand GFPMSchGuardStatusCmd(
 void FFPMSchematicNullGuard::Disarm()
 {
 	/*
-	 * UNSUBSCRIBE_METHOD is correct for a _VIRTUAL subscribe: both drive the same
-	 * HookInvoker<decltype(&M), &M>, and RemoveHandler clears the BEFORE and AFTER maps
-	 * alike, uninstalling the detour once both are empty (NativeHookManager.h:359-378).
+	 * UNSUBSCRIBE_METHOD is correct here even though Arm() subscribed with plain SUBSCRIBE_METHOD, not
+	 * the _VIRTUAL form (see the note at Arm(), above): both drive the same HookInvoker<decltype(&M),
+	 * &M>, and RemoveHandler clears the BEFORE and AFTER maps alike, uninstalling the detour once both
+	 * are empty (NativeHookManager.h:359-378).
 	 *
 	 * ⚠ Guarded on IsValid() because the editor path installs nothing and returns an
 	 * invalid handle; RemoveHandler would then walk maps SML never allocated.

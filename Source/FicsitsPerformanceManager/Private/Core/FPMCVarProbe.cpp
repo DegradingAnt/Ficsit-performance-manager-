@@ -62,6 +62,7 @@
 #include "FicsitsPerformanceManager.h"
 
 #include "Core/FPMCVarWriter.h"
+#include "Core/FPMMasterSwitch.h"
 #include "Core/FPMUserSettingMap.h"
 
 #include "FGGameUserSettings.h"
@@ -174,6 +175,88 @@ static FAutoConsoleCommandWithArgsAndOutputDevice GFPMProbeListCmd(
 				FPMProbeEmit(Ar, TEXT("  (nothing matched - check the prefix; this command did run)"));
 			}
 		}));
+
+/*
+ * `FPM.Help` — the whole `FPM.*` console surface, derived live so it can never go stale.
+ *
+ * ★ WHY THIS AND NOT A HAND-WRITTEN LIST. A typed list of every FPM command is wrong the moment a
+ * command is added, removed or renamed, and this project has already been bitten by exactly that
+ * shape more than once. This walks the SAME live registration table `FPM.CVars` already walks
+ * (`IConsoleManager::Get().ForEachConsoleObjectThatStartsWith`, see `FPMProbeCollect` above) —
+ * just without that command's `AsVariable()`-only filter, which is what makes `FPM.CVars` blind to
+ * every command on this surface by design (its own comment says so: "Commands have no value to
+ * snapshot"). Nothing here is typed in twice; it reads the registration table, so it cannot drift
+ * from it.
+ *
+ * Every FPM command and cvar already carries real TEXT help at its own registration site, so
+ * `GetHelp()` is not a guess here — it is the same string the engine's own `help <name>` would show,
+ * gathered for the whole `FPM.` surface in one place instead of one name at a time.
+ *
+ * Commands and variables are printed in SEPARATE labelled groups rather than one merged list,
+ * because they answer different questions (a command DOES something when typed; a variable HOLDS a
+ * value) and `IConsoleObject` cannot always be classified as one or the other — `AsCommand()` and
+ * `AsVariable()` can both come back null for an exotic registration. That case is counted, not
+ * guessed at or silently dropped.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMHelpCmd(
+	TEXT("FPM.Help"),
+	TEXT("List every registered FPM.* console object - commands and variables, in labelled groups, "
+	     "derived live from the console registration table. Never a hand-maintained list."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Ar)
+	{
+		TArray<TPair<FString, FString>> Commands;    // name -> help
+		TArray<TPair<FString, FString>> Variables;   // name -> help
+		int32 Unclassified = 0;
+
+		IConsoleManager::Get().ForEachConsoleObjectThatStartsWith(
+			FConsoleObjectVisitor::CreateLambda([&Commands, &Variables, &Unclassified](const TCHAR* Name, IConsoleObject* Obj)
+			{
+				if (!Obj) { return; }
+				const FString Help = Obj->GetHelp();
+				if (Obj->AsCommand())
+				{
+					Commands.Add(TPair<FString, FString>(FString(Name), Help));
+				}
+				else if (Obj->AsVariable())
+				{
+					Variables.Add(TPair<FString, FString>(FString(Name), Help));
+				}
+				else
+				{
+					// Neither cast succeeded. Counted so the total still adds up, not dropped silently -
+					// an object this probe cannot classify is a finding about the probe, not a reason to
+					// under-report what is actually registered.
+					++Unclassified;
+				}
+			}), TEXT("FPM."));
+
+		auto ByName = [](const TPair<FString, FString>& A, const TPair<FString, FString>& B)
+			{ return A.Key < B.Key; };
+		Commands.Sort(ByName);
+		Variables.Sort(ByName);
+
+		const int32 Total = Commands.Num() + Variables.Num() + Unclassified;
+		FString Header = FString::Printf(
+			TEXT("---- FPM.Help: %d object(s) registered under 'FPM.' -- %d command(s), %d variable(s) ----"),
+			Total, Commands.Num(), Variables.Num());
+		if (Unclassified > 0)
+		{
+			Header += FString::Printf(TEXT(" (%d unclassified - neither AsCommand() nor AsVariable())"), Unclassified);
+		}
+		FPMProbeEmit(Ar, Header);
+
+		FPMProbeEmit(Ar, FString::Printf(TEXT("-- COMMANDS (%d) --"), Commands.Num()));
+		for (const TPair<FString, FString>& C : Commands)
+		{
+			FPMProbeEmit(Ar, FString::Printf(TEXT("  %-34s %s"), *C.Key, *C.Value));
+		}
+
+		FPMProbeEmit(Ar, FString::Printf(TEXT("-- VARIABLES (%d) --"), Variables.Num()));
+		for (const TPair<FString, FString>& V : Variables)
+		{
+			FPMProbeEmit(Ar, FString::Printf(TEXT("  %-34s %s"), *V.Key, *V.Value));
+		}
+	}));
 
 /*
  * `FPM.CVarHistory <name>` — the FULL priority stack for one cvar.
@@ -302,12 +385,16 @@ static FAutoConsoleCommandWithOutputDevice GFPMD0Cmd(
 			/*
 			 * ⚠ CORRECTED 2026-08-09. THIS BLOCK USED TO TREAT EVERY MAP KEY AS A CVAR NAME.
 			 *
-			 * The keys are SETTING IDS. A setting only owns a cvar when it opts in — `UseCVar` — and
-			 * then the cvar's name is its `StrId` (FGUserSetting.h:183-189). In vanilla only 66 of 254
-			 * settings are cvar-backed, so the old loop reported the other 188 as "CLAUSE 6 BLIND SPOT".
-			 * A diagnostic that cries wolf 188 times is worse than no diagnostic: a real blind spot
-			 * becomes unfindable in the noise, and the total reads as catastrophic when almost all of it
-			 * is settings that drive no cvar at all.
+			 * The keys are SETTING IDS. A setting only owns a cvar when it opts in (`UseCVar`), and then
+			 * the cvar's name is its `StrId` (FGUserSetting.h:183-189). A live count taken 2026-08-09
+			 * found 66 of 254 settings cvar-backed, so the old loop reported the other 188 as "CLAUSE 6
+			 * BLIND SPOT". ⚠ THAT 66 DISAGREES BY ONE with FPMUserSettingTable.g.h, a generated table
+			 * built from a separate FModel export that lists 67. Neither figure has been re-verified
+			 * against a fresh live boot since, so read 66 and 67 as UNRECONCILED - one wrong export, one
+			 * stale extraction, or a genuine one-setting version drift between the two captures - not as
+			 * two independent confirmations of the same number. A diagnostic that cries wolf 188 times is
+			 * worse than no diagnostic: a real blind spot becomes unfindable in the noise, and the total
+			 * reads as catastrophic when almost all of it is settings that drive no cvar at all.
 			 */
 			int32 CVarBacked = 0;
 			int32 NoCVar = 0;
@@ -886,6 +973,19 @@ namespace
 		}
 	}
 }
+
+/*
+ * Item 2: registers THIS file's two diagnostic stop paths with the master switch, so `FPM.Off`
+ * reaches an active `FPM.Bisect` or `FPM.Prove` run. A file-scope static, matching the console
+ * commands below - it runs at module load, before StartupModule can ever reach the OFF branch.
+ * Calls the two functions above BY NAME rather than exporting them: they stay this file's own.
+ */
+static const bool GFPMProbeStopHooksRegistered = []
+{
+	FPMMasterSwitch::RegisterStopHook([]() { FPMBisectStop(/*bRestoreGroup=*/true); });
+	FPMMasterSwitch::RegisterStopHook([]() { FPMProveCleanup(); });
+	return true;
+}();
 
 static FAutoConsoleCommandWithOutputDevice GFPMProveCmd(
 	TEXT("FPM.Prove"),

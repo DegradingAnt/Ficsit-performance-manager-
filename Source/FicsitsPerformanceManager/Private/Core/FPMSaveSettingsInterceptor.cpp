@@ -10,6 +10,8 @@
 
 #include "FGGameUserSettings.h"
 
+#include "HAL/IConsoleManager.h"
+
 namespace
 {
 	/** Set only by a successful Arm(). Until then IsHealthy() is false and mapped writes are refused. */
@@ -39,6 +41,40 @@ namespace
 	bool SaveGuardSay(int32 Level = 1)
 	{
 		return FPMDiag::IsOn(FPMDiag::EChannel::SaveGuard, Level);
+	}
+
+	/**
+	 * ★ THE USER-SETTING MAP'S LIVENESS PROOF — mirrors FPMResidueSentinel.cpp's
+	 * FPMSentinelClassifierIsAlive() (Ant, 2026-08-09: *"dead instruments are not my preferred item to
+	 * exist."*), same pattern, same reason: the before-hook's filter is `FPMUserSettingMap::IsBacked`,
+	 * so a map that went empty (the generated `FPMUserSettingTable.g.h` AND the legacy fallback array
+	 * both dead) would answer "not backed" for everything, stand NOTHING down before a save, and this
+	 * self-test would still see two valid hook handles and arm reporting HEALTHY. A held US_*-backed
+	 * cvar would then leak permanently into GameUserSettings.ini - the exact harm this file exists to
+	 * stop - with every log line involved reading clean.
+	 *
+	 * A check that merely calls `IsBacked` and expects it not to crash proves nothing; the thing in
+	 * doubt is whether it can still tell the two cases apart. So a known-positive must return true and a
+	 * known-negative must return false, same two probes the sentinel already uses:
+	 *   - known-positive: `t.MaxFPS`, a real US_MaxFPS StrId confirmed cvar-backed (FPMCVarWriter.h:30).
+	 *   - known-negative: `FPMCVarWriter::SelfTestProbeName()`, FPM's own scratch cvar, which is not any
+	 *     game setting's StrId and so must never classify as backed.
+	 */
+	bool FPMSaveGuardUserSettingMapIsAlive()
+	{
+		const bool bPositive = FPMUserSettingMap::IsBacked(TEXT("t.MaxFPS"));
+		const bool bNegative = FPMUserSettingMap::IsBacked(FPMCVarWriter::SelfTestProbeName());
+		if (bPositive && !bNegative) { return true; }
+
+		UE_LOG(LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM]   ⚠ THE USER-SETTING MAP IS DEAD: 't.MaxFPS' classified %s (expected backed) and "
+			     "'%s' classified %s (expected NOT backed). IsBacked() cannot discriminate, so the "
+			     "before-hook's filter would stand NOTHING down while this guard reports healthy - a held "
+			     "US_*-backed cvar would then be serialised into GameUserSettings.ini permanently."),
+			bPositive ? TEXT("backed") : TEXT("NOT backed"),
+			FPMCVarWriter::SelfTestProbeName(),
+			bNegative ? TEXT("BACKED") : TEXT("not backed"));
+		return false;
 	}
 }
 
@@ -245,9 +281,12 @@ void FFPMSaveSettingsInterceptor::Arm()
 	/*
 	 * INVARIANT 1 — THE ARM-TIME SELF-TEST, and an honest statement of its reach.
 	 *
-	 * It checks the two things that can be checked without side effects: that BOTH hooks installed, and
-	 * that the user-setting map can answer at all (the before-hook's filter is `IsBacked`, so a map that
-	 * cannot answer would silently stand nothing down and the guard would pass while protecting nothing).
+	 * It checks the two things that can be checked without side effects: that BOTH hooks installed
+	 * (below), and that the user-setting map can actually DISCRIMINATE
+	 * (`FPMSaveGuardUserSettingMapIsAlive()`, below the hook check) — the before-hook's filter is
+	 * `FPMUserSettingMap::IsBacked`, so a map that went blind would silently stand nothing down and this
+	 * guard would arm reporting healthy while protecting nothing. Fixed 2026-08-15: until then this
+	 * comment described a check the code never ran.
 	 *
 	 * ⚠ WHAT IT CANNOT DO, SAID OUT LOUD: it does not call SaveSettings. Calling it would write Ant's
 	 * real GameUserSettings.ini, which is the exact harm this file exists to prevent — a self-test that
@@ -300,14 +339,33 @@ void FFPMSaveSettingsInterceptor::Arm()
 		return;
 	}
 
+	/*
+	 * SECOND HALF OF INVARIANT 1 — the map must be able to tell a backed cvar from an unbacked one, not
+	 * merely answer without crashing. See FPMSaveGuardUserSettingMapIsAlive() above: this is the same
+	 * known-positive/known-negative proof FPMResidueSentinel.cpp already runs, applied to the map this
+	 * file's before-hook filter actually calls. Fail CLOSED exactly like a failed hook install: a guard
+	 * that cannot discriminate is a guard that stands nothing down, and arming it anyway is how a held
+	 * US_*-backed cvar reaches GameUserSettings.ini while every other log line reads clean.
+	 */
+	if (!FPMSaveGuardUserSettingMapIsAlive())
+	{
+		Fail(TEXT("the user-setting map's IsBacked() classifier failed its known-positive/known-negative "
+		          "proof (see the error above). Arming would report healthy while the before-hook's "
+		          "filter stands nothing down before every save."));
+		return;
+	}
+
 	bGFPMSaveGuardArmed = true;
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] save-settings guard ARMED on UFGGameUserSettings::SaveSettings (both entry and exit). "
-		     "Self-test: both hooks installed, user-setting map reachable (source: %s). It stands FPM's "
-		     "holds on capturable cvars down across the game's save and puts them back after, so a "
-		     "transient write can never become a permanent setting. NOT yet proven end-to-end - that "
-		     "needs a boot with a real save, and clause 6 still refuses the whole set meanwhile."),
+		     "Self-test: both hooks installed, user-setting map reachable AND discriminating (source: %s). "
+		     "It stands FPM's holds on capturable cvars down across the game's save and puts them back "
+		     "after, so a transient write can never become a permanent setting. NOT yet proven end-to-end - that "
+		     "needs a boot with a real save. Clause 6 STOPS refusing the US_*-backed set right at this "
+		     "line: IsHealthy() is already true here (armed, not failed, nothing suspended), so a "
+		     "US_*-backed write is allowed from this point on, before the save-and-restore path has "
+		     "ever run for real."),
 		FPMUserSettingMap::Source() == FPMUserSettingMap::ESource::RuntimePlusTables
 			? TEXT("runtime + tables") : TEXT("tables only"));
 }
@@ -329,3 +387,34 @@ void FFPMSaveSettingsInterceptor::Disarm()
 	}
 	SaveAfterHandle.Reset();   // same method as above - that call cleared both maps
 }
+
+void FFPMSaveSettingsInterceptor::LogReport(FOutputDevice* Ar)
+{
+	int32 SavesSeen = 0, HoldsSuspended = 0;
+	GetCounts(SavesSeen, HoldsSuspended);
+
+	const FString Line = FString::Printf(
+		TEXT("[FPM] save guard: %d save(s) seen · %d hold(s) suspended across them. A guard that has "
+		     "never fired should be visibly a guard that has never fired."),
+		SavesSeen, HoldsSuspended);
+
+	if (Ar != nullptr)
+	{
+		Ar->Log(Line);
+	}
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.SaveGuard.Report` — takes the output device so it prints in the console she is looking at as
+ * well as the log. A Display-level UE_LOG alone does not echo to the in-game console, and a command
+ * that answers somewhere the operator is not looking reads as a broken command.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMSaveGuardReportCmd(
+	TEXT("FPM.SaveGuard.Report"),
+	TEXT("Print how many saves this guard has seen, and how many FPM cvar holds it suspended across "
+	     "them, this session."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMSaveSettingsInterceptor::LogReport(&Ar);
+	}));

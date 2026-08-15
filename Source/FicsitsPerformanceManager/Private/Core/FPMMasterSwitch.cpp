@@ -32,6 +32,18 @@ namespace
 
 	bool bGFPMSwitchInstalled = false;
 
+	/**
+	 * Item 2's registry. A FUNCTION-LOCAL static, not a namespace-scope one - the only other caller,
+	 * FPMCVarProbe.cpp's static registration, lives in a DIFFERENT translation unit, and static
+	 * initialization order across TUs is unspecified. Construct-on-first-use sidesteps that instead
+	 * of gambling on link order.
+	 */
+	TArray<TFunction<void()>>& GetStopHooks()
+	{
+		static TArray<TFunction<void()>> Hooks;
+		return Hooks;
+	}
+
 	void ApplyMasterSwitch()
 	{
 		const bool bWanted = CVarFPMEnabled.GetValueOnGameThread() != 0;
@@ -53,8 +65,15 @@ namespace
 			 * to stay set.
 			 */
 			UE_LOG(LogFicsitsPerformanceManager, Display,
-				TEXT("[FPM] MASTER SWITCH: OFF. Disarming every fix, then releasing every console "
-				     "variable FPM wrote."));
+				TEXT("[FPM] MASTER SWITCH: OFF. Stopping any diagnostic run, disarming every fix, then "
+				     "releasing every console variable FPM wrote."));
+
+			// FIRST: item 2. FPM.Bisect / FPM.Prove write outside the writer's tagged hold (the
+			// accepted ECVF_SetByConsole exception), so ReleaseAll below cannot reach an active run.
+			for (const TFunction<void()>& Hook : GetStopHooks())
+			{
+				Hook();
+			}
 
 			FPMFixes::DisarmAll();
 			FPMCVarWriter::Get().ReleaseAll(TEXT("FPM.Enabled 0"));
@@ -125,6 +144,11 @@ void FPMMasterSwitch::Install()
 		TEXT("[FPM] master switch installed: FPM.Enabled %d. OFF disarms every fix and RELEASES every "
 		     "console variable FPM wrote - it does not just stop writing."),
 		CVarFPMEnabled.GetValueOnGameThread());
+}
+
+void FPMMasterSwitch::RegisterStopHook(TFunction<void()> Hook)
+{
+	GetStopHooks().Add(MoveTemp(Hook));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────

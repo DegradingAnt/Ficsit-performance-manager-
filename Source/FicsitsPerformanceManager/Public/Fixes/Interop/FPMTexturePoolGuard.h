@@ -108,8 +108,9 @@ public:
 	virtual void Arm() override;
 	virtual void Disarm() override;
 
-	/** `FPM.Diag.Dump` and `FPM.Support` print these. A guard that has never fired must look like one. */
+	/** `FPM.TexturePool.Report` prints these. A guard that has never fired must look like one. */
 	static void GetCounts(int32& OutRaises, int32& OutClobbersRepaired, int32& OutLastTargetMB);
+	static void LogReport(class FOutputDevice* Ar = nullptr);
 
 private:
 	bool Tick(float DeltaTime);

@@ -9,6 +9,8 @@
 #include "Equipment/FGEquipmentZipline.h"
 #include "AkGameplayStatics.h"
 
+#include "HAL/IConsoleManager.h"
+
 namespace
 {
 	/**
@@ -26,6 +28,19 @@ namespace
 		     "change mid-ride lands on the next equip."),
 		ECVF_Default);
 
+	/**
+	 * ★ THREADING CONTRACT FOR THESE COUNTERS, VERIFIED AGAINST THE HEADERS, NOT GUESSED.
+	 *
+	 * Plain int32 and bool here, not std::atomic like the sibling FPMWwiseServerGate.cpp counter. That
+	 * is correct because AFGEquipmentZipline::Equip only ever runs on the game thread. The call chain
+	 * is fixed by the engine, not by this mod. AFGCharacterPlayer::EquipEquipment is a plain
+	 * BlueprintCallable function documented "must be called on the owning client"
+	 * (FGCharacterPlayer.h:503-505), and AFGCharacterPlayer::Server_EquipEquipment is a Reliable Server
+	 * RPC (FGCharacterPlayer.h:1550-1552). Unreal Engine dispatches both BlueprintCallable gameplay
+	 * calls and Server RPCs on the game thread. No async task and no worker thread reach this path. If
+	 * a future FactoryGame build ever moves equip handling off the game thread, update this comment
+	 * alongside the counters below.
+	 */
 	int32 GFPMZipEquips = 0;
 	int32 GFPMZipWrites = 0;
 
@@ -104,11 +119,20 @@ void FFPMZiplineVolume::Arm()
 
 	EquipHandle = FPM_SUBSCRIBE_VIRTUAL("zipline-volume", AFGEquipmentZipline::Equip, Sample, OnEquip);
 
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] zipline volume ARMED - FPM.Zipline.Volume (default 1.0 = vanilla, writes nothing "
-		     "until changed). Set per-actor on equip via the Wwise output bus; vanilla ships no "
-		     "per-zipline slider and no RTPC. Returning the value to 1.0 now genuinely restores vanilla, "
-		     "which the old implementation could not do."));
+	if (EquipHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] zipline volume ARMED - FPM.Zipline.Volume (default 1.0 = vanilla, writes nothing "
+			     "until changed). Set per-actor on equip via the Wwise output bus; vanilla ships no "
+			     "per-zipline slider and no RTPC. Returning the value to 1.0 now genuinely restores vanilla, "
+			     "which the old implementation could not do."));
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] zipline volume NOT armed - hook install FAILED on AFGEquipmentZipline::Equip. "
+			     "FPM.Zipline.Volume will NOT apply this session."));
+	}
 }
 
 void FFPMZiplineVolume::Disarm()
@@ -127,3 +151,35 @@ void FFPMZiplineVolume::Disarm()
 		EquipHandle.Reset();
 	}
 }
+
+void FFPMZiplineVolume::LogReport(FOutputDevice* Ar)
+{
+	int32 Equips = 0, Writes = 0;
+	GetCounts(Equips, Writes);
+
+	const FString Line = FString::Printf(
+		TEXT("[FPM] zipline volume: %d equip(s) seen · %d write(s) issued. A zero write count with a "
+		     "non-zero equip count means the lever is sitting at vanilla - which is the correct default, "
+		     "not a fault."),
+		Equips, Writes);
+
+	if (Ar != nullptr)
+	{
+		Ar->Log(Line);
+	}
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.Zipline.Report` — takes the output device so it prints in the console she is looking at as well
+ * as the log. A Display-level UE_LOG alone does not echo to the in-game console, and a command that
+ * answers somewhere the operator is not looking reads as a broken command.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMZiplineReportCmd(
+	TEXT("FPM.Zipline.Report"),
+	TEXT("Print how many zipline equips this fix has seen, and how many non-vanilla volume writes it "
+	     "has issued, this session."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMZiplineVolume::LogReport(&Ar);
+	}));

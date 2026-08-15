@@ -3,6 +3,7 @@
 #include "Fixes/Interop/FPMStaticBaseFix.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMHookLedger.h"
 
 #include "FGColoredInstanceMeshProxy.h"
@@ -203,9 +204,19 @@ void FFPMStaticBaseFix::OnWorldLoad(UWorld* World)
 	if (!AdjustmentHookHandle.IsValid())
 	{
 		Arm();
-		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] static-base: re-armed for a world with local authority (net mode %d)."),
-			static_cast<int32>(NetMode));
+		if (AdjustmentHookHandle.IsValid())
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] static-base: re-armed for a world with local authority (net mode %d)."),
+				static_cast<int32>(NetMode));
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM] static-base: re-arm FAILED for a world with local authority (net mode %d) - "
+				     "hook install did not take. This world is UNPROTECTED."),
+				static_cast<int32>(NetMode));
+		}
 	}
 }
 
@@ -230,7 +241,11 @@ void FFPMStaticBaseFix::ReportNow()
 		     "Anywhere else it means this fix has had nothing to do all session."));
 }
 
-static FAutoConsoleCommand GFPMStaticBaseReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMStaticBaseReportCmd(
 	TEXT("FPM.StaticBase.Report"),
 	TEXT("Static-base fix: adjustments rewritten vs declined. Both zero means it never reached its subject."),
-	FConsoleCommandDelegate::CreateStatic(&FFPMStaticBaseFix::ReportNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMStaticBaseFix::ReportNow();
+	}));

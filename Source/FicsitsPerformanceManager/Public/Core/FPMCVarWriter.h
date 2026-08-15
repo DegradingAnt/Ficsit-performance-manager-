@@ -165,6 +165,12 @@ public:
  	 */
 	static bool IsUserSettingBacked(const TCHAR* CVarName);
 
+	/**
+	 * The one name for FPM's own scratch probe cvar. §5.2 exists because this string used to be
+	 * hand-typed at four separate call sites across two files; every caller now goes through here.
+	 */
+	static const TCHAR* SelfTestProbeName();
+
 private:
 	struct FHold
 	{

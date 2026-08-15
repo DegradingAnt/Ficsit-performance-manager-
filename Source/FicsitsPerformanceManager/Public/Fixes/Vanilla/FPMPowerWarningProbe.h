@@ -80,6 +80,40 @@ public:
 	static void ReportNow();
 
 	/**
+	 * `FPM.Power.Chat` — the CHAT-FACING verb (board m5663571 §7.2). `ReportNow()` above answers "is the
+	 * popup lying" for the log; this answers the same question for the player, in the surface she
+	 * actually reads. Ant's own rule, stated of a different command: "print stuff to the chat instead...
+	 * print what is relevant, not the entire log" — so this prints ONLY the tripped circuits, never
+	 * `Debug_DumpCircuitsToLog`'s everything.
+	 *
+	 * ⚠ ALWAYS SAYS SOMETHING, even when nothing is tripped — a command that prints nothing on a healthy
+	 * grid is indistinguishable from a broken command.
+	 * ⚠ ALWAYS PRINTS COVERAGE — circuits examined, tripped, and unreadable — so a bare "none tripped"
+	 * can be told apart from a probe that examined nothing.
+	 * Client-only by construction (`FPMChat` no-ops on a dedicated server); the console command below
+	 * reports that explicitly rather than going silent.
+	 */
+	static void ReportTrippedToChat();
+
+	/**
+	 * Same private-container walk as `ReadCircuitCounts`, extended to name WHICH circuits are tripped.
+	 * A second member function rather than another out-param on `ReadCircuitCounts`, because that one is
+	 * already called every 2s by the login-window sampler and growing its signature for a chat-only need
+	 * would make every existing call site carry an unused `TArray`.
+	 *
+	 * @param OutExamined   power circuits successfully read (cast to `UFGPowerCircuit` succeeded).
+	 * @param OutUnreadable container slots that were null, or a `UFGCircuit` that was NOT a
+	 *                      `UFGPowerCircuit` — the latter should not occur today (grep confirms
+	 *                      `UFGPowerCircuit` is the only `UFGCircuit` subclass in this codebase), so it
+	 *                      is counted rather than assumed away.
+	 * @param OutTrippedCircuitIDs `GetCircuitID()` (`FGCircuit.h:57`, public, no AT needed) for every
+	 *                      circuit whose `IsFuseTriggered()` (`FGPowerCircuit.h:163`, public) is true.
+	 * @return false when the subsystem does not exist yet — NOT the same as "nothing tripped".
+	 */
+	static bool EnumerateTrippedCircuits(UWorld* World, int32& OutExamined, int32& OutUnreadable,
+	                                     TArray<int32>& OutTrippedCircuitIDs);
+
+	/**
 	 * ★ THE ONLY PLACE THAT TOUCHES `AFGCircuitSubsystem`'s PRIVATE CONTAINERS, AND IT HAS TO BE A
 	 * MEMBER OF THIS CLASS.
 	 *

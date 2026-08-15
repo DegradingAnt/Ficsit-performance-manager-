@@ -57,9 +57,10 @@ public:
 	 * Removes the movement hook.
 	 *
 	 * ⚠ WITHOUT IT, `FPMFixes::DisarmAll()` REPORTS THIS FIX DISARMED WHILE IT KEEPS REWRITING EVERY
-	 * CLIENT ADJUSTMENT. Harmless at process exit — the only place DisarmAll has ever been called from,
-	 * and why the omission survived — but it is what blocks P4.2's master OFF switch from meaning
-	 * anything.
+	 * CLIENT ADJUSTMENT. Harmless at process exit, which is where DisarmAll was called from until P4.2
+	 * shipped the master OFF switch (`FPM.Enabled 0`, `FPMMasterSwitch.cpp`), and why the omission
+	 * survived that long. DisarmAll now also runs mid-session from that switch, so this override is
+	 * exactly what makes the master OFF switch mean something.
 	 */
 	virtual void Disarm() override;
 

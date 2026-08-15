@@ -37,11 +37,23 @@ FDelegateHandle FPMHookLedger::Install(const TCHAR* Owner, const TCHAR* Target, 
 		// relocate, a back jump into the patched region, no trampoline space, a prologue it cannot
 		// disassemble), and four of those have nothing to do with function size. SML reports those on
 		// its own log category. Read that, not this column, before concluding a hook is live.
-		Record.bInstalled = true;
+		//
+		// Handle.IsValid() is the one signal this function CAN check directly — it is what SML hands
+		// back, and an invalid handle here means the install did not take, whatever bInstalled says.
+		Record.bInstalled = Handle.IsValid();
 		GLedger.Add(Record);
 
-		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] hook #%d armed: %s  owner=%s"), Record.Order, Target, Owner);
+		if (Handle.IsValid())
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] hook #%d armed: %s  owner=%s"), Record.Order, Target, Owner);
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM] hook #%d NOT armed: %s  owner=%s  -- install FAILED, invalid handle"),
+				Record.Order, Target, Owner);
+		}
 		return Handle;
 	}
 }

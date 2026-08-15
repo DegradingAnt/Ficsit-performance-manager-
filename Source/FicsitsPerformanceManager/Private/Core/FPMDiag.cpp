@@ -3,6 +3,7 @@
 #include "Core/FPMDiag.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 
 #include "HAL/IConsoleManager.h"
 
@@ -259,6 +260,20 @@ static TAutoConsoleVariable<int32> CVarDiagInstanceSwap(
 	     "setting must not be able to hide it."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagBlueprintContentSnap(
+	TEXT("FPM.Diag.BlueprintContentSnap"), 1,
+	TEXT("Blueprint-to-blueprint content snap. 0 = silent, 1 = one line per mode entry naming the "
+	     "resolved target proxy, 2 = per-frame candidate-pair scoring. The mode-registration ARMED line "
+	     "is NOT gated by this - that line is what tells a reader Hook A actually installed."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDiagWristSlot(
+	TEXT("FPM.Diag.WristSlot"), 1,
+	TEXT("Slice W wrist-slot: the add-hook, equip/deploy/release RCOs and their refusals, the "
+	     "persistence handshake, and registration. 0 = silent, 1 = the arm line, every refusal, and "
+	     "the equip/deploy/release transitions, 2 = also the pending-worn map's claim attempts."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -296,6 +311,8 @@ namespace
 		&CVarDiagReflex,
 		&CVarDiagUpscalerPreset,
 		&CVarDiagInstanceSwap,
+		&CVarDiagBlueprintContentSnap,
+		&CVarDiagWristSlot,
 	};
 
 	/*
@@ -347,6 +364,8 @@ namespace
 		case FPMDiag::EChannel::Reflex:         return TEXT("FPM.Diag.Reflex");
 		case FPMDiag::EChannel::UpscalerPreset: return TEXT("FPM.Diag.UpscalerPreset");
 		case FPMDiag::EChannel::InstanceSwap:   return TEXT("FPM.Diag.InstanceSwap");
+		case FPMDiag::EChannel::BlueprintContentSnap: return TEXT("FPM.Diag.BlueprintContentSnap");
+		case FPMDiag::EChannel::WristSlot:      return TEXT("FPM.Diag.WristSlot");
 		default:                                return TEXT("<unknown>");
 		}
 	}
@@ -420,7 +439,11 @@ void FPMDiag::LogAll()
  * `FPM.Diag.List` — because a switch you cannot read the state of is a switch you end up guessing at,
  * and this project has burned boots on exactly that shape of guess.
  */
-static FAutoConsoleCommand GDiagListCmd(
+static FAutoConsoleCommandWithOutputDevice GDiagListCmd(
 	TEXT("FPM.Diag.List"),
 	TEXT("Print every FPM diagnostic channel and its effective level."),
-	FConsoleCommandDelegate::CreateStatic(&FPMDiag::LogAll));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FPMDiag::LogAll();
+	}));

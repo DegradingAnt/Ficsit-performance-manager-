@@ -3,6 +3,7 @@
 #include "Fixes/ModFeatures/FPMUpscalerSharpness.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMCVarWriter.h"
 #include "Core/FPMDiag.h"
 
@@ -185,7 +186,11 @@ void FFPMUpscalerSharpness::ReportNow()
 		     "with green chroma corruption on this hardware. Judge sharpness after that, not before."));
 }
 
-static FAutoConsoleCommand GFPMSharpReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMSharpReportCmd(
 	TEXT("FPM.Sharpness.Report"),
 	TEXT("Sharpening: the live upscaler, which lever that selects, and what is currently held."),
-	FConsoleCommandDelegate::CreateStatic(&FFPMUpscalerSharpness::ReportNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMUpscalerSharpness::ReportNow();
+	}));

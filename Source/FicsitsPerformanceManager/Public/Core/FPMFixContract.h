@@ -141,14 +141,17 @@ enum class EFPMFixSide : uint8
  * 2,300-line module file — not more UE modules, which cost real build-trap risk, but one translation
  * unit per fix inside the one runtime module.
  *
- * ★ IT IS NOW SIX MEMBERS, AND THE FREEZE IS RE-STATED RATHER THAN QUIETLY BROKEN.
+ * ★ IT IS NOW EIGHT MEMBERS, AND THE FREEZE IS RE-STATED RATHER THAN QUIETLY BROKEN.
  *
- * It used to say "DELIBERATELY FOUR MEMBERS", and that comment is rewritten HERE, in the same commit
- * that adds the two — because a comment contradicting the code it sits on is the project's own named
- * defect, and leaving a stale freeze note is how a rule stops being believed.
+ * It used to say "DELIBERATELY FOUR MEMBERS", then a later pass rewrote that to "SIX MEMBERS" without
+ * a fresh count against the class body. The real count today is `Name()`, `Side()`, `OriginStatus()`,
+ * `Channel()`, `Arm()`, `OnWorldLoad()`, `Disarm()`, `DefaultArmed()` - eight, counted by hand against
+ * the class below. `DefaultArmed()` alone was "Added 2026-08-11 because measurement forced it" (its
+ * own comment, below), which is what took six to eight; a comment contradicting the code it sits on is
+ * the project's own named defect, and leaving a stale freeze note is how a rule stops being believed.
  *
- * The two additions are Ant-ruled, not author-chosen: `OriginStatus()` (her Q1 ruling — a fix must
- * declare what kind of claim it is making) and `Channel()` (design §3.1 — a fix must declare where its
+ * Two of the eight are Ant-ruled, not author-chosen: `OriginStatus()` (her Q1 ruling, a fix must
+ * declare what kind of claim it is making) and `Channel()` (design §3.1, a fix must declare where its
  * diagnostics go). Both are PURE VIRTUAL on purpose. A default would let a new fix inherit somebody
  * else's answer silently, and the entire value here is that the author cannot avoid answering.
  *

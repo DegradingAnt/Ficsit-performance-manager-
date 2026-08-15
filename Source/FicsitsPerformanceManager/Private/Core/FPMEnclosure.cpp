@@ -3,6 +3,7 @@
 #include "Core/FPMEnclosure.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 
 #include "AbstractInstanceManager.h"      // ULightweightCollisionComponent — the walls that are not actors
@@ -588,7 +589,11 @@ void FPMEnclosure::LogNow()
 		     "world teardown mid-batch. Not fatal; the sampler recovers."), GBatchesAbandoned);
 }
 
-static FAutoConsoleCommand GFPMEnclosureReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMEnclosureReportCmd(
 	TEXT("FPM.Enclosure.Report"),
 	TEXT("Print the shared indoor reading, both verdicts, and what the sampling has cost."),
-	FConsoleCommandDelegate::CreateStatic(&FPMEnclosure::LogNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FPMEnclosure::LogNow();
+	}));

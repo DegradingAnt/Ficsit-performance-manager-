@@ -61,6 +61,53 @@ namespace
 	{
 		return Row->GetName().Replace(TEXT("_"), TEXT("."));
 	}
+
+	/*
+	 * ★ ONE DEFAULT, ONE SITE. Each config row now takes its default FROM ITS OWN CVAR
+	 * (IConsoleVariable::GetDefaultValue(), IConsoleManager.h:630 - "the value this CVar was
+	 * constructed with") instead of a second hand-typed literal at the AddInt/AddBool/AddFloat call
+	 * site below. FPM.Diag.Overlay shipped with the two disagreeing (cvar default 1, row literal
+	 * false) because the row's default was hand-typed a second time and drifted from the cvar's own
+	 * declaration. This removes the second typing for all six rows, not only the one that had
+	 * already drifted, so the same drift cannot happen to any of the other five later.
+	 */
+	IConsoleVariable* FindCVarOrFatal(const TCHAR* CVarName)
+	{
+		IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(CVarName);
+		if (Var == nullptr)
+		{
+			/*
+			 * ⚠ FATAL, NOT A LOGGED FALLBACK. This runs at CDO construction from a hand-typed cvar name
+			 * that some OTHER FPM source file must already have registered - a null here can only mean
+			 * a typo here or a cvar renamed out from under the settings page, i.e. a build-time defect,
+			 * never something a player's own actions can trigger. checkf was considered and rejected:
+			 * DO_CHECK collapses to USE_CHECKS_IN_SHIPPING (engine Build.h:305), which is 0 in the
+			 * Shipping config this mod ships as, so checkf would compile to nothing and leave the next
+			 * line as an unguarded null-pointer read with no message at all. UE_LOG at Fatal verbosity
+			 * is not gated by DO_CHECK - it survives even NO_LOGGING (engine LogMacros.h:147-159) - so
+			 * it fails loud with the cvar name in every build configuration, Shipping included.
+			 */
+			UE_LOG(LogFicsitsPerformanceManager, Fatal,
+				TEXT("[FPM] settings: row for '%s' built before its cvar was registered. Typo in the "
+				     "row, or the cvar was renamed."), CVarName);
+		}
+		return Var;
+	}
+
+	int32 CompiledIntDefault(const TCHAR* CVarName)
+	{
+		return FCString::Atoi(*FindCVarOrFatal(CVarName)->GetDefaultValue());
+	}
+
+	bool CompiledBoolDefault(const TCHAR* CVarName)
+	{
+		return FindCVarOrFatal(CVarName)->GetDefaultValue().ToBool();
+	}
+
+	float CompiledFloatDefault(const TCHAR* CVarName)
+	{
+		return FCString::Atof(*FindCVarOrFatal(CVarName)->GetDefaultValue());
+	}
 }
 
 UFPMSettingsConfig::UFPMSettingsConfig()
@@ -150,10 +197,11 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 	};
 
 	auto AddInt = [this, ClsInt, &BindRow](UConfigPropertySection* Sec, const TCHAR* CVarName,
-	                             const FText& Display, const FText& Tip, int32 Default,
+	                             const FText& Display, const FText& Tip,
 	                             int32 Min, int32 Max)
 	{
 		const FString SubName = SubobjectNameFor(CVarName);
+		const int32 Default = CompiledIntDefault(CVarName);
 		UConfigPropertyInteger* P = static_cast<UConfigPropertyInteger*>(CreateDefaultSubobject(
 			*SubName, UConfigPropertyInteger::StaticClass(), ClsInt, true, false));
 		P->DisplayName   = Display;
@@ -184,9 +232,10 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 	};
 
 	auto AddBool = [this, ClsBool, &BindRow](UConfigPropertySection* Sec, const TCHAR* CVarName,
-	                               const FText& Display, const FText& Tip, bool Default)
+	                               const FText& Display, const FText& Tip)
 	{
 		const FString SubName = SubobjectNameFor(CVarName);
+		const bool Default = CompiledBoolDefault(CVarName);
 		UConfigPropertyBool* P = static_cast<UConfigPropertyBool*>(CreateDefaultSubobject(
 			*SubName, UConfigPropertyBool::StaticClass(), ClsBool, true, false));
 		P->DisplayName  = Display;
@@ -198,10 +247,11 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 	};
 
 	auto AddFloat = [this, ClsFloat, &BindRow](UConfigPropertySection* Sec, const TCHAR* CVarName,
-	                                           const FText& Display, const FText& Tip, float Default,
+	                                           const FText& Display, const FText& Tip,
 	                                           float Min, float Max)
 	{
 		const FString SubName = SubobjectNameFor(CVarName);
+		const float Default = CompiledFloatDefault(CVarName);
 		UConfigPropertyFloat* P = static_cast<UConfigPropertyFloat*>(CreateDefaultSubobject(
 			*SubName, UConfigPropertyFloat::StaticClass(), ClsFloat, true, false));
 		P->DisplayName  = Display;
@@ -228,7 +278,7 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 			"0 leaves the game's own choice alone - it asks for Preset C, the old model, which smears "
 			"things that move across other surfaces. 10 and 11 are the newer transformer presets J and "
 			"K. Which of the two looks better is a matter of taste; try both. Only affects DLSS."),
-		0, 0, 11);
+		0, 11);
 
 	AddInt(Upscaler, TEXT("FPM.Reflex.Mode"),
 		LOCTEXT("ReflexMode", "NVIDIA Reflex"),
@@ -236,7 +286,7 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 			"0 leaves it alone, 1 is low latency, 2 adds Boost. The game ships Reflex switched off. "
 			"1 costs up to 4% of your frame rate when the graphics card is the bottleneck and is close "
 			"to free otherwise. 2 can cost frames AND power, so it is not a sensible default."),
-		1, 0, 2);
+		0, 2);
 
 	AddFloat(Upscaler, TEXT("FPM.Sharpness.Amount"),
 		LOCTEXT("Sharpness", "Sharpening"),
@@ -245,7 +295,7 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 			"are running - FSR has its own, and TSR or no upscaler uses the tonemapper's. DLSS and XeSS "
 			"sharpen inside their own pass, so this does nothing for them and says so in the log rather "
 			"than pretending."),
-		0.f, 0.f, 2.f);
+		0.f, 2.f);
 
 	// ── WEATHER ─────────────────────────────────────────────────────────────────────────────────────
 	UConfigPropertySection* Weather = AddSection(TEXT("Weather"),
@@ -256,8 +306,7 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 		LOCTEXT("WeatherGateTip",
 			"Scales rain and wind particles down while you are inside a sealed room. It is not "
 			"collision - three of the game's five weather systems ship with no collision at all - so "
-			"this is the cheap half of the problem, not the whole of it."),
-		true);
+			"this is the cheap half of the problem, not the whole of it."));
 
 	// ── DIAGNOSTICS ─────────────────────────────────────────────────────────────────────────────────
 	UConfigPropertySection* Diag = AddSection(TEXT("Diagnostics"),
@@ -269,13 +318,12 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 			"-1 leaves each area at its own setting, 0 silences everything FPM prints, 1 is normal and "
 			"2 is verbose. This only changes what is written to the log - it never changes what the mod "
 			"does. If you are sending a log to someone, leave it at -1."),
-		-1, -1, 2);
+		-1, 2);
 
 	AddBool(Diag, TEXT("FPM.Diag.Overlay"),
 		LOCTEXT("Overlay", "On-screen readout"),
 		LOCTEXT("OverlayTip",
-			"The developer feed in the corner. F8 toggles it in game."),
-		false);
+			"The developer feed in the corner. F8 toggles it in game."));
 }
 
 void UFPMSettingsConfig::SyncAllToCVars()

@@ -8,6 +8,12 @@
 #include "Core/FPMOverlay.h"
 
 #include "FGInventoryComponent.h"
+// AFGCrate::IsA check for the origin diagnostic's crate tag (Ruling 7, item 30) - read-only, no new
+// dependency: FactoryGame is already a public dependency of this module.
+#include "FGCrate.h"
+
+#include "Containers/Ticker.h"
+#include "HAL/IConsoleManager.h"
 
 #include <atomic>
 
@@ -31,6 +37,62 @@ namespace
 	 */
 	std::atomic<int32> GAuthorityObserved{0}; // zero-slot ON THE AUTHORITY — observed, never repaired
 	std::atomic<int32> GAuthoredZero{0};      // the asset itself says zero slots — not ours to overrule
+
+	/*
+	 * ★ THE ORIGIN DIAGNOSTIC'S OWN COUNTERS (Ruling 7, item 30).
+	 *
+	 * GTotalBeginPlayObserved is the one UNCONDITIONAL counter in this file: incremented before any
+	 * early return in hook 1, so it answers "how many inventories did this hook even see" rather than
+	 * only "how many were abnormal" — the coverage line's whole reason to exist.
+	 *
+	 * GCrateOwned and GOwnerUnresolved are NOT population counts. They tally only the SAMPLED rows that
+	 * already pass each site's existing throttle/diag gate, because computing them (GetClass()->GetName(),
+	 * GetPathName()) is real string-building work and this hook runs on every UFGInventoryComponent in
+	 * the game — the exact cost FPMDiag.h warns against paying unconditionally. The coverage line says
+	 * "of the sampled rows" so this restriction is never silently overstated as a full-population claim.
+	 */
+	std::atomic<int32> GTotalBeginPlayObserved{0}; // every hook-1 invocation, before any early return
+	std::atomic<int32> GCrateOwned{0};             // of the SAMPLED rows, owner IsA<AFGCrate>
+	std::atomic<int32> GOwnerUnresolved{0};        // of the SAMPLED rows, GetOwner() was null
+
+	FTSTicker::FDelegateHandle GCoverageTicker;
+
+	/*
+	 * When the per-world-load coverage print fires. OnWorldLoad runs during the CONSTRUCTION phase,
+	 * while the loading screen is still up (FPMFixContract.h), so an immediate print would read all-zero
+	 * every time — nothing has ticked. 30s gives a short local session a real chance to show something,
+	 * without pretending to catch a join that happens later; FPM.Inventory.Report on demand is what
+	 * actually answers B12 after a SunFry join, however late in the session that lands.
+	 */
+	constexpr float GFPMInventoryCoverageDelaySec = 30.f;
+
+	/** One owner's describable identity, computed once per sampled log site. */
+	struct FFPMInventoryOwnerInfo
+	{
+		FString ClassName = TEXT("<no owner>");
+		FString PathName = TEXT("<no owner>");
+		bool bIsCrate = false;
+	};
+
+	/**
+	 * Owner CLASS name, owner PATH name, and the AFGCrate tag — the three fields Ant's ruling asked this
+	 * fix to add beside the owner NAME every site already logged. Called ONLY from inside a site's
+	 * existing throttle/diag gate; see the counter comment above for why.
+	 */
+	FFPMInventoryOwnerInfo DescribeOwner(const AActor* Owner)
+	{
+		FFPMInventoryOwnerInfo Info;
+		if (Owner == nullptr)
+		{
+			++GOwnerUnresolved;
+			return Info; // defaults already say "<no owner>"
+		}
+		Info.ClassName = Owner->GetClass()->GetName();
+		Info.PathName = Owner->GetPathName();
+		Info.bIsCrate = Owner->IsA<AFGCrate>();
+		if (Info.bIsCrate) { ++GCrateOwned; }
+		return Info;
+	}
 }
 
 FFPMInventoryInitGuard& FFPMInventoryInitGuard::Get()
@@ -55,6 +117,12 @@ void FFPMInventoryInitGuard::Arm()
 	 */
 	auto OnBeginPlay = [](UFGInventoryComponent* Self)
 	{
+		// ★ UNCONDITIONAL — the FIRST statement, before even the null-Self check. Counts every
+		// invocation, so the coverage line can say how many inventories were looked at, not only how
+		// many were abnormal. Ruling 7, item 30: a zero from an instrument that examined nothing is
+		// worse than no instrument at all.
+		++GTotalBeginPlayObserved;
+
 		if (!Self || Self->GetSizeLinear() > 0) { return; }   // sized correctly — nothing to do
 
 		/*
@@ -90,13 +158,16 @@ void FFPMInventoryInitGuard::Arm()
 			if ((N == 1 || (N % FPMLog::ThrottleNotable) == 0)
 			&& FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit))
 			{
+				const FFPMInventoryOwnerInfo Owner = DescribeOwner(Self->GetOwner());
 				UE_LOG(LogFicsitsPerformanceManager, Warning,
 					TEXT("[FPM] inventory-init: a ZERO-SLOT inventory on %s exists ON THE AUTHORITY (#%d). "
+					     "class=%s path=%s side=authority crate=%s. "
 					     "NOT repairing — Resize() writes SaveGame state (mAdjustedSizeDiff) and that would be "
 					     "residue in the save. This was believed impossible: the crash is a joining-client "
 					     "race. If this line appears, the premise is wrong and it needs solving with the "
 					     "persistence question answered first."),
-					*GetNameSafe(Self->GetOwner()), N);
+					*GetNameSafe(Self->GetOwner()), N,
+					*Owner.ClassName, *Owner.PathName, Owner.bIsCrate ? TEXT("yes") : TEXT("no"));
 			}
 			return;
 		}
@@ -121,10 +192,15 @@ void FFPMInventoryInitGuard::Arm()
 		if ((N == 1 || (N % FPMLog::ThrottleRoutine) == 0)
 			&& FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit))
 		{
+			// side=client is not a guess here: the HasAuthority() branch above already returned, so
+			// reaching this line guarantees non-authority.
+			const FFPMInventoryOwnerInfo Owner = DescribeOwner(Self->GetOwner());
 			UE_LOG(LogFicsitsPerformanceManager, Display,
 				TEXT("[FPM] inventory-init: sized an uninitialised inventory on %s to its authored %d slot(s) "
-				     "at BeginPlay (#%d) - it can no longer reach the 'Inventory need to be initialized' assert"),
-				*GetNameSafe(Self->GetOwner()), Authored, N);
+				     "at BeginPlay (#%d) - it can no longer reach the 'Inventory need to be initialized' assert. "
+				     "class=%s path=%s side=client crate=%s"),
+				*GetNameSafe(Self->GetOwner()), Authored, N,
+				*Owner.ClassName, *Owner.PathName, Owner.bIsCrate ? TEXT("yes") : TEXT("no"));
 		}
 	};
 
@@ -163,12 +239,15 @@ void FFPMInventoryInitGuard::Arm()
 		{
 			const int32 N = ++GAuthorityObserved;
 			if (!FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit)) { return; }
+			const FFPMInventoryOwnerInfo Owner = DescribeOwner(Self->GetOwner());
 			UE_LOG(LogFicsitsPerformanceManager, Error,
 				TEXT("[FPM] inventory-init: AddStack hit a ZERO-SLOT inventory on %s ON THE AUTHORITY (#%d). "
+				     "class=%s path=%s side=authority crate=%s. "
 				     "Falling through to vanilla unchanged - repairing here would write SaveGame state, and "
 				     "refusing would destroy the caller's items. Believed unreachable (the crash is a "
 				     "joining-client race); if this appears, it needs solving with evidence, not a guard."),
-				*GetNameSafe(Self->GetOwner()), N);
+				*GetNameSafe(Self->GetOwner()), N,
+				*Owner.ClassName, *Owner.PathName, Owner.bIsCrate ? TEXT("yes") : TEXT("no"));
 			return;
 		}
 
@@ -203,10 +282,15 @@ void FFPMInventoryInitGuard::Arm()
 			if ((N == 1 || (N % FPMLog::ThrottleNotable) == 0)
 			&& FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit))
 			{
+				// side=client: both the HasAuthority() and the off-game-thread early returns above have
+				// already passed by the time control reaches here.
+				const FFPMInventoryOwnerInfo Owner = DescribeOwner(Self->GetOwner());
 				UE_LOG(LogFicsitsPerformanceManager, Warning,
 					TEXT("[FPM] inventory-init: something is adding to an inventory on %s that its own asset "
-					     "authored with ZERO slots (#%d). Left alone - vanilla decides. The caller is the bug."),
-					*GetNameSafe(Self->GetOwner()), N);
+					     "authored with ZERO slots (#%d). class=%s path=%s side=client crate=%s. "
+					     "Left alone - vanilla decides. The caller is the bug."),
+					*GetNameSafe(Self->GetOwner()), N,
+					*Owner.ClassName, *Owner.PathName, Owner.bIsCrate ? TEXT("yes") : TEXT("no"));
 			}
 			return;
 		}
@@ -225,17 +309,49 @@ void FFPMInventoryInitGuard::Arm()
 		 */
 		const int32 N = ++GLateRepaired;
 		if (!FPMDiag::IsOn(FPMDiag::EChannel::InventoryInit)) { return; }
+		// side=client: this branch is only reached after the HasAuthority() and off-game-thread early
+		// returns above both pass.
+		const FFPMInventoryOwnerInfo Owner = DescribeOwner(Self->GetOwner());
 		UE_LOG(LogFicsitsPerformanceManager, Warning,
 			TEXT("[FPM] inventory-init: AddStack hit an UNINITIALISED inventory on %s that BeginPlay did not "
 			     "size (#%d). Gave it its authored %d slot(s); vanilla's AddStack now runs against a real "
-			     "array. A subclass overriding BeginPlay without calling Super produces exactly this."),
-			*GetNameSafe(Self->GetOwner()), N, Authored);
+			     "array. class=%s path=%s side=client crate=%s. "
+			     "A subclass overriding BeginPlay without calling Super produces exactly this."),
+			*GetNameSafe(Self->GetOwner()), N, Authored,
+			*Owner.ClassName, *Owner.PathName, Owner.bIsCrate ? TEXT("yes") : TEXT("no"));
 		FPMOverlay::Post(TEXT("inventory-init"),
 			FString::Printf(TEXT("sized-at-BeginPlay %d · late-repaired %d · authored-zero %d · authority-seen %d"),
 				GInitialised.load(), N, GAuthoredZero.load(), GAuthorityObserved.load()));
 	};
 
 	AddStackHandle = FPM_SUBSCRIBE_VIRTUAL("inventory-init", UFGInventoryComponent::AddStack, Sample, OnAddStack);
+}
+
+void FFPMInventoryInitGuard::OnWorldLoad(UWorld* /*World*/)
+{
+	/*
+	 * ★ THE ORIGIN DIAGNOSTIC'S AUTOMATIC HALF (Ruling 7, item 30). The on-demand half is
+	 * `FPM.Inventory.Report`, registered below — that is the one that actually answers B12 after a
+	 * SunFry join, whenever in the session that lands. This one exists so every session proves the
+	 * instrument ran at all, per "never silent", even if nobody thinks to run the command.
+	 *
+	 * Re-armed on every world load rather than once per process: a re-armed fix (`FPM.Fix.* 1` after a
+	 * `0`) calls Arm() again but this ticker lives across that, so guarding against a stacked duplicate
+	 * here — same shape as FPMSettingsAudit's and FPMDistanceFieldAudit's world-load tickers.
+	 */
+	if (GCoverageTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(GCoverageTicker);
+		GCoverageTicker.Reset();
+	}
+
+	GCoverageTicker = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda([](float /*Delta*/) -> bool
+		{
+			FFPMInventoryInitGuard::LogCoverage(TEXT("per-session"), nullptr);
+			return false; // one shot per world load
+		}),
+		GFPMInventoryCoverageDelaySec);
 }
 
 void FFPMInventoryInitGuard::Disarm()
@@ -258,4 +374,65 @@ void FFPMInventoryInitGuard::Disarm()
 		UNSUBSCRIBE_METHOD(UFGInventoryComponent::AddStack, AddStackHandle);
 		AddStackHandle.Reset();
 	}
+
+	/*
+	 * Same reasoning as FPMSettingsAudit / FPMDistanceFieldAudit: a coverage ticker left running past
+	 * Disarm fires into a module that is being torn down, and it is exactly the leak class
+	 * `FPMFixes::DisarmAll()` exists to close off.
+	 */
+	if (GCoverageTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(GCoverageTicker);
+		GCoverageTicker.Reset();
+	}
 }
+
+void FFPMInventoryInitGuard::LogCoverage(const TCHAR* Reason, FOutputDevice* Ar)
+{
+	const int32 N = GTotalBeginPlayObserved.load();
+
+	FString Line;
+	if (N == 0)
+	{
+		/*
+		 * ★ NOT "ZERO ZERO-SLOT INVENTORIES". A statement about WHEN this ran, same shape as
+		 * FPMSettingsAudit's identical branch. Printing a bare 0 here would read as "the bug does not
+		 * occur", and it is at least as likely to mean "no inventory has finished BeginPlay yet" — the
+		 * near-guaranteed state at the automatic per-world-load print, which fires while the loading
+		 * screen is still up-adjacent.
+		 */
+		Line = TEXT("[FPM] inventory-init coverage: 0 inventories observed at BeginPlay so far - this is a "
+		            "statement about WHEN this ran, not a clean bill of health. Run FPM.Inventory.Report "
+		            "again once you are in a world, and again after a client has joined, for the real tally.");
+	}
+	else
+	{
+		Line = FString::Printf(
+			TEXT("[FPM] inventory-init coverage (%s): %d inventory(ies) observed at BeginPlay | "
+			     "%d sized-at-BeginPlay (repaired) | %d late-repaired-at-AddStack (backstop) | "
+			     "%d authored-zero (left alone) | %d observed-on-authority-not-repaired (both hooks) | "
+			     "%d refused off the game thread | of the SAMPLED rows above: %d owned by an AFGCrate, "
+			     "%d owner-class-unresolved (<no owner>)"),
+			Reason, N, GInitialised.load(), GLateRepaired.load(), GAuthoredZero.load(),
+			GAuthorityObserved.load(), GRefused.load(), GCrateOwned.load(), GOwnerUnresolved.load());
+	}
+
+	if (Ar != nullptr) { Ar->Log(Line); }
+	UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Line);
+}
+
+/*
+ * `FPM.Inventory.Report` — the on-demand half of the origin diagnostic (Ruling 7, item 30). Output goes
+ * through the OUTPUT DEVICE, not only UE_LOG: `Display`-level lines do not echo to the in-game console
+ * in this game, and a command that looks dead when it actually ran has cost whole boot cycles before.
+ */
+static FAutoConsoleCommandWithOutputDevice GFPMInventoryReportCmd(
+	TEXT("FPM.Inventory.Report"),
+	TEXT("Print the inventory-init origin-naming coverage: how many inventories this session's hooks have "
+	     "observed at BeginPlay, the outcome counters (repaired / late-repaired / authored-zero / "
+	     "authority-observed / refused), and how many of the SAMPLED rows were AFGCrate-owned. Run once per "
+	     "session and again after a client joins."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FFPMInventoryInitGuard::LogCoverage(TEXT("on request"), &Ar);
+	}));

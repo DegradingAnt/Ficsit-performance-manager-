@@ -3,6 +3,7 @@
 #include "Fixes/Interop/FPMInstanceRemoveSwap.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 
 // Owns ULightweightHierarchicalInstancedStaticMeshComponent. ABSTRACTINSTANCE_API-exported, so no
@@ -279,8 +280,12 @@ void FFPMInstanceRemoveSwap::ReportNow()
 		     "pieces are still broken' is expected, not a failure."));
 }
 
-static FAutoConsoleCommand GFPMInstanceSwapReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMInstanceSwapReportCmd(
 	TEXT("FPM.InstanceSwap.Report"),
 	TEXT("Instance remove-swap: components converted, already-correct, and whether the CDO write reaches "
 	     "components built after world load."),
-	FConsoleCommandDelegate::CreateStatic(&FFPMInstanceRemoveSwap::ReportNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMInstanceRemoveSwap::ReportNow();
+	}));

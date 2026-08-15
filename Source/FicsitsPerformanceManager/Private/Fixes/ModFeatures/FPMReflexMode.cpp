@@ -3,6 +3,8 @@
 #include "Fixes/ModFeatures/FPMReflexMode.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
+#include "Core/FPMCVarWriter.h"
 #include "Core/FPMDiag.h"
 
 #include "HAL/IConsoleManager.h"
@@ -180,20 +182,17 @@ void FFPMReflexMode::Disarm()
 	 *
 	 * Zero residue is untouched either way: this writes no file and no ini.
 	 */
-	if (PriorEnable >= 0)
+	static const FName Owner(TEXT("reflex-mode"));
+
+	// The writer captured the prior value/SetBy at the first Hold; Release restores both through the
+	// engine's own tagged-history mechanism. Safe to call when nothing is held - it says so and no-ops.
+	const bool bReleasedEnable = FPMCVarWriter::Get().Release(Owner, GFPMReflexEnableCVar);
+	const bool bReleasedMode   = FPMCVarWriter::Get().Release(Owner, GFPMReflexModeCVar);
+	if (bReleasedEnable || bReleasedMode)
 	{
-		if (IConsoleVariable* EnableVar = FindCVar(GFPMReflexEnableCVar))
-		{
-			EnableVar->Set(PriorEnable, ECVF_SetByCode);
-		}
-		if (IConsoleVariable* ModeVar = FindCVar(GFPMReflexModeCVar))
-		{
-			ModeVar->Set(PriorMode, ECVF_SetByCode);
-		}
 		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] reflex: restored %s=%d and %s=%d, the values captured before our first write."),
-			GFPMReflexEnableCVar, PriorEnable, GFPMReflexModeCVar, PriorMode);
-		PriorEnable = PriorMode = -1;
+			TEXT("[FPM] reflex: released %s and %s back to their prior value/SetBy."),
+			GFPMReflexEnableCVar, GFPMReflexModeCVar);
 	}
 
 	AppliedMode = -1;
@@ -253,29 +252,37 @@ void FFPMReflexMode::ApplyFromCVar(const TCHAR* Moment)
 		 * effect until the next frame), but writing one without the other is the actual bug.
 		 */
 		/*
-		 * ★ CAPTURE THE PRIOR STATE BEFORE THE FIRST WRITE, so Disarm can put it back for real.
-		 * The DLL says Enable ships at 0, but "ships at 0" is a DEFAULT, not a guarantee about this
-		 * player - a config or another mod may have raised it, and restoring to a documented default
-		 * rather than to what was actually there is how a revert becomes a change.
+		 * ★ THE WRITER CAPTURES THE PRIOR STATE, not this fix. D3: a hand-rolled capture here risked
+		 * recording our OWN earlier write instead of the player's on a re-hold - the exact bug R33
+		 * killed elsewhere. FPMCVarWriter::Hold captures on first hold and keeps that baseline across
+		 * every re-hold.
 		 */
-		if (PriorEnable < 0)
+		static const FName Owner(TEXT("reflex-mode"));
+		const bool bEnableHeld = FPMCVarWriter::Get().Hold(
+			Owner, GFPMReflexEnableCVar, TEXT("1"),
+			TEXT("reflex mode: .Enable ships at 0, this is the required first half of the pair"));
+		const bool bModeHeld = FPMCVarWriter::Get().Hold(
+			Owner, GFPMReflexModeCVar, *FString::FromInt(Want),
+			TEXT("reflex mode: the player's requested latency mode"));
+
+		if (bEnableHeld && bModeHeld)
 		{
-			PriorEnable = EnableVar->GetInt();
-			PriorMode   = ModeVar->GetInt();
+			AppliedMode = Want;
+			RouteFound = FString::Printf(TEXT("cvars %s=1 + %s=%d"),
+				GFPMReflexEnableCVar, GFPMReflexModeCVar, Want);
+
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] reflex: ENABLED the extension and set mode %d at %s. Both writes are "
+				     "required - %s ships at 0, so a mode-only write would have configured a disabled "
+				     "feature and reported success."), Want, Moment, GFPMReflexEnableCVar);
+			return;
 		}
 
-		EnableVar->Set(1, ECVF_SetByCode);
-		ModeVar->Set(Want, ECVF_SetByCode);
-
-		AppliedMode = Want;
-		RouteFound = FString::Printf(TEXT("cvars %s=1 + %s=%d"),
-			GFPMReflexEnableCVar, GFPMReflexModeCVar, Want);
-
-		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] reflex: ENABLED the extension and set mode %d at %s. Both writes are required - "
-			     "%s ships at 0, so a mode-only write would have configured a disabled feature and "
-			     "reported success."), Want, Moment, GFPMReflexEnableCVar);
-		return;
+		// One or both holds were REFUSED (the writer already logged why - Vet()'s clauses). Do not
+		// report success for a write that did not fully happen; release whichever half succeeded so
+		// Reflex is not left half-enabled, then fall through to the reflection route below.
+		FPMCVarWriter::Get().Release(Owner, GFPMReflexEnableCVar);
+		FPMCVarWriter::Get().Release(Owner, GFPMReflexModeCVar);
 	}
 
 	UE_CLOG(EnableVar != nullptr || ModeVar != nullptr, LogFicsitsPerformanceManager, Warning,
@@ -330,7 +337,11 @@ void FFPMReflexMode::ReportNow()
 		     "judder, not as an error."));
 }
 
-static FAutoConsoleCommand GFPMReflexReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMReflexReportCmd(
 	TEXT("FPM.Reflex.Report"),
 	TEXT("Reflex: the mode requested, the mode applied, and WHICH route reached the plugin."),
-	FConsoleCommandDelegate::CreateStatic(&FFPMReflexMode::ReportNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMReflexMode::ReportNow();
+	}));

@@ -3,6 +3,7 @@
 #include "Fixes/Interop/FPMWeatherIndoorGate.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMEnclosure.h"
 #include "Core/FPMOverlay.h"
@@ -443,7 +444,11 @@ void FFPMWeatherIndoorGate::ReportNow()
 		     "elsewhere. Do not report the dust as fixed; find the real lever."));
 }
 
-static FAutoConsoleCommand GFPMWeatherReportCmd(
+static FAutoConsoleCommandWithOutputDevice GFPMWeatherReportCmd(
 	TEXT("FPM.Weather.Report"),
 	TEXT("Weather indoor gate: targets found, sealed state, and whether our writes actually held."),
-	FConsoleCommandDelegate::CreateStatic(&FFPMWeatherIndoorGate::ReportNow));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FFPMWeatherIndoorGate::ReportNow();
+	}));

@@ -245,8 +245,12 @@ void FFPMStallSampler::SampleGameThread(double StalledMs)
 	FMemory::Memzero(BackTrace, sizeof(BackTrace));
 
 	// ⚠ THE SUSPEND HAPPENS INSIDE HERE. Nothing above or below it may take a lock the game thread could
-	// be holding — that is the classic profiler deadlock. `Modules` is immutable after Arm and
-	// `ResultsLock` is only ever taken by this thread and the report, never by the game thread.
+	// be holding, that is the classic profiler deadlock. `Modules` is immutable after Arm. `ResultsLock`
+	// IS also taken by the game thread, inside `LogReport()`, so deadlock-freedom does NOT come from
+	// which threads touch this lock. It comes from ORDER: `CaptureThreadStackBackTrace` above suspends
+	// the game thread, walks, and resumes it BEFORE returning, and the lock below is only taken AFTER
+	// that call returns, so the watchdog never waits on a lock held by a thread it has just suspended.
+	// See the full corrected argument at FPMStallSampler.h, near `bReportInProgress`.
 	const uint32 Depth = FPlatformStackWalk::CaptureThreadStackBackTrace(
 		GameThreadId, BackTrace, MaxStackDepth);
 

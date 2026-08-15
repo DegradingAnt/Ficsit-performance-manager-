@@ -146,14 +146,24 @@ void FFPMBlueprintSweepGate::Arm()
 	SweepHookHandle = FPM_SUBSCRIBE("blueprint-sweep-gate",
 		AFGBlueprintSubsystem::RefreshBlueprintRecipeRequirements, OnRefreshSweep);
 
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] blueprint sweep gate ARMED. Vanilla re-verifies EVERY saved blueprint's recipe "
-		     "requirements about every 2 s (FGBlueprintSubsystem.h:201, driven by mTimeSinceLastRecipeCheck "
-		     ":691) - O(library) on the game thread, forever. That answer can only change when a recipe "
-		     "becomes available or the blueprint set changes, so sweeps in between are cancelled and every "
-		     "sweep the game actually wants runs UNTOUCHED. It audits itself every %.0f s and says so if a "
-		     "cancelled sweep would ever have mattered."),
-		CVarBlueprintGateAuditSeconds.GetValueOnAnyThread());
+	if (SweepHookHandle.IsValid())
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display,
+			TEXT("[FPM] blueprint sweep gate ARMED. Vanilla re-verifies EVERY saved blueprint's recipe "
+			     "requirements about every 2 s (FGBlueprintSubsystem.h:201, driven by mTimeSinceLastRecipeCheck "
+			     ":691) - O(library) on the game thread, forever. That answer can only change when a recipe "
+			     "becomes available or the blueprint set changes, so sweeps in between are cancelled and every "
+			     "sweep the game actually wants runs UNTOUCHED. It audits itself every %.0f s and says so if a "
+			     "cancelled sweep would ever have mattered."),
+			CVarBlueprintGateAuditSeconds.GetValueOnAnyThread());
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] blueprint sweep gate NOT armed - hook install FAILED on "
+			     "AFGBlueprintSubsystem::RefreshBlueprintRecipeRequirements. The O(library) recipe re-verify "
+			     "runs UNGATED this session."));
+	}
 }
 
 void FFPMBlueprintSweepGate::Disarm()
@@ -168,9 +178,12 @@ void FFPMBlueprintSweepGate::Disarm()
 	 * "it does not own lifetimes". Clearing the handle alone would have left this gate CANCELLING
 	 * SWEEPS after Disarm claimed to have stopped it, which is the one thing a disarm must not do.
 	 *
-	 * This is the only fix in the mod that removes its hook, because it is the only one that can do
-	 * harm by continuing: everything else either observes or repairs, and running one extra time is
-	 * free. Cancelling a sweep the game wanted is not.
+	 * ⚠ THIS IS NOT THE ONLY FIX THAT REMOVES ITS HOOK. 18 files in this mod call UNSUBSCRIBE_METHOD
+	 * from their own Disarm, all through the same NativeHookManager path. What is true, and worth
+	 * stating, is why THIS one needs it: this fix does ACTIVE work, cancelling a sweep, rather than
+	 * passive observation or repair. A stale handler that keeps running after Disarm claims to have
+	 * stopped it does not just waste a read here, it cancels a sweep the game wanted while the log
+	 * says the fix is off. That is the one outcome a disarm must not produce.
 	 *
 	 * ⚠ IT BYPASSES THE LEDGER WRAPPER ON PURPOSE, rather than the ledger growing an uninstall API. The
 	 * ledger's own header states its scope — a record of what installed and in what order, not a

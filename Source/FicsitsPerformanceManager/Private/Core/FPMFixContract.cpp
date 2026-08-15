@@ -3,6 +3,7 @@
 #include "Core/FPMFixContract.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 
 #include "HAL/IConsoleManager.h"
 
@@ -131,10 +132,14 @@ void FPMFixes::Dump()
 	FPMDiag::LogAll();
 }
 
-static FAutoConsoleCommand GFixDumpCmd(
+static FAutoConsoleCommandWithOutputDevice GFixDumpCmd(
 	TEXT("FPM.Diag.Dump"),
 	TEXT("Print every armed FPM fix with its side, origin status and diagnostic channel, then every channel level."),
-	FConsoleCommandDelegate::CreateStatic(&FPMFixes::Dump));
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
+	{
+		FPMScopedConsoleEcho Echo(&Ar);
+		FPMFixes::Dump();
+	}));
 
 void FPMFixes::NotifyWorldLoad(UWorld* World)
 {

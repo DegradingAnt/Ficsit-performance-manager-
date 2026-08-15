@@ -115,9 +115,15 @@ constexpr double GFPMPsoSettleSeconds = 30.0;
  * `UE_SET_LOG_VERBOSITY`. Categories register themselves by name at construction, so the name route
  * reaches it regardless of static linkage.
  */
-static void FPMSetEnginePsoHitchLogging(bool bVerbose)
+/**
+ * Returns whether the `LOG` command was actually handled (`FSelfRegisteringExec::StaticExec`'s own
+ * return value), not just whether it was sent. ⚠ Discarding that return used to be the shape of this
+ * function: the caller then logged a flat "raised to Verbose" regardless of whether any registered exec
+ * consumed the command. Fixed 2026-08-15 - callers now check this and report honestly.
+ */
+static bool FPMSetEnginePsoHitchLogging(bool bVerbose)
 {
-	if (GLog == nullptr) { return; }
+	if (GLog == nullptr) { return false; }
 
 	// `Log` is LogPSOHitching's own declared default (`PipelineStateCache.cpp:45`), so this restores
 	// rather than guesses. `Log Reset` would have reset EVERY category, which is not ours to do.
@@ -125,7 +131,7 @@ static void FPMSetEnginePsoHitchLogging(bool bVerbose)
 		? TEXT("Log LogPSOHitching Verbose")
 		: TEXT("Log LogPSOHitching Log");
 
-	FSelfRegisteringExec::StaticExec(nullptr, Cmd, *GLog);
+	return FSelfRegisteringExec::StaticExec(nullptr, Cmd, *GLog);
 }
 
 FFPMHitchMeter& FFPMHitchMeter::Get()
@@ -182,11 +188,25 @@ void FFPMHitchMeter::Arm()
 	// cannot emit and put a misleading switch in the server log for nothing.
 	if (!IsRunningDedicatedServer() && CVarPsoEngineHitchLog.GetValueOnAnyThread() != 0)
 	{
-		FPMSetEnginePsoHitchLogging(true);
-		UE_LOG(LogFicsitsPerformanceManager, Display,
-			TEXT("[FPM] engine PSO-hitch logging raised to Verbose. The game will now print one "
-			     "'Runtime graphics/compute PSO creation hitch (N msec)' line per pipeline built above "
-			     "r.PSO.RuntimeCreationHitchThreshold. Set FPM.Pso.EngineHitchLog 0 to leave it alone."));
+		// ⚠ THE RETURN VALUE IS CHECKED, NOT ASSUMED. Until 2026-08-15 this logged the same "raised to
+		// Verbose" line whether or not `StaticExec` actually handled the `LOG` command - a build where
+		// nothing consumed it would still claim success, and the honest signal (no per-pipeline hitch
+		// lines ever appear) would be silent.
+		if (FPMSetEnginePsoHitchLogging(true))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] engine PSO-hitch logging raised to Verbose. The game will now print one "
+				     "'Runtime graphics/compute PSO creation hitch (N msec)' line per pipeline built above "
+				     "r.PSO.RuntimeCreationHitchThreshold. Set FPM.Pso.EngineHitchLog 0 to leave it alone."));
+		}
+		else
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM] could NOT raise engine PSO-hitch logging to Verbose: the 'LOG LogPSOHitching "
+				     "Verbose' command was not handled (no registered exec consumed it, or GLog was "
+				     "unavailable). Per-pipeline hitch lines will NOT appear this session. Set "
+				     "FPM.Pso.EngineHitchLog 0 to silence this warning if that is expected."));
+		}
 	}
 
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
@@ -404,9 +424,12 @@ void FFPMHitchMeter::OnPsoPrecompileBegin(uint32 Count)
 	bPsoRunActive.store(true, std::memory_order_relaxed);
 
 	// ⚠ RENDER THREAD (`FShaderPipelineCache : FTickableObjectRenderThread`, `ShaderPipelineCache.h:78`).
-	// UE_LOG is thread-safe and `FPMDiag::IsOn` is already called off the game thread by
-	// `OnAsyncLoadPackage` in this same file. `FPMOverlay` is NOT, so nothing here posts to the screen —
-	// the summary does that, from the game thread, where it belongs.
+	// UE_LOG is thread-safe, and `FPMDiag::IsOn` is already called off the game thread by
+	// `OnAsyncLoadPackage` in this same file. `FPMOverlay` IS ALSO thread-safe: it takes `FScopeLock`
+	// inside `Post()` itself (FPMOverlay.cpp:170), one of five lock sites in that file, so a post from
+	// this render-thread callback would not race a game-thread post. Nothing here posts to the screen
+	// anyway, by choice rather than necessity: the overlay carries the recurring PSO summary line, not
+	// one-off begin/complete events, and the summary posts from the game thread, where it belongs.
 	if (FPMDiag::IsOn(FPMDiag::EChannel::Hitch))
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Display,
@@ -1306,19 +1329,21 @@ void FFPMHitchMeter::LogPsoReport()
  * happened to finish last in that span, so harvesting names from the log ranks by coincidence. This ranks
  * by count.
  */
-static FAutoConsoleCommand GHitchPackagesCmd(
+static FAutoConsoleCommandWithOutputDevice GHitchPackagesCmd(
 	TEXT("FPM.Hitch.Packages"),
 	TEXT("Print the synchronously-loaded packages this session, most frequent first."),
-	FConsoleCommandDelegate::CreateStatic([]()
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMScopedConsoleEcho Echo(&Ar);
 		FFPMHitchMeter::Get().LogSyncPackages();
 	}));
 
-static FAutoConsoleCommand GHitchReportCmd(
+static FAutoConsoleCommandWithOutputDevice GHitchReportCmd(
 	TEXT("FPM.Hitch.Report"),
 	TEXT("Print the FPM hitch meter's running totals now, plus the session totals."),
-	FConsoleCommandDelegate::CreateStatic([]()
+	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMScopedConsoleEcho Echo(&Ar);
 		FFPMHitchMeter::Get().LogSummary(TEXT("on request"));
 	}));
 

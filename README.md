@@ -97,18 +97,18 @@ machines different behavior without telling you.
 ## Diagnostics
 
 Nothing needs a rebuild to inspect. Every diagnostic is a console variable or a console command, and
-every name starts with `FPM.`. Run `FPM.Diag.List` to print all of them with their live values.
+every name starts with `FPM.`. Run `FPM.Help` to print the full command and variable surface, derived
+live from what is actually registered.
 
 | Command | What it answers |
 |---|---|
-| `FPM.Version`, `FPM.Side` | Which build runs, and on which side. |
-| `FPM.Fixes`, `FPM.Hooks` | Each armed fix with its side, origin status and channel. Each installed hook with its owner. |
+| `FPM.Help` | Every registered `FPM.*` command and variable, in labelled groups, with its help text. |
+| `FPM.CrashStamp` | The keys FPM wrote into the crash context at startup — build version, side, armed-fix roster, hook count. These are dictionary keys inside the crash context, not separate commands: there is no `FPM.Version`, `FPM.Side`, `FPM.Fixes` or `FPM.Hooks` to type. |
 | `FPM.Diag.List` | Each diagnostic channel and its effective level. |
 | `FPM.Support` | A support bundle you can copy out of the console. |
 | `FPM.Residue`, `FPM.ResidueDrill` | Audits the zero-residue claim from inside the game. |
 | `FPM.CVars`, `FPM.CVarSnap`, `FPM.CVarDiff` | What FPM holds now, and what changed. |
 | `FPM.Changes` | Every value this session that FPM is responsible for. |
-| `FPM.CrashStamp` | The keys FPM wrote into the crash context at startup. |
 | `FPM.Hitch.Report` | Frame-time buckets, and how much stall is still unattributed. |
 | `FPM.Off`, `FPM.Hold`, `FPM.Release` | Release everything FPM holds, without unloading the mod. |
 
