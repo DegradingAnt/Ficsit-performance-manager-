@@ -1,4 +1,4 @@
-# CHANGELOG — FICSIT's Performance Manager (FPM2)
+# CHANGELOG — Ficsit's Performance Manager (FPM2)
 
 Append-only, **newest entry at the top**. One entry per discrete change — do not batch, and do not defer
 to release time, because that is how release notes end up guessed after the fact instead of recorded as
@@ -233,6 +233,32 @@ The first build failed: I called `SupportsRemoveAtSwap()`, lifted from the local
 `InstancedStaticMesh.cpp:3801`. The real accessor is `SupportsRemoveSwap()`. Worth recording because the
 engine's own doc comment at `:460` is ALSO wrong — it names `SetRemoveSwapEnabled()`, which does not
 exist. Read the declaration, not the prose beside it, and not a variable that merely sounds like it.
+## 2026-08-15 02:50 — SPEC — one display name, spelled the way Ant ruled it
+
+- **What:**     `Ficsit's Performance Manager` is now the only display name. Four surfaces carried
+                three different spellings: `.uplugin:5` read `FICSIT's performance manager (ALPHA)`,
+                `FPMSettingsConfig.cpp:76` read `FICSIT's Performance Manager`, and the two doc
+                headers matched the `.cpp`. The `(ALPHA)` suffix is gone. The `Description` field
+                still opens with `ALPHA BUILD`, so the pre-release warning is not lost.
+- **Why:**      Ant ruled it 2026-08-15: *"public display name `Ficsit's Performance Manager` (no
+                ALPHA suffix, apply now)"*. Both the capitalisation and the suffix change. Applying
+                it to the descriptor alone would have left the mod manager and the in-game settings
+                panel showing different spellings of the same mod, which is the fault the ruling
+                exists to close. The mod REFERENCE is untouched and stays `FicsitsPerformanceManager`
+                — it locks permanently on first upload.
+- **Files:**    `FicsitsPerformanceManager.uplugin` · `Private/Configuration/FPMSettingsConfig.cpp`
+                · `CONTRIBUTING.md` · `CHANGELOG.md`. **No version bump** — `CONTRIBUTING.md:79`
+                bumps *when the change ships*, and this has not shipped. It rides the next package,
+                which is a MINOR by the "would a player notice" test: they would, in the settings menu.
+- **Revert:**   Restore the four strings. Undo only if she wants `FICSIT` in caps after seeing it in
+                the settings panel — the reason to look is that the game renders it beside vanilla
+                UI, and caps read differently there than in a diff.
+- **Verified:** BUILD-NOT-RUN. Read back from bytes at all four sites. Negative check: `grep -rn
+                "FICSIT's"` over `*.uplugin *.cpp *.h *.md *.ini` exits **1**, no matches, with a
+                positive control proving the search can match. ⚠ `FPMSettingsConfig.cpp` is a
+                `LOCTEXT` in compiled code — **not exercised until the next build**, and no boot test
+                has run. Source now differs from the deployed `0.11.25` payload by this string.
+
 ## 2026-08-11 16:40 — CODE — the upscaler layer starts coming back to FPM2
 
 Ant, 2026-08-11: *"we need that back in fpm2"* and *"do reflex too"*. FPM1 carried an upscaler layer —

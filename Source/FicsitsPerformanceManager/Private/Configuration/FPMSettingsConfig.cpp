@@ -73,7 +73,7 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 	ConfigId.ModReference   = TEXT("FicsitsPerformanceManager");
 	ConfigId.ConfigCategory = FString();
 
-	DisplayName = LOCTEXT("ModDisplayName", "FICSIT's Performance Manager");
+	DisplayName = LOCTEXT("ModDisplayName", "Ficsit's Performance Manager");
 	Description = LOCTEXT("ModDescription",
 		"Fixes for standing bugs in the game and in mod interactions, plus a few levers the game does "
 		"not expose. Everything here writes to a console variable and nothing else - no game setting is "

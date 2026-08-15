@@ -1,4 +1,4 @@
-# Contributing to FICSIT's Performance Manager
+# Contributing to Ficsit's Performance Manager
 
 **DegradingAnt (Ant)** maintains this project and has the final say on every decision. Issues and pull
 requests are welcome.
