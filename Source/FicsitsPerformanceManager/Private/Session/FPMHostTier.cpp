@@ -84,7 +84,7 @@ void FFPMHostTier::Arm()
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] host-tier armed. Every world load re-probes from scratch: this machine's own host "
 		     "status is KNOWN immediately; a client waits up to %.0fs for the host's replicated FPM "
-		     "probe before declaring VANILLA, and keeps watching afterwards for a late arrival."),
+		     "probe before reporting NO-HOST-REPLICA, and keeps watching afterwards for a late arrival."),
 		TimeoutSeconds);
 
 	// Same discipline as FPMCVarWriter::SelfTest and the wrist slot's GFPMWristSelfTest: the classifier
@@ -408,8 +408,10 @@ bool FFPMHostTier::SelfTest(FOutputDevice* Ar)
  */
 static FAutoConsoleCommandWithOutputDevice GFPMStatusCmd(
 	TEXT("FPM.Status"),
-	TEXT("Print the host tier (FULL/VANILLA/PROBING), what it does and does not know, and — on "
-	     "VANILLA — which currently armed fixes lose their server-authoritative half."),
+	TEXT("Print the host tier (FULL/NO-HOST-REPLICA/PROBING), what it does and does not know, "
+	     "including whether SML's join gate is enforced right now, and — on NO-HOST-REPLICA — "
+	     "which currently armed fixes would lose their server-authoritative half IF the host did "
+	     "turn out to lack FPM."),
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
 		FFPMHostTier::ReportStatus(Ar);

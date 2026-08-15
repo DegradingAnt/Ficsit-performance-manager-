@@ -442,7 +442,7 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 
 	// Slice 4, §5.9: the host probe + tier line. Any — an authoritative world (dedicated/listen/
 	// singleplayer) declares FULL immediately and self-tests its own registration; a client waits up
-	// to 30s for the host's replicated probe before declaring VANILLA, and keeps watching for a late
+	// to 30s for the host's replicated probe before reporting NO-HOST-REPLICA, and keeps watching for a late
 	// arrival afterwards. FPM.Status prints the tier; FPM.HostProbe.SelfTest re-runs the classifier
 	// proof on demand.
 	FPMFixes::Arm(FFPMHostTier::Get());

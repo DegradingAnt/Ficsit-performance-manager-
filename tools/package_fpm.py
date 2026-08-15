@@ -230,6 +230,30 @@ def verify(expect_version: str, keep_symbols: bool, cutoff: float) -> bool:
             else:
                 ok(f"{n} -> {got}")
 
+        # 6. DEV-ONLY DIRECTORIES MUST NOT SHIP. Review 2026-08-15, M4: ArtSource/ holds 52 MB of
+        #    renders, .blend and .glb source art in a repo whose origin is D:, and NOTHING in the tree
+        #    named it, so whether it reached the shipped zip was UNVERIFIED rather than known.
+        #
+        #    IT DOES NOT: PackagePlugin zips the STAGE directory, not the source tree
+        #    (PackagePlugin.cs:173 ArchiveStagedPlugin -> CreateZipFromDirectory), and staging only takes
+        #    the .uplugin, cooked Content, Binaries, Resources, plus anything Config/FilterPlugin.ini
+        #    adds — and FPM ships no FilterPlugin.ini. Measured on the four archives present on
+        #    2026-08-15: every per-target zip's top level is exactly Binaries, Content, Resources and
+        #    FicsitsPerformanceManager.uplugin, with zero matches for any name below.
+        #
+        #    THIS CHECK IS WHY THAT STAYS TRUE. A FilterPlugin.ini added later for one legitimate extra
+        #    file is one glob away from sweeping a 52 MB art tree into a mod release, and the zip would
+        #    still look fine from the outside. Verify the ARTEFACT, not the step that produced it.
+        dev_only = ("artsource/", "_dev/", "docs/", "tools/", ".git", "intermediate/", "saved/")
+        shipped_dev = sorted({n for n in names
+                              if any(part in n.lower() for part in dev_only)})
+        if shipped_dev:
+            fail(f"{len(shipped_dev)} DEV-ONLY path(s) in the shipped zip, e.g. {shipped_dev[:5]} — "
+                 f"a release must carry Binaries, Content, Resources and the .uplugin, nothing else")
+            good = False
+        else:
+            ok(f"no dev-only paths in {len(names)} shipped entries (checked {list(dev_only)})")
+
         # 5. Symbols. Must never be silent: shipping a 140 MB payload for an 880 KB mod is the kind of
         #    thing nobody notices until a user does.
         pdbs = [n for n in names if n.lower().endswith((".pdb", ".debug"))]

@@ -61,7 +61,98 @@ descriptor, so there is no second place to bump and no way for the log line to d
 
 Entries since the last `VERSION` line are the draft release notes for the next ficsit.app upload.
 
----## 2026-08-11 13:35 — CODE — two toggles that lied, the gate that certified them, and the 320 ms asset
+---
+
+## 2026-08-15 10:25 — CODE — the review fixes: an unreachable verdict, a guessed side, a discarded bool
+
+Closing HIGH 1, HIGH 2, HIGH 3 and the five Mediums from
+`60-CONTEXT/agent-findings/2026-08-15/combined-review.md`, the three-axis review of what twelve
+concurrent agents built tonight. Verdict was NEEDS REVISION.
+
+- **What:**
+  1. `EFPMHostTier::Vanilla` renamed `NoHostReplica` and the tier line rewritten. It no longer says the
+     host lacks FPM. It reads `SML.SkipRemoteModListCheck` and reports which of two worlds the session
+     is in.
+  2. `FPMJoinVersionEcho` no longer infers its own side from `ClientLoginState`. The side comes from the
+     net driver's two connection containers, the decision is a pure function, and a self-test drives all
+     four cases every boot. `FPM.JoinVersion.Report` added.
+  3. `FPMJoinVersionEcho` keeps `HandleModListObject`'s bool and reports an unparseable handshake as
+     exactly that.
+  4. `FPMLeverRegistry` gains `bIsSelfTestFixture`, derived from a reserved name prefix, and every count
+     it prints now separates production levers from fixtures.
+  5. `FPM.Diag.TimeOfDay` / `FPM.Diag.Sockets` renamed `FPM.Probe.*`, and `FPMDiag` gained a namespace
+     audit that names any foreign console command under `FPM.Diag.`.
+  6. `tools/package_fpm.py` fails the verify pass if a dev-only path (ArtSource, docs, tools, _dev)
+     reaches a shipped zip.
+  7. `RootGameWorld_FicsitsPerformanceManager.h`'s two stacked doc comments merged into one.
+
+- **Why:**
+  1. **The verdict was unreachable, so the only reachable non-FULL outcome was a lie.** The descriptor
+     sets `RequiredOnRemote: true` with an exact pin, and Ant ruled both stay. SML runs that gate on the
+     CLIENT too (`SMLNetworkManager.cpp:58-64`), adding any unreported required-on-remote mod to
+     `RemoteMissingMods` and closing the connection. A client reading a tier line has already joined, so
+     it cannot be on a host without FPM. The absent replica could only ever mean FPM's own probe failed,
+     and the readout blamed the host for it. The dead-instrument mirror.
+  2. `Connection->ClientLoginState == EClientLoginState::Invalid` is an inference from a state machine
+     that exists for something else, and nothing proved it. SML never infers the side. Every
+     user-facing string in the file was built from that unproven bool while the self-test proved only
+     the version classifier.
+  3. SML treats `HandleModListObject`'s false as FATAL and closes the connection. Discarding it made a
+     malformed message reach the player as "may be missing FPM entirely" and forced it onto the overlay:
+     a confident wrong cause on a different fault.
+  4. The five self-test fixtures live in the production table and `Levers.Num()` counted them. The
+     disclosure "every lever below is a self-test fixture" was prose, true only until the first real
+     lever landed, at which point it would have become false silently.
+  5. `FPM.Diag.*` is the channel-variable namespace. Two console COMMANDS were added to it while another
+     agent was adding channels. No collision today, because nothing prefix-scans, but one namespace had
+     two owners and nothing said so.
+  6. ArtSource is 52 MB of renders and .blend in a repo whose origin is D:, and nothing in the tree
+     named it, so whether it shipped was unverified.
+
+- **Files:** `Public|Private/Session/FPMHostTier.*` · `Public/Core/FPMJoinVersionEcho.h` +
+  `Private/Core/FPMJoinVersionEcho.cpp` · `Public/Core/FPMLeverTypes.h` ·
+  `Public/Core/FPMLeverRegistry.h` + `Private/Core/FPMLeverRegistry.cpp` ·
+  `Public|Private/Core/FPMBootProbes.*` · `Private/Core/FPMDiag.cpp` ·
+  `Public/Module/RootGameWorld_FicsitsPerformanceManager.h` · `tools/package_fpm.py`.
+  **NO version bump.** Nothing here is packaged or deployed, and the descriptor is untouched on purpose:
+  `RemoteVersionRange` and `RequiredOnRemote` are Ant's ruling and the review's finding was that the
+  READOUT was wrong, not the pin.
+
+- **Revert:** the tier rename reverts cleanly (`NoHostReplica` -> `Vanilla`) but should not be, unless
+  `RequiredOnRemote` ever goes false, which is the ONLY change that would make a genuinely FPM-less host
+  reachable and the old wording true again. That condition is written into `FPMHostTier.h`'s
+  REACHABILITY block.
+
+- **Verified:** BUILD-ONLY. Forced full-module rebuild after touching every `.cpp`: all four unity
+  blobs compiled, both link stages ran, `Result: Succeeded`, zero warnings in the whole log.
+  `tools/check_structure.py` exit 0, 48 fixes, 0 errors, 0 warnings. The packaging gate was exercised in
+  BOTH directions against a synthetic listing (known-negative empty, known-positive four hits) and run
+  for real against the four archives on disk, which hold zero dev-only paths. NOT boot-tested: nothing
+  in this tree has ever run, and the side classifier in particular has never seen a real handshake.
+
+### ⚠ THE CHANGELOG GAP THIS ENTRY DOES NOT CLOSE
+
+This entry covers only the review-fix pass. **Tonight's slice work has no changelog entries at all.**
+The newest entry before this one is `2026-08-15 03:52`, and every unit from slices 0 to 5 landed after
+it: `FPMJoinVersionEcho`, `FPMHostTier`, `FPMHostProbeSubsystem`, `FPMLeverRegistry`, `FPMIndoorFog`,
+`FPMNetGuidCensus`, `FPMDetectorRegistry`, `FPMConveyorGrabDetector`, `FPMMasterMaterialDetector`,
+`FPMBootProbes`, `FPMThirdPersonToggle`, `FPMAudioVoiceDetector`, `FPMLightweightCensusDetector`,
+`FPMWidgetTickDetector`, `FPMWristSlotComponent`, the GC meter split. Confirmed by grepping this file
+for each name: zero hits before this entry.
+
+They are NOT written up here on purpose. Their `Why` and `Verified` fields belong to the agents that
+built them; inventing those fields is exactly the confident-wrong-claim this project bans, and a
+fabricated `Verified: build-only` on a fix somebody else boot-tested is worse than a blank. Recorded as
+an open gap so it is visible rather than silent.
+
+**Also observed:** two `2026-08-11` entries are glued to the `---` separator near the top of this file
+(`---## 2026-08-11 13:35`), so they do not parse as headings and sit ABOVE the newer `2026-08-15`
+entries, breaking the file's own "newest at the top" rule. The missing newline is fixed by this commit;
+the ORDER is left alone, because silently reshuffling somebody else's entries is not a formatting fix.
+
+---
+
+## 2026-08-11 13:35 — CODE — two toggles that lied, the gate that certified them, and the 320 ms asset
 
 From the whole-mod VOX review Ant asked for after `0.11.14`.
 

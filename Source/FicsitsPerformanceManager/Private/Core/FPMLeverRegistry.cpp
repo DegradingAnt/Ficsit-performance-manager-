@@ -680,7 +680,6 @@ void FFPMLeverRegistry::ReportNow(FOutputDevice& Ar) const
 		}
 	}
 
-	UE_LOG(LogFicsitsPerformanceManager, Display,
 	/*
 	 * THE DISCLOSURE IS NOW COMPUTED, NOT WRITTEN DOWN (M2). The old line asserted "every lever below
 	 * is a self-test fixture" in prose. That was true the day it was written and would have become

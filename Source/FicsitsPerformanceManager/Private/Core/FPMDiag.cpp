@@ -294,7 +294,7 @@ static TAutoConsoleVariable<int32> CVarDiagJoinVersion(
 
 static TAutoConsoleVariable<int32> CVarDiagHostTier(
 	TEXT("FPM.Diag.HostTier"), 1,
-	TEXT("Slice 4 host probe: FULL/VANILLA/PROBING tier decisions. 0 = silent, 1 = the arm line, every "
+	TEXT("Slice 4 host probe: FULL/NO-HOST-REPLICA/PROBING tier decisions. 0 = silent, 1 = the arm line, every "
 	     "tier CHANGE (including late-arrival upgrades) and the mid-session vanish warning, 2 = also "
 	     "the per-poll classification while probing. The persistent overlay row and FPM.Status are NOT "
 	     "gated by this - a player must be able to see what tier is active even with diagnostics off."),

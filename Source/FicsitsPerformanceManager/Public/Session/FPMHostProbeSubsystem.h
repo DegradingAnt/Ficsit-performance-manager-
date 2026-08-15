@@ -22,7 +22,10 @@
  * it. There is nothing to read FROM the actor, because reading anything beyond "did it arrive" would be
  * a cvar-shaped guess standing in front of a structural fact that already answers the question.
  * `FFPMHostTier` (`Session/FPMHostTier.h`) is what turns "arrived / did not arrive within budget" into
- * the FULL / VANILLA tier and the player-facing line — this class never prints, logs, or decides
+ * the FULL / NO-HOST-REPLICA tier and the player-facing line, and for WHY that third state is named
+ * for the observation rather than for a verdict about the host (review 2026-08-15, HIGH 1: with
+ * RequiredOnRemote true and an exact pin, a joined client cannot be on an FPM-less host, so an
+ * absent replica indicts THIS probe, not the server). This class never prints, logs, or decides
  * anything itself.
  *
  * ⚠ NOT THE JOIN-VERSION CHANNEL. A refused join (a version mismatch under `RequiredOnRemote`) is a
