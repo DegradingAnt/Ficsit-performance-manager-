@@ -92,6 +92,7 @@ public:
 		InstanceSwap,     // FPM.Diag.InstanceSwap — AbstractInstance mesh components put back on RemoveAtSwap
 		BlueprintContentSnap, // FPM.Diag.BlueprintContentSnap — blueprint-to-blueprint content snap mating
 			WristSlot,        // FPM.Diag.WristSlot -- Slice W: the wrist-slot add-hook, equip/deploy, persistence
+		ServerLevers,     // FPM.Diag.ServerLevers -- which dedicated-server governor levers exist here
 		Count
 	};
 

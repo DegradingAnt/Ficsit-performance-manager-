@@ -274,6 +274,13 @@ static TAutoConsoleVariable<int32> CVarDiagWristSlot(
 	     "the equip/deploy/release transitions, 2 = also the pending-worn map's claim attempts."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarDiagServerLevers(
+	TEXT("FPM.Diag.ServerLevers"), 1,
+	TEXT("Server governor lever audit: which candidate levers exist on this build and which accept "
+	     "a write. 0 = silent, 1 = the per-family verdict and the coverage line, 2 = also every "
+	     "individual lever with its value and SetBy layer. Reads only; writes nothing."),
+	ECVF_Default);
+
 namespace
 {
 	TAutoConsoleVariable<int32>* const GChannelCVars[] = {
@@ -313,6 +320,7 @@ namespace
 		&CVarDiagInstanceSwap,
 		&CVarDiagBlueprintContentSnap,
 		&CVarDiagWristSlot,
+		&CVarDiagServerLevers,
 	};
 
 	/*
@@ -366,6 +374,7 @@ namespace
 		case FPMDiag::EChannel::InstanceSwap:   return TEXT("FPM.Diag.InstanceSwap");
 		case FPMDiag::EChannel::BlueprintContentSnap: return TEXT("FPM.Diag.BlueprintContentSnap");
 		case FPMDiag::EChannel::WristSlot:      return TEXT("FPM.Diag.WristSlot");
+		case FPMDiag::EChannel::ServerLevers:   return TEXT("FPM.Diag.ServerLevers");
 		default:                                return TEXT("<unknown>");
 		}
 	}

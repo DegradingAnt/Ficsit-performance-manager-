@@ -42,6 +42,7 @@
 #include "Fixes/Vanilla/FPMPowerWarningProbe.h"
 #include "Fixes/Vanilla/FPMWireNullGuard.h"
 #include "Streaming/FPMAssetResidency.h"
+#include "Server/FPMServerLevers.h"
 #include "Wrist/FPMWristSlotComponent.h"
 
 #include "Interfaces/IPluginManager.h"
@@ -269,6 +270,19 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * It suspends the game thread to read it, so it is capped, gapped, and reports its own budget usage.
 	 */
 	FPMFixes::Arm(FFPMStallSampler::Get());
+
+	/*
+	 * ★ AND THE ONE THAT ASKS WHETHER THE SERVER GOVERNOR HAS ANY LEVERS AT ALL.
+	 *
+	 * The governor's lever list was harvested from a cvar dump taken on a CLIENT, and a dedicated
+	 * server is a different target with different modules compiled in. So "the name exists" is a
+	 * claim about the wrong binary, and R41 says "runtime-settable: unverified" for three whole
+	 * families. One server boot with this armed replaces every one of those with a fact.
+	 *
+	 * It writes nothing. It reports automatically on a dedicated server's first world load and on
+	 * demand anywhere, and it refuses to print at all if its own lookup fails its self-test.
+	 */
+	FPMFixes::Arm(FFPMServerLevers::Get());
 
 	/*
 	 * ★ P4's FIRST INCREMENT, AND IT SHIPS BEFORE THE THING IT MEASURES EXISTS.
