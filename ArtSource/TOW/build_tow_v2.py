@@ -8,7 +8,7 @@ TOW prototype v2 -- forearm-mounted grapple device, built procedurally.
 
 Re-runnable headless build script. Run with:
   "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" --background \
-      --python build_tow_v2.py --python-exit-code 1
+      --python-exit-code 1 --python build_tow_v2.py
 
 Produces, next to this script:
   tow_v2.blend
@@ -31,6 +31,21 @@ outside this script's scope path -- the brief itself lists exact
 palette/finish as left open on purpose, so a placeholder here is not a
 gap, it is the brief's own boundary.
 """
+
+# =============================================================================
+# ⚠ --python-exit-code IS ORDER-SENSITIVE. MEASURED 2026-08-15, TWICE, ON
+#   BLENDER 5.2.0 LTS WITH A DELIBERATE ONE-LINE CRASH SCRIPT:
+#
+#     blender --background --python x.py --python-exit-code 1   ->  exit 0  WRONG
+#     blender --background --python-exit-code 1 --python x.py   ->  exit 1  RIGHT
+#
+#   Placed AFTER --python, the flag is parsed too late and a Python traceback
+#   still exits 0. This file's own docstring documented the WRONG order, and a
+#   run using it reported success over a build that had aborted on an assert.
+#   The flag must come BEFORE --python. Always verify the OUTPUT FILES exist
+#   with a size anyway, because that is the only proof that does not depend on
+#   getting an argument order right.
+# =============================================================================
 
 import bpy
 import math
