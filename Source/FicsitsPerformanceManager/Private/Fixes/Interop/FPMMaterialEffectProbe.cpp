@@ -192,6 +192,21 @@ void FFPMMaterialEffectProbe::LogReport(FOutputDevice* Ar)
 			if (++Shown >= 12) { break; }
 		}
 
+		/*
+		 * ⚠ THIS CUT USED TO BE SILENT. The header line above prints the distinct class count, so the
+		 * two numbers were already side by side for anyone who compared them, and nobody compares them.
+		 * The map grows one entry per new calling class, which on a heavy mod list passes twelve, so the
+		 * cut is real. Naming the dropped RANGE is what turns a short list into a short list that admits
+		 * it is short.
+		 */
+		const FString Ceiling = FPMCeilingHitLine(Shown, GMatEffectCallers.Num(), TEXT("caller class(es)"),
+			TEXT("The list is sorted by call count, highest first, so the dropped rows are the QUIETEST "
+			     "callers. The total call count above still counts every one of them."));
+		if (!Ceiling.IsEmpty())
+		{
+			Lines.Add(Ceiling);
+		}
+
 		Lines.Add(TEXT("[FPM]   Read the MOUNT POINT of each path: '/Script/FactoryGame...' is vanilla, "
 		               "anything else is the plugin root of the mod that owns the buildable. That is the "
 		               "name the 'cannot be called after PreStarted' warning does not give you."));
@@ -210,5 +225,11 @@ static FAutoConsoleCommandWithOutputDevice GMaterialEffectReportCmd(
 	     "behind vanilla's 'cannot be called after PreStarted' warnings."),
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMReportGate Gate(Ar, TEXT("FPM.MaterialEffect.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FFPMMaterialEffectProbe::LogReport(&Ar);
 	}));

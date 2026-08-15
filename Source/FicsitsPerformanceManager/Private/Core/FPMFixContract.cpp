@@ -24,9 +24,15 @@ namespace
 	 * and there would be nothing to replay.
 	 *
 	 * ⚠ AND THE ARMED STATE LIVES HERE RATHER THAN INSIDE EACH FIX, deliberately. Most `Arm()` bodies are
-	 * NOT idempotent: of the 28 fixes only a few open with an `if (Handle.IsValid()) return;`, so calling
-	 * `Arm()` twice would install a SECOND handler on the same method. Keeping "is it armed" in the
-	 * registry means `RearmAll` can never double-subscribe, and no fix has to be rewritten to be safe.
+	 * NOT idempotent: of the 50 registered fixes only seven opened with an `if (Handle.IsValid()) { return; }`
+	 * when this was counted on 2026-08-15, so calling `Arm()` twice would install a SECOND handler on the
+	 * same method. Keeping "is it armed" in the registry means no caller can double-subscribe, and no fix
+	 * has to be rewritten to be safe.
+	 *
+	 * ⚠ ALL THREE ENTRY POINTS MUST HOLD THAT LINE, NOT TWO OF THEM. `RearmAll` and `SetArmed` always
+	 * checked; `Arm` did not, until the guard at the top of it. The count above was 28 when it was
+	 * written and the fix roster has since grown to 50, which is the other half of why a stale doc is
+	 * treated here as a defect rather than as untidiness.
 	 *
 	 * A fix the side gate refused is in NEITHER list, so a dedicated server can never re-arm a
 	 * client-only fix through the back door.
@@ -53,6 +59,42 @@ const TCHAR* LexToString(EFPMOriginStatus Status)
 
 void FPMFixes::Arm(IFPMFix& Fix)
 {
+	/*
+	 * ⚠ ARMING THE SAME FIX TWICE INSTALLS A SECOND HANDLER, AND THIS IS THE GUARD THAT STOPS IT.
+	 *
+	 * `RearmAll` and `SetArmed` both refuse to arm what is already armed, for the reason spelled out on
+	 * `GRegisteredFixes` above: most `Arm()` bodies subscribe unconditionally. `Arm` was the one entry
+	 * point WITHOUT that guard, so a duplicated call site double-subscribed and nothing said so.
+	 *
+	 * ★ IT COSTS REAL WORK, NOT A WRONG NUMBER. SML's `AddHandlerBefore` does `HandlersBefore->Add(...)`
+	 * (NativeHookManager.h:342 and 518) - a TArray append, never a replace. A BEFORE handler installed
+	 * twice runs twice per event, because `TCallScope::operator()` walks the array one index per call
+	 * and recurses while `bForwardCall` holds (NativeHookManager.h:169-180). An AFTER handler installed
+	 * twice ALWAYS runs twice: `ApplyCall` walks `*HandlersAfter` with a plain for loop and has no
+	 * cancel path at all (NativeHookManager.h:271-273). So a cancelling fix stops its own duplicates,
+	 * and a counting or measuring one silently doubles every number it reports.
+	 *
+	 * ★ THE REGISTRY IS THE RIGHT LIST TO ASK, NOT THE ARMED LIST. A fix that opts out of arming by
+	 * default is in the registry and not in the armed list. A second call on that fix must be as quiet
+	 * as a second call on an armed one, and asking `GArmedFixes` would let it through to re-log a line
+	 * that tells a reader nothing new.
+	 *
+	 * ⚠ WARNING, NOT SILENCE, AND NOT `AddUnique`. The obvious alternative is to leave the double call
+	 * alone and dedupe the array instead. That is the worse repair: by the time the array is touched,
+	 * `Fix.Arm()` has already run and the second handler is already live, so a deduped array would
+	 * report a correct count over a genuinely doubled hook. It is the exact shape of instrument this
+	 * project keeps paying for. The guard prevents the install; the log line names the caller that
+	 * must be fixed.
+	 */
+	if (GRegisteredFixes.Contains(&Fix))
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning,
+			TEXT("[FPM] refusing to arm '%s' a second time: it is already in the fix registry. Nothing "
+			     "was installed, so no hook is doubled - but a duplicate FPMFixes::Arm() call site "
+			     "exists and is not supposed to. Find it."), Fix.Name());
+		return;
+	}
+
 	if (Fix.Side() == EFPMFixSide::NeverOnDedicatedServer && IsRunningDedicatedServer())
 	{
 		// Logged, not skipped quietly. "The fix is not in the inventory" and "the fix was gated off"
@@ -71,7 +113,7 @@ void FPMFixes::Arm(IFPMFix& Fix)
 		 * Said out loud for the same reason as the dedicated-server gate above: a reader must be able to
 		 * tell "this fix does not exist" from "this fix is deliberately off", and silence cannot.
 		 */
-		GRegisteredFixes.AddUnique(&Fix);
+		GRegisteredFixes.Add(&Fix);  // Plain Add. See the note on the pair below.
 		UE_LOG(LogFicsitsPerformanceManager, Display,
 			TEXT("[FPM] fix '%s' registered but NOT armed: it opts out of arming by default, because it "
 			     "was measured doing no work while costing a hook. Turn it on with FPM.Fix.<Name> 1 - "
@@ -79,9 +121,21 @@ void FPMFixes::Arm(IFPMFix& Fix)
 		return;
 	}
 
+	/*
+	 * ⚠ PLAIN `Add` ON BOTH, AND THAT IS THE DELIBERATE CHOICE RATHER THAN THE LEFTOVER ONE.
+	 *
+	 * `AddUnique` here would look like the thing that keeps these lists honest and would not be. By the
+	 * time either line runs, `Fix.Arm()` above has already installed the handlers, so a deduplicating
+	 * Add would hand back a correct-looking count over a genuinely doubled hook - a number that cannot
+	 * move no matter how wrong the world gets, which is this project's most expensive recurring defect.
+	 *
+	 * The guard at the top of this function is the only thing keeping either list unique, and a plain
+	 * `Add` is what makes that visible: remove the guard and BOTH lists grow a duplicate entry, so the
+	 * inventory reports the fault instead of hiding it. `SelfTest` check 3 asserts exactly that.
+	 */
 	Fix.Arm();
 	GArmedFixes.Add(&Fix);
-	GRegisteredFixes.AddUnique(&Fix);
+	GRegisteredFixes.Add(&Fix);
 
 	// The armed line now carries the CLAIM, per §2.2. A reader skimming a boot log can see at a glance
 	// which fixes rest on a named cause and which are holding a symptom down while the cause is still open.
@@ -213,20 +267,32 @@ bool FPMFixes::SetArmed(IFPMFix& Fix, bool bWantArmed)
 namespace
 {
 	/**
-	 * A fix that is never registered, used only to prove `SetArmed` refuses one.
+	 * A throwaway fix, used only by `SelfTest`. It installs no hook and touches nothing; `Arm()` sets a
+	 * flag so the caller can see whether it ran.
 	 *
-	 * ⚠ IT IS DELIBERATELY NOT ARMED AND NOT REGISTERED, so it never appears in the inventory. An
-	 * earlier sketch of this test registered a probe fix and cycled it, which would have added a 29th
-	 * entry to a list whose whole job is to be an accurate census of what is running.
+	 * ⚠ THE INVENTORY MUST COME OUT OF EVERY TEST EXACTLY AS IT WENT IN. The census of armed and
+	 * registered fixes is the thing a reader trusts, and a probe left behind would add a phantom entry
+	 * to it. One test below is careful never to register a probe at all. The other MUST register one,
+	 * because refusing a second `Arm()` cannot be proved without a first `Arm()` to refuse - so it
+	 * removes the probe again and then checks both counts came back to where they started. The probe is
+	 * a stack local, so that removal is not tidiness, it is the difference between a clean list and a
+	 * dangling pointer.
+	 *
+	 * The name is passed in rather than hardcoded so each test's probe names itself in any log line it
+	 * causes. A reader who greps a boot log for a warning gets told which check produced it.
 	 */
-	class FFPMUnregisteredProbe final : public IFPMFix
+	class FFPMSelfTestProbe final : public IFPMFix
 	{
 	public:
-		virtual const TCHAR* Name() const override { return TEXT("selftest-unregistered-probe"); }
+		explicit FFPMSelfTestProbe(const TCHAR* InName) : ProbeName(InName) {}
+
+		virtual const TCHAR* Name() const override { return ProbeName; }
 		virtual EFPMFixSide Side() const override { return EFPMFixSide::Any; }
 		virtual EFPMOriginStatus OriginStatus() const override { return EFPMOriginStatus::Guard; }
 		virtual FPMDiag::EChannel Channel() const override { return FPMDiag::EChannel::Settings; }
 		virtual void Arm() override { bArmWasCalled = true; }
+
+		const TCHAR* const ProbeName;
 		bool bArmWasCalled = false;
 	};
 
@@ -440,7 +506,7 @@ bool FPMFixes::SelfTest()
 	bool bOk = true;
 
 	// 1. An unregistered fix must be refused. This is the side gate's back door.
-	FFPMUnregisteredProbe Probe;
+	FFPMSelfTestProbe Probe(TEXT("selftest-unregistered-probe"));
 	if (SetArmed(Probe, true) || Probe.bArmWasCalled)
 	{
 		UE_LOG(LogFicsitsPerformanceManager, Error,
@@ -465,7 +531,70 @@ bool FPMFixes::SelfTest()
 		}
 	}
 
-	// 3. The three accessors must agree. Two arrays behind three readers is how an inventory drifts.
+	/*
+	 * 3. `Arm()` MUST ARM A NEW FIX, AND MUST REFUSE THE SAME FIX TWICE. BOTH HALVES, IN THAT ORDER.
+	 *
+	 * ⚠ THE SECOND HALF ALONE PROVES NOTHING. A guard that refuses EVERY fix passes a duplicate-arm
+	 * test perfectly, and from the armed count afterwards it is indistinguishable from a guard that
+	 * works. So the first half arms a fix the registry has never seen and requires that it DID arm.
+	 * Break the guard's predicate in either direction and exactly one of these two halves fails.
+	 *
+	 * `bArmWasCalled` is the instrument, not the array length, because it is set inside the fix body -
+	 * the thing that installs handlers. An array count can be made to look right by an `AddUnique`
+	 * while a second handler is already live behind it; this flag cannot.
+	 */
+	const int32 ArmedBefore = GArmedFixes.Num();
+	const int32 RegisteredBefore = GRegisteredFixes.Num();
+
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] fix-registry self-test: arming a throwaway probe and then arming it again. The "
+		     "armed line and the refusal WARNING that follow are expected and are this test's own."));
+
+	FFPMSelfTestProbe DuplicateProbe(TEXT("selftest-duplicate-arm-probe"));
+	IFPMFix* const ProbePtr = &DuplicateProbe;  // as the arrays store it, so every Contains/Remove is exact.
+
+	// 3a. THE DIRECTION THAT A BROKEN GUARD BREAKS SILENTLY: a genuinely new fix must still arm.
+	FPMFixes::Arm(DuplicateProbe);
+	if (!DuplicateProbe.bArmWasCalled || !GArmedFixes.Contains(ProbePtr))
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM] fix-registry self-test FAILED: Arm() did not arm a fix the registry had never "
+			     "seen. Arm() body ran: %s. In the armed list: %s. The duplicate-arm guard is refusing "
+			     "everything, which means NO FIX IN THIS BUILD IS INSTALLED."),
+			DuplicateProbe.bArmWasCalled ? TEXT("yes") : TEXT("NO"),
+			GArmedFixes.Contains(ProbePtr) ? TEXT("yes") : TEXT("NO"));
+		bOk = false;
+	}
+
+	// 3b. And the second call must not reach the fix body at all.
+	DuplicateProbe.bArmWasCalled = false;
+	FPMFixes::Arm(DuplicateProbe);
+	if (DuplicateProbe.bArmWasCalled || GArmedFixes.Num() != ArmedBefore + 1)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM] fix-registry self-test FAILED: arming the same fix twice ran its Arm() body "
+			     "again (ran: %s), or the armed list does not hold exactly one probe entry (%d, "
+			     "expected %d). Every fix armed from a duplicated call site now has TWO handlers on "
+			     "the same method: a BEFORE handler runs twice per event, an AFTER handler always does."),
+			DuplicateProbe.bArmWasCalled ? TEXT("YES") : TEXT("no"),
+			GArmedFixes.Num(), ArmedBefore + 1);
+		bOk = false;
+	}
+
+	// 3c. Put the census back, and prove it went back. A stack probe left in either list dangles.
+	GArmedFixes.Remove(ProbePtr);
+	GRegisteredFixes.Remove(ProbePtr);
+	if (GArmedFixes.Num() != ArmedBefore || GRegisteredFixes.Num() != RegisteredBefore)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM] fix-registry self-test FAILED: the self-test probe did not come back out of "
+			     "the registry. Armed %d, expected %d. Registered %d, expected %d. The inventory now "
+			     "counts a fix that does not exist, and one of these lists holds a dangling pointer."),
+			GArmedFixes.Num(), ArmedBefore, GRegisteredFixes.Num(), RegisteredBefore);
+		bOk = false;
+	}
+
+	// 4. The three accessors must agree. Two arrays behind three readers is how an inventory drifts.
 	for (IFPMFix* Fix : GArmedFixes)
 	{
 		if (!GRegisteredFixes.Contains(Fix) || !IsArmed(*Fix))
@@ -479,7 +608,7 @@ bool FPMFixes::SelfTest()
 	}
 
 	/*
-	 * 4. THE REACHED COUNTING WRAPPER. Same discipline as the three checks above: it is worth proving
+	 * 5. THE REACHED COUNTING WRAPPER. Same discipline as the four checks above: it is worth proving
 	 * every boot rather than asserting, because a wrapper that drops an argument or that counts at
 	 * install time fails SILENTLY. The failure looks like a working hook with a wrong number beside
 	 * it, and a wrong number is worse than no number.
@@ -518,8 +647,17 @@ void FPMFixes::RearmAll()
 	 * ⚠ THIS ARMS ONLY WHAT IS NOT ALREADY ARMED, and that guard is load-bearing rather than defensive.
 	 *
 	 * Most `Arm()` bodies subscribe unconditionally. Calling one twice installs a second handler on the
-	 * same method, which for a CANCELLING fix means the cancel runs twice and for a counting one means
-	 * every number doubles. The registry knowing the state is what makes that impossible.
+	 * same method, and SML appends rather than replaces: `HandlersBefore->Add(...)`
+	 * (NativeHookManager.h:342 and 518).
+	 *
+	 * ⚠ THE OLD VERSION OF THIS NOTE SAID "the cancel runs twice", AND THE BYTES SAY OTHERWISE. Read
+	 * `TCallScope::operator()` (NativeHookManager.h:169-180): the chain advances to the next handler
+	 * only `if (HandlerPtr == CachePtr && bForwardCall)`, so the FIRST copy to call `Cancel()` stops
+	 * every later copy AND the original call. A duplicate cannot cancel twice. What a duplicate DOES
+	 * cost is every pass-through call, where no copy cancels and all of them run in turn, and every
+	 * AFTER handler unconditionally, because `ApplyCall` walks `*HandlersAfter` with a plain for loop
+	 * and has no cancel path at all (NativeHookManager.h:271-273). So the real damage lands on the
+	 * counting and measuring fixes, whose numbers double, not on the guards.
 	 */
 	int32 Rearmed = 0;
 	for (IFPMFix* Fix : GRegisteredFixes)

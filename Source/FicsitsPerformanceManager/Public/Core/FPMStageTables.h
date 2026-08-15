@@ -169,14 +169,69 @@ struct FICSITSPERFORMANCEMANAGER_API FFPMFlatLever
  *
  * Group levers return the baseline unchanged and set OutNote, because a group lever's target is a
  * TIER and not a value. Use FFPMStageTables::ResolveGroupTarget for those.
+ *
+ * ★ OutBeforeClamp SEPARATES THE STEP FROM THE RANGE GUARD. They are two different facts and one
+ * number cannot carry both. The RETURN VALUE is where the lever LANDS, clamp included. OutBeforeClamp
+ * is what the lever's own POLICY ARITHMETIC produced, before the clamp had a say.
+ *
+ * A caller judging the STEP'S DIRECTION must read OutBeforeClamp. For a baseline outside the lever's
+ * declared clamp band it is the CLAMP, not the policy, that decides the landing, and scoring the
+ * clamp's correction as a quality step reports the exact opposite of the truth. That is measured, not
+ * hypothetical: it is why self-test (9) accused K3's r.Lumen.ScreenProbeGather.DownsampleFactor of
+ * IMPROVING a value on a cut tier at baseline 100 (100 * 2.0 = 200, clamped back to 32, which reads
+ * as a fall). The engine's own help text for that cvar -- "Pixel size of the screen tile that a
+ * screen probe will be placed on", read out of the shipped Renderer module -- says the K3 step raises
+ * it, which makes the tile bigger, the probes sparser and the frame cheaper. The step was right and
+ * the check was reading the clamp.
+ *
+ * The game's own table agrees, independently: BaseScalability.ini sets this cvar to 32 at
+ * GlobalIlluminationQuality@2, 16 at @3 and 8 at @Cine, so it FALLS as quality RISES. That is also
+ * where K3's [8,32] clamp band comes from -- it is the cvar's own reachable range in this game, which
+ * is exactly why a swept baseline of 100 or 4096 is an input that cannot occur and must not be
+ * allowed to decide a direction verdict.
  */
 FICSITSPERFORMANCEMANAGER_API float FPMProjectLeverValue(const FFPMStageLever& Lever,
                                                          float AssumedBaseline,
-                                                         FString& OutNote);
+                                                         FString& OutNote,
+                                                         float* OutBeforeClamp = nullptr);
 
 /** Print a lever value the way a cvar carries it: whole numbers stay whole, the rest keep 4 places
  *  with trailing zeros trimmed. "0.6" and "0.600000" must not read as two different truths. */
 FICSITSPERFORMANCEMANAGER_API FString FPMFormatLeverValue(float Value);
+
+/**
+ * ★ WHY A GROUP LEVER'S ALIAS MEMBER MAY BE UNWRITABLE. See FPMClassifyGroupMember.
+ */
+enum class EFPMGroupMemberExclusion : uint8
+{
+	/** Nothing bars it. A group step may write this member. */
+	None,
+
+	/** Section 3.4's one floor law. r.Lumen.DiffuseIndirect.Allow is the GI kill switch, and no FPM
+	 *  path may name it -- not to set it to 0, and not to set it to 1 either. A hold on a kill switch
+	 *  is one edit away from a hold at the wrong value, which is why the ban is categorical. */
+	ForbiddenGICVar,
+
+	/** Law 1. FGGameUserSettings serialises every mUserSettings entry on every save with no dirty
+	 *  gate, so an FPM write to a US_*-backed cvar becomes the player's PERMANENT setting and
+	 *  survives uninstall. */
+	UserSettingBacked,
+};
+
+/**
+ * ★ THE ONE ANSWER TO "MAY A GROUP STEP WRITE THIS MEMBER CVAR", FOR EVERY BRANCH THAT ASKS.
+ *
+ * A ScalabilityGroup lever never writes the group name; it writes the group's ALIAS MEMBERS. Two
+ * separate code paths expand a group into members -- FFPMStageTables::UnderlyingCVars (what the
+ * ladder can reach) and FFPMStageTables::DeriveK4gMembers (what K4g would arm) -- and until this
+ * function existed they each carried their own copy of the exclusion rule. K4g's copy excluded the GI
+ * kill switch; UnderlyingCVars' copy did not exist at all, so the kill switch was reachable from the
+ * B5 and K3 group levers through GlobalIlluminationQuality@2, and self-test (8) caught it.
+ *
+ * That is this project's recorded law that a fix in one branch is not a fix. There is now ONE rule
+ * and both branches call it, so the two cannot drift apart again.
+ */
+FICSITSPERFORMANCEMANAGER_API EFPMGroupMemberExclusion FPMClassifyGroupMember(const FString& Member);
 
 /**
  * ★ THE INVARIANT CHECKS, AS FREE FUNCTIONS OVER DATA THEY ARE GIVEN.
@@ -233,14 +288,36 @@ namespace FPMStageInvariants
 	 * Two K3 levers are exempt by name, each with a stated reason, and they are COUNTED so the
 	 * exemption list cannot grow unnoticed.
 	 *
-	 * OutChecked / OutNoPolarity / OutExempt are the coverage numbers. A lever with no polarity is
-	 * not a pass, it is an ABSTENTION, and it is reported as one.
+	 * ★ IT JUDGES TWO THINGS, NOT ONE, BECAUSE A CLAMP IS NOT A STEP.
+	 *   (a) THE STEP, read before the clamp. This is the law as written: a bonus never worsens and a
+	 *       cut never improves. It holds at every baseline in the sweep, in range or out of it,
+	 *       because policy arithmetic has no range.
+	 *   (b) THE LANDING, read after the clamp, and ONLY for baselines INSIDE the lever's own declared
+	 *       clamp band. A clamp exists to pull an out-of-band value back into the band; doing that is
+	 *       the clamp obeying its contract, not the tier changing quality, and judging it as a step
+	 *       reports the opposite of the truth. Inside the band the clamp's contract does apply, so a
+	 *       clamp that flips the landing there is a real defect and is still caught.
+	 *
+	 * Before the split there was one verdict over the post-clamp value, and it produced a FALSE
+	 * ACCUSATION against a correct lever (K3 r.Lumen.ScreenProbeGather.DownsampleFactor) while proving
+	 * nothing extra. Widening what the check can see is the point; neither half was removed.
+	 *
+	 * OutChecked / OutNoPolarity / OutExempt are the coverage numbers, and the sweep RUNS TO COMPLETION
+	 * so they mean what they say. The old early return on the first failure left OutExempt reading 0
+	 * while two exemptions existed and were printed one line later, which is a count that contradicts
+	 * the list beside it. The FIRST failure is still the one reported.
+	 *
+	 * OutInBandLandingCases is law (b)'s OWN coverage. The shared baseline sweep sits outside every
+	 * clamp band and for a narrow band misses it entirely, so a clamped lever is additionally swept at
+	 * its band's ends and middle. A zero here would mean law (b) judged nothing at all, which reads
+	 * exactly like law (b) passing.
 	 */
 	FICSITSPERFORMANCEMANAGER_API bool StepDirectionsSane(const TArray<FFPMFlatLever>& Levers,
 	                                                      FString& OutFailure,
 	                                                      int32& OutChecked,
 	                                                      int32& OutNoPolarity,
-	                                                      int32& OutExempt);
+	                                                      int32& OutExempt,
+	                                                      int32& OutInBandLandingCases);
 
 	/** Polarity of one cvar, derived from the bonus levers in the array given. Exposed so a report
 	 *  can print it beside a lever rather than a reader having to trust the check. */
@@ -339,10 +416,18 @@ public:
 	 *  thing a self-test copies and mutates to build a known-bad case. */
 	void FlattenLevers(TArray<FFPMFlatLever>& Out) const;
 
-	/** The union of every underlying cvar every tier of every mode order can touch, plus the derived
-	 *  K4g members. This is what the forbidden-cvar law is checked against, and its SIZE is the
-	 *  coverage denominator for that check. */
-	void CollectLadderCVars(TSet<FString>& Out) const;
+	/**
+	 * The union of every underlying cvar every tier of every mode order can touch, plus the derived
+	 * K4g members. This is what the forbidden-cvar law is checked against, and its SIZE is the
+	 * coverage denominator for that check.
+	 *
+	 * ★ OutGIKillSwitchExclusions IS THE COVERAGE DENOMINATOR FOR THE FILTER ITSELF, and it exists
+	 * because a working filter and a DEAD GROUP EXPANSION produce the same clean verdict. It counts
+	 * how many times the group expansion met r.Lumen.DiffuseIndirect.Allow and dropped it. Zero is not
+	 * automatically wrong -- a future BaseScalability.ini might stop carrying it at @2/@3 -- but zero
+	 * must be SAID, because "the law holds" and "nothing was examined" have to be told apart.
+	 */
+	void CollectLadderCVars(TSet<FString>& Out, int32* OutGIKillSwitchExclusions = nullptr) const;
 
 	/** The cvar the GI floor law exists to keep off every ladder. One declaration site. */
 	static const TCHAR* ForbiddenGICVarName();
@@ -379,8 +464,15 @@ public:
 	 *      is an UNCLAMPED resolver, which is the arithmetic the clamp replaced.
 	 *   7. r.Lumen.DiffuseIndirect.Allow never appears on any ladder. The known-bad case is the same
 	 *      cvar set with that name injected, and a positive control stops an empty extractor from
-	 *      reporting a clean ladder.
-	 *   8. No bonus step worsens a lever and no cut step improves one, across a baseline sweep. The
+	 *      reporting a clean ladder. The law is kept true at the GROUP EXPANSION, by
+	 *      FPMClassifyGroupMember, so the ladder genuinely cannot write the kill switch -- and the
+	 *      number of times that exclusion fired is printed, because a working filter and a dead alias
+	 *      table both produce a clean ladder.
+	 *   8. No bonus step worsens a lever and no cut step improves one. Judged as TWO laws: the STEP
+	 *      (the policy's arithmetic, before the clamp) across the whole sweep, and the LANDING (after
+	 *      the clamp) only for baselines inside the lever's own clamp band. One merged verdict over
+	 *      the post-clamp value falsely accused a correct K3 lever, because a clamp pulling an
+	 *      out-of-band baseline home is the clamp working, not the tier changing quality. The
 	 *      known-bad case flips one K1 lever's policy. Two K3 levers are exempt by name, both are
 	 *      printed with their reasons, and abstentions are counted rather than passed.
 	 *   9. The AWAITING RULING marker is not dead: a count of zero fails, because a marker list that
@@ -400,8 +492,12 @@ private:
 	                 const TCHAR* EstimatedCost, const TCHAR* Provenance);
 
 	/** Every underlying cvar a tier touches: a cvar lever's own name, and for a group lever the union
-	 *  of its alias members across the REACHABLE tiers (@2 to @3; @0/@1 are unreachable under §3.4). */
-	void UnderlyingCVars(EFPMStageTier Tier, TSet<FString>& Out) const;
+	 *  of its alias members across the REACHABLE tiers (@2 to @3; @0/@1 are unreachable under §3.4),
+	 *  MINUS the GI kill switch, which no FPM path may name. OutGIKillSwitchExclusions accumulates
+	 *  (it is not reset) how many members that exclusion dropped -- see CollectLadderCVars for why the
+	 *  count is not optional information. */
+	void UnderlyingCVars(EFPMStageTier Tier, TSet<FString>& Out,
+	                     int32* OutGIKillSwitchExclusions = nullptr) const;
 
 	TArray<FFPMStageLever> TierLevers[static_cast<int32>(EFPMStageTier::Count)];
 	TArray<EFPMStageTier>  GiveOrders[static_cast<int32>(EFPMGovernorMode::Count)];

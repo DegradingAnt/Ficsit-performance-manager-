@@ -162,7 +162,18 @@ public:
 	 */
 	static void InvalidateNear(const FVector& WorldLocation, float RadiusCm);
 
-	/** `FPM.Enclosure.Report` — the reading, both verdicts, and what it cost. */
+	/**
+	 * `FPM.Enclosure.Report`: the reading, both verdicts, and what it cost. On-demand only, it prints
+	 * unconditionally whenever it is called, the same as every other FPM `*.Report` command, so it is
+	 * not gated by `FPM.Diag.Enclosure`.
+	 *
+	 * This is NOT how a verdict flip reaches the log during normal play. That happens on its own, gated
+	 * at `FPM.Diag.Enclosure` level 1 (the default), the moment `IsUnderBuiltRoof()` or `IsInSealedRoom()`
+	 * actually changes, with a rare heartbeat so a long quiet stretch cannot be mistaken for a dead
+	 * watcher. Review 2026-08-15: this command used to be the ONLY place the verdict was visible, which
+	 * meant whatever was calling it stood in for a proper change log and, per the session that motivated
+	 * this review, called it often enough to produce most of everything FPM printed that session.
+	 */
 	static void LogNow();
 
 };

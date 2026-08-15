@@ -3,6 +3,7 @@
 #include "Fixes/Interop/FPMNetGuidCensus.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMDiag.h"
 
@@ -251,8 +252,18 @@ static FAutoConsoleCommandWithOutputDevice GFPMNetGuidCensusReportCmd(
 	TEXT("FPM.NetGuidCensus.Report"),
 	TEXT("Print how many object references were rejected as un-net-addressable this session, which "
 	     "classes they were, and what share of the known warning traffic this census can see."),
+	// ⚠ THE FRAME CAP AND THE FPM.Diag.NetGuidCensus CHANNEL ARE NOT THE SAME LEVER. That channel is
+	// documented as never gating this command, because a bounded list going quiet must not be able to
+	// look complete. The frame cap does not silence anything either: it refuses a SECOND report inside
+	// one tick and says so on the console. See FPMConsoleEcho.h.
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMReportGate Gate(Ar, TEXT("FPM.NetGuidCensus.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FFPMNetGuidCensus::LogReport(&Ar);
 	}));
 
@@ -352,7 +363,15 @@ static FAutoConsoleCommandWithOutputDevice GFPMNetReportCmd(
 	TEXT("FPM.Net.Report"),
 	TEXT("Print total bytes, packets and bunches this session from the engine own unconditional "
 	     "counters, plus what this instrument cannot see. Reads only; installs nothing."),
+	// ⚠ THIS COMMAND SHARES ONE FRAME CLAIM WITH THE CENSUS REPORT ABOVE AND WITH ALL TEN OTHERS, so
+	// running both in one tick refuses the second. FPMConsoleEcho.h carries why that is the right trade.
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMReportGate Gate(Ar, TEXT("FPM.Net.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FPMNetReport(&Ar);
 	}));

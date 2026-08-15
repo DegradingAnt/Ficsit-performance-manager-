@@ -193,6 +193,25 @@ namespace
 	int32 GRoofStreak = 0, GNoRoofStreak = 0, GSealStreak = 0, GNoSealStreak = 0;
 	bool GbUnderRoof = false, GbSealed = false;
 
+	/**
+	 * ★ LOG ON CHANGE, NOT ON SAMPLE. Review 2026-08-15.
+	 *
+	 * Measured cause: one of Ant's sessions carried 52,034 "[FPM] enclosure:" / "verdict:" / "cost:"
+	 * lines from this one instrument, about 60 percent of everything FPM printed that session (evidence:
+	 * grep over that session's FactoryGame.log). A verdict is news when it FLIPS. Restating the same
+	 * yes/no answer every time it happens to be asked for is not a finding, it is noise wearing the shape
+	 * of one, and it buried every other FPM line that session.
+	 *
+	 * The heartbeat exists so a long stretch with no flip stays distinguishable from a flip-watcher that
+	 * silently died. This project has already paid for that exact ambiguity more than once: the batch
+	 * timeout above, GBatchesAbandoned and GInvalidationsByBuild are the same lesson applied elsewhere in
+	 * this file, a zero or a silence must be provably meaningful, not a gap nobody can tell apart from
+	 * correctness. Kept rare on purpose. The flip is the signal; the heartbeat only proves the watcher is
+	 * still running.
+	 */
+	constexpr double GFPMVerdictHeartbeatSec = 60.0;
+	double GLastVerdictLogTime = 0.0;
+
 	/** Batches issued and rays traced this session, so the cost is reportable rather than asserted. */
 	int32 GBatchesIssued = 0;
 	int32 GBatchesSkippedStill = 0;
@@ -290,6 +309,11 @@ namespace
 		// verdicts use the same threshold even if the cvar changes mid-flight.
 		const int32 StreakToFlip = FMath::Max(1, CVarEnclosureStreakToFlip.GetValueOnAnyThread());
 
+		// Snapshot BEFORE the flip logic runs, so the change-detection below compares the real before and
+		// after rather than reading GbUnderRoof/GbSealed after they have already moved.
+		const bool bOldUnderRoof = GbUnderRoof;
+		const bool bOldSealed = GbSealed;
+
 		const bool bRoofRaw = (R.BuiltHits >= GFPMMinHits) && (R.BuiltOverhead >= GFPMOverheadMin);
 		if (bRoofRaw) { ++GRoofStreak; GNoRoofStreak = 0; } else { ++GNoRoofStreak; GRoofStreak = 0; }
 		if (!GbUnderRoof && GRoofStreak >= StreakToFlip) { GbUnderRoof = true; }
@@ -304,6 +328,33 @@ namespace
 
 		GBatch.bInFlight = false;
 
+		/*
+		 * ★ THE AUTOMATIC VERDICT LINE: ONLY ON A REAL FLIP, PLUS A RARE HEARTBEAT.
+		 *
+		 * Both checks on the left of the && are plain bool/double compares, so on the far more common
+		 * case (nothing changed, heartbeat not due) the diag gate is never even reached and nothing is
+		 * formatted. When one of them IS true, IsOn() is still an int compare and runs BEFORE the UE_LOG
+		 * below, so the string formatting cost is paid only on an actual flip or a once-a-minute
+		 * heartbeat, never on every completed sample. Gated at level 1, this channel's own default, so a
+		 * real transition prints without anyone having to have raised anything first.
+		 */
+		const bool bVerdictChanged = (GbUnderRoof != bOldUnderRoof) || (GbSealed != bOldSealed);
+		const bool bHeartbeatDue = (GLastCompleteTime - GLastVerdictLogTime) >= GFPMVerdictHeartbeatSec;
+
+		if ((bVerdictChanged || bHeartbeatDue) && FPMDiag::IsOn(FPMDiag::EChannel::Enclosure, 1))
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM]   verdict: under-roof=%s, sealed-room=%s (%s). built-sealed %.2f, "
+				     "built-overhead %.2f, %d built hit(s), nearest %.0f cm."),
+				GbUnderRoof ? TEXT("YES") : TEXT("no"), GbSealed ? TEXT("YES") : TEXT("no"),
+				bVerdictChanged ? TEXT("changed") : TEXT("heartbeat, unchanged"),
+				R.BuiltSealed, R.BuiltOverhead, R.BuiltHits, R.NearestCm);
+			GLastVerdictLogTime = GLastCompleteTime;
+		}
+
+		// The raw per-sample dump. Level 2 only, off by default (see FPMDiag.h: "2 verbose - per-call
+		// detail. Expect volume; this is for one deliberate boot, not for playing"). This is the opt-in
+		// firehose for someone actively tuning thresholds, not the routine output.
 		if (FPMDiag::IsOn(FPMDiag::EChannel::Enclosure, 2))
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,

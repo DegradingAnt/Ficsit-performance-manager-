@@ -341,6 +341,14 @@ void FFPMStallSampler::LogReport()
 		return;
 	}
 
+	/*
+	 * ⚠ BOTH RANKINGS WERE ALREADY CUT AT 12 AND SAID NOTHING ABOUT IT, and that made this report read
+	 * as "twelve modules were on the stack" whatever the real number was. The cut itself is right: a
+	 * ranking is read from the top and a long tail of one-sample modules is noise. What was wrong is
+	 * that the tail vanished with no mark. Both counts are bounded by how many distinct modules the
+	 * sampler saw, which grows with the mod list and with session length, so this is a real cut on a
+	 * real machine and not a theoretical one.
+	 */
 	const int32 ShowTop = FMath::Min(Top.Num(), 12);
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM]   TOP OF STACK - what the game thread was executing:"));
@@ -349,6 +357,10 @@ void FFPMStallSampler::LogReport()
 		UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM]     %4d / %d  (%3.0f%%)  %s"),
 			Top[i].Value, Taken, 100.0 * Top[i].Value / Taken, *Top[i].Key);
 	}
+	const FString TopCeiling = FPMCeilingHitLine(ShowTop, Top.Num(), TEXT("module(s)"),
+		TEXT("The listing is sorted by sample count, highest first, so the dropped rows are the LEAST "
+		     "sampled ones. They are not printed anywhere else."));
+	UE_CLOG(!TopCeiling.IsEmpty(), LogFicsitsPerformanceManager, Display, TEXT("%s"), *TopCeiling);
 
 	const int32 ShowAny = FMath::Min(Any.Num(), 12);
 	UE_LOG(LogFicsitsPerformanceManager, Display,
@@ -358,6 +370,10 @@ void FFPMStallSampler::LogReport()
 		UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("[FPM]     %4d / %d  (%3.0f%%)  %s"),
 			Any[i].Value, Taken, 100.0 * Any[i].Value / Taken, *Any[i].Key);
 	}
+	const FString AnyCeiling = FPMCeilingHitLine(ShowAny, Any.Num(), TEXT("module(s)"),
+		TEXT("Same ordering as above: the dropped rows are the least sampled ones, and they are not "
+		     "printed anywhere else."));
+	UE_CLOG(!AnyCeiling.IsEmpty(), LogFicsitsPerformanceManager, Display, TEXT("%s"), *AnyCeiling);
 
 	if (FPMDiag::IsOn(FPMDiag::EChannel::StallSampler) && Top.Num() > 0)
 	{
@@ -376,6 +392,18 @@ static FAutoConsoleCommandWithOutputDevice GStallReportCmd(
 	TEXT("Print which modules the game thread was inside during measured stalls, ranked."),
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		/*
+		 * ⚠ THE GATE IS NOT REDUNDANT WITH LogReport's OWN bReportInProgress FLAG. That flag stops this
+		 * report from running INSIDE itself. The 2026-08-15 freeze was 49,882 runs one AFTER another,
+		 * every one of them completing, so a reentrancy flag would have blocked none of them. The two
+		 * guards answer different questions and both stay.
+		 */
+		FPMReportGate Gate(Ar, TEXT("FPM.Stall.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FPMScopedConsoleEcho Echo(&Ar);
 		FFPMStallSampler::Get().LogReport();
 	}));

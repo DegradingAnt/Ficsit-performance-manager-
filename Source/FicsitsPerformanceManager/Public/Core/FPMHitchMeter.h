@@ -5,6 +5,10 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "HAL/ThreadSafeCounter.h"
+// FOutputDevice, for the log-volume sink declared below. Included rather than forward-declared because
+// the sink is held BY VALUE: a pointer would need an owner, a delete, and a null check on every sample,
+// to save one include of a header Core already pulls in almost everywhere.
+#include "Misc/OutputDevice.h"
 
 #include <atomic>
 
@@ -65,6 +69,66 @@
  * touches no vanilla state, and does no network I/O. `Side()` is `Any` and there is no authority question to
  * ask — a clock is a clock on both machines.
  */
+/**
+ * The async-load backlog classifier, alone in a struct so that the boot self-test can drive the
+ * SHIPPING code path instead of a copy of it. A self-test that exercises a duplicate of the logic is
+ * how a classifier goes constant without the test noticing.
+ *
+ * `Sample` is called once per span from `ClassifySpan`; `Close` returns that span's verdict and
+ * resets, so a span always reports its own peak and never a neighbour's.
+ */
+struct FFPMBacklogSpan
+{
+	/** Highest backlog seen since the last Close(). */
+	int32 Peak = 0;
+
+	void Sample(int32 PackagesInFlight) { Peak = FMath::Max(Peak, PackagesInFlight); }
+
+	/** @return the peak of the span that just closed, then resets. "Behind" is a return above zero. */
+	int32 Close() { const int32 Closed = Peak; Peak = 0; return Closed; }
+};
+
+/**
+ * THE LOG-VOLUME SINK, and it exists because the largest unattributed hitch in Ant's 2026-08-15 session
+ * was FPM's own logging.
+ *
+ * `FactoryGame.log`, 20:57:13.046: `HITCH 409.2 ms | GAME-THREAD BOUND ... | UNATTRIBUTED`. The 17,484
+ * log lines immediately before it are 5,826 `[FPM] indoor fog:` lines, 5,826 `631 write(s)` lines and
+ * 5,813 `NOT ONE write` lines. All 5,826 of the first group carry the SAME frame index `[903]`, so
+ * roughly 17,465 UE_LOG calls happened inside ONE game-thread frame and not one bucket in this meter
+ * could say so. A hitch caused by the diagnostics is the worst kind of anonymous hitch, because the
+ * instrument is standing on the evidence and reporting nothing.
+ *
+ * BOTH THREAD PREDICATES RETURN TRUE, AND THAT IS WHAT MAKES THIS LIVE RATHER THAN DEAD.
+ * `FOutputDeviceRedirector` only calls a device inline when the device declares itself thread safe
+ * (`OutputDevice.h:196`, `:204`). A device that says no gets its lines BUFFERED and replayed later, on
+ * another thread, in another frame, so the count would land in whichever span happened to drain the
+ * buffer: precisely the span it did not belong to. Counting is the only work done here, so inline is
+ * safe as well as necessary.
+ *
+ * NOTHING INSIDE `Serialize` MAY LOG. One UE_LOG here re-enters the redirector and the recursion is
+ * unbounded. Two counter increments, nothing else, ever.
+ */
+class FFPMLogLineSink final : public FOutputDevice
+{
+public:
+	virtual void Serialize(const TCHAR*, ELogVerbosity::Type, const FName&) override
+	{
+		LinesInFrame.Increment();
+		LinesTotal.Increment();
+	}
+
+	/** See the class note: false on either of these counts the line into the wrong span. */
+	virtual bool CanBeUsedOnAnyThread() const override { return true; }
+	virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
+
+	/** Consumed by `ClassifySpan` with `Set(0)`, the same read-and-reset idiom as every span counter here. */
+	FThreadSafeCounter LinesInFrame;
+
+	/** Session total, and the bucket's liveness proof: zero here means nothing ever reached the sink. */
+	FThreadSafeCounter LinesTotal;
+};
+
 class FICSITSPERFORMANCEMANAGER_API FFPMHitchMeter final : public IFPMFix
 {
 public:
@@ -116,6 +180,15 @@ public:
 	 * anyone reads a zero off it.
 	 */
 	void LogPsoReport();
+
+	/**
+	 * ★ THE ASYNC-LOAD BACKLOG CLASSIFIER'S LIVENESS PROOF, run at Arm() every boot. Drives the real
+	 * `FFPMBacklogSpan` with a known-negative and a known-positive, and checks that the close resets.
+	 * Public so that it can be called on its own; `Arm()` is the only caller today.
+	 *
+	 * @return true if all three assertions held.
+	 */
+	static bool BacklogSelfTest();
 
 private:
 	/**
@@ -390,9 +463,10 @@ private:
 	int32 StallsWithPso = 0;
 
 	/**
-	 * ★ THE SEVENTH CAUSE BUCKET — THE ASSET STREAMER, added 2026-08-10 to attack a 100% number.
+	 * ★ THE SEVENTH CAUSE BUCKET, THE LOADER'S BACKLOG. Added 2026-08-10 to attack a 100% number, and
+	 * REBUILT 2026-08-15 because its first source could not move.
 	 *
-	 * Measured on Ant's save that evening, and it is why this exists:
+	 * Measured on Ant's save on 2026-08-10, and it is why the bucket exists:
 	 *
 	 *     hitch meter: world load | 9 hitch(es) ... worst 946.6 ms, mean 281.0 ms
 	 *       cause: 0 flush, 0 sync, 0 gc, 0 cold-pso, 0 pso-work, 0 pso-precompile
@@ -400,43 +474,93 @@ private:
 	 *     session totals: 95 flush(es), 2973 sync load(s)
 	 *
 	 * EVERY world-load hitch matched none of the six existing buckets, in a session that logged 2973
-	 * sync loads. The meter had no way to ask the one question that obviously mattered: *was the
-	 * streaming system behind at the time*. A bucket that can only ever say "unattributed" is not an
-	 * answer, it is the absence of one.
+	 * sync loads. The meter had no way to ask the one question that obviously mattered: was the loading
+	 * system behind at the time. A bucket that can only ever say "unattributed" is not an answer, it is
+	 * the absence of one.
+	 *
+	 * ══ WHY THE FIRST SOURCE WAS REPLACED: IT WAS A DEAD ENGINE FIELD ══
+	 *
+	 * The bucket first read `IStreamingManager::Get().GetNumWantingResources()` and proved itself with
+	 * `GetNumWantingResourcesID()`. Ant's overlay then printed, every session:
+	 *
+	 *     [⚠ streaming bucket UNPROVEN: GetNumWantingResourcesID has never moved]
+	 *
+	 * It was right, and the cause is in the engine rather than here. `IStreamingManager::NumWantingResources`
+	 * and `NumWantingResourcesCounter` are set to 0 by the constructor
+	 * (`Engine/Public/ContentStreaming.h:162-163`), read by the two getters (`:321-324`, `:332-335`), and
+	 * WRITTEN BY NOTHING. `rg -n "NumWantingResources" <engine>/Engine/Source` across the whole 5.6.1-CSS
+	 * tree returns 26 hits: declarations, doc comments, getter bodies and call sites. Not one assignment.
+	 *
+	 * So `FStreamingManagerCollection::GetNumWantingResourcesID()` (`ContentStreaming.cpp:992-1004`) is a
+	 * `FMath::Min` over a set of permanent zeros and can return only 0 or `MAX_int32`. And
+	 * `GetNumWantingResources()` (`:972-983`) sums the same never-written field; the one override anywhere
+	 * in the engine is the volumetric lightmap grid (`PrecomputedVolumetricLightmapStreaming.cpp:139-142`).
+	 * The "backlog" this bucket printed was never texture or mesh streaming. The pair is vestigial in UE5
+	 * and no code here can revive it, so the SOURCE had to change.
+	 *
+	 * ══ THE SOURCE NOW, AND WHAT IT DOES AND DOES NOT COVER ══
+	 *
+	 * `GetNumAsyncPackages()` (`CoreUObject/Public/UObject/UObjectGlobals.h:1083`, COREUOBJECT_API)
+	 * forwards to the active package loader (`AsyncPackageLoader.cpp:372-375`). Under the Zen loader that
+	 * is `LoadingPackagesCounter`, a `TAtomic<int32>` (`AsyncLoading2.cpp:4142`) incremented at `:5253`
+	 * and decremented at `:9428`. Under the legacy loader it is `ExistingAsyncPackagesCounter`
+	 * (`AsyncLoadingThread.h:527`). Both have real writers, which is the whole difference.
+	 *
+	 * COVERAGE, SAID OUT LOUD: this counts PACKAGE loads, which is what level and world-partition
+	 * streaming runs on. It is NOT texture or mesh mip streaming, and a texture pool thrashing mips will
+	 * not appear here. The report line says "async-load" and not "streaming" for exactly that reason.
 	 *
 	 * ⚠ THE IDEA CAME FROM MINING PreloadMap, AND NOTHING OF ITS CODE DID. That mod leans on
-	 * `IStreamingManager::Get()` to force-stream the map through a ghost viewer — a technique FPM
+	 * `IStreamingManager::Get()` to force-stream the map through a ghost viewer, a technique FPM
 	 * deliberately does NOT adopt, because it removes later spikes by paying the whole cost up front and
-	 * Ant confirmed by running it that the cost is severe. What travelled is the fact that the API is
-	 * there and public. See `RESEARCH-MINE-PRELOADMAP-TRAINROUTES-2026-08-10.md`.
+	 * Ant confirmed by running it that the cost is severe. See
+	 * `RESEARCH-MINE-PRELOADMAP-TRAINROUTES-2026-08-10.md`.
 	 *
 	 * ══ WHY IT IS A LEVEL AND NOT AN EVENT ══
 	 *
-	 * `GetNumWantingResources()` (`ContentStreaming.h:321`, overridden at `:747`) is documented as *"the
-	 * number of resources that currently wants to be streamed in"* — a backlog depth, not a thing that
-	 * happens. So it is sampled per frame and the SPAN keeps the peak, exactly like `bPsoRunActive`, and
-	 * it carries its own denominator for the same reason: a level that is true for most of a session
-	 * would otherwise "explain" every hitch by being permanently on.
+	 * The count is how many packages are in flight RIGHT NOW: a backlog depth, not a thing that happens.
+	 * So it is sampled per span and the span keeps the peak, exactly like `bPsoRunActive`, and it carries
+	 * its own denominator for the same reason: a level that is true for most of a session would otherwise
+	 * "explain" every hitch by being permanently on.
 	 */
-	int32 StreamingWantingPeakInSpan = 0;
-	int32 FramesDuringStreaming = 0;
-	int32 HitchesWithStreaming = 0;
-	int32 StallsWithStreaming = 0;
-	int32 StreamingWantingWorst = 0;
+	FFPMBacklogSpan AsyncBacklogSpan;
+	int32 FramesDuringAsyncLoad = 0;
+	int32 HitchesWithAsyncLoad = 0;
+	int32 StallsWithAsyncLoad = 0;
+	int32 AsyncBacklogWorst = 0;
 
 	/**
-	 * ★ THE LIVENESS PROOF, AND THE ENGINE HANDED IT TO US.
-	 *
-	 * `GetNumWantingResourcesID()` (`:332`) is documented as *"incremented every time NumWantingResources
-	 * is updated by the streaming system (every few frames)"*. So the question "could this bucket ever
-	 * report a non-zero?" has a directly observable answer: **if the ID never moves, the streaming system
-	 * is not updating and every zero this bucket prints is meaningless.** The report says so in those
-	 * terms rather than printing a confident 0.
-	 *
-	 * -1 means never sampled, which is a third state distinct from "sampled and unchanged".
+	 * Session high-water mark for the backlog, kept beside the per-window one for the same reason
+	 * `SessionWorstMs` sits beside `WorstHitchMs`: the window figure is what a reader wants, and the
+	 * session figure is what the liveness cross-check needs. A window-scoped worst would let a quiet
+	 * window print UNPROVEN after an earlier window had already proven the source live.
 	 */
-	int32 LastStreamingWantingId = -1;
-	bool bStreamingIdEverMoved = false;
+	int32 SessionAsyncBacklogWorst = 0;
+
+	/**
+	 * ★ THE LIVENESS PROOF, IN TWO HALVES, BECAUSE ONE HALF IS WHAT FAILED LAST TIME.
+	 *
+	 * HALF ONE, THE CLASSIFIER, asserted at Arm() every boot by `BacklogSelfTest()`. The real
+	 * `FFPMBacklogSpan` is driven with a known-negative (all-zero samples must close at 0), a
+	 * known-positive (one non-zero sample must survive to the close and must carry the peak), and then
+	 * the negative again to prove the close resets. It drives the shipping type, so an edit that makes
+	 * the classifier constant fails the boot line instead of passing quietly.
+	 *
+	 * HALF TWO, THE SOURCE. It is a cross-check and not an assertion, because a package load cannot be
+	 * forced at Arm() without side effects. `AsyncLoadEventsTotal` counts
+	 * `FCoreDelegates::GetOnAsyncLoadPackage()` broadcasts, an engine surface INDEPENDENT of the counter
+	 * this bucket samples. `LogSummary` compares the two:
+	 *   both silent     -> no async package load was reported at all this session. Said plainly.
+	 *   events, no peak -> either every load finished inside one frame, or the sample is not reading what
+	 *                      the delegate reports. BOTH hypotheses are printed and neither is picked.
+	 *   both moved      -> live, and the worst backlog is a number that can be read.
+	 *
+	 * ⚠ WHAT INPUT WOULD MAKE THIS REPORT A PROBLEM: a build where the sampler is pointed back at a
+	 * dead getter, or where the loader is bypassed, prints a non-zero event count beside a zero peak and
+	 * lands in the middle branch. That input is reachable, which is the test the old
+	 * `bStreamingIdEverMoved` flag could never pass: its "never moved" state was guaranteed by the engine.
+	 */
+	FThreadSafeCounter AsyncLoadEventsTotal;
 
 	/**
 	 * Cold PSO creations — an EVENT per newly-created pipeline, unlike the run flag above. See the long
@@ -558,6 +682,99 @@ private:
 	 */
 	int32 HitchesUnattributed = 0;
 	int32 StallsUnattributed = 0;
+
+	/**
+	 * BUCKET 8, LOG VOLUME. An EVENT count, and the only one of the three added on 2026-08-15 that names
+	 * a cause rather than a coincidence: writing 17,465 lines costs game-thread time by construction. It
+	 * is not a level that merely happened to be true at the time.
+	 *
+	 * THE INPUT THAT WOULD MAKE THIS REPORT A HITCH IT DID NOT CAUSE is a burst that is a CONSEQUENCE of
+	 * the stall rather than its cause: a subsystem timing out inside a long frame and logging about it.
+	 * So the line prints the COUNT and never a verdict, and the threshold is a cvar so the default can be
+	 * argued with rather than trusted. Normal play logs single-digit lines per frame, which puts the 200
+	 * default far outside the noise instead of on a tuned edge.
+	 *
+	 * THE METER'S OWN OUTPUT LANDS IN THE NEXT SPAN, NOT THIS ONE. `ClassifySpan` consumes the counter
+	 * before it emits its HITCH line, and `LogSummary` runs after that, so this meter contributes about
+	 * four lines to the FOLLOWING span. Four against a threshold of two hundred cannot self-attribute.
+	 */
+	FFPMLogLineSink LogSink;
+	int32 HitchesWithLogBurst = 0;
+	int32 StallsWithLogBurst = 0;
+	int32 WorstLogLinesInSpan = 0;
+	int64 LogLinesInWindow = 0;
+
+	/**
+	 * BUCKET 9, THE GC TAIL. `IsIncrementalPurgePending` and `IsIncrementalUnhashPending`
+	 * (`UObjectGlobals.h:944`, `:937`), both plain COREUOBJECT_API with no editor guard.
+	 *
+	 * The existing `gc` bucket subscribes to `GetPreGarbageCollectDelegate`, which fires ONCE, at the
+	 * START of a collection. The unhash and purge passes are then spread across LATER frames as
+	 * game-thread work, and no bucket could see them. Her 20:56 session logged 77 GC passes and produced
+	 * one gc-attributed hitch out of 25. A gap of exactly that shape.
+	 *
+	 * IT IS A LEVEL, SO IT CARRIES A DENOMINATOR. The input that would make it report a hitch it did not
+	 * cause: a save large enough that a purge is pending on most frames, at which point the bucket is
+	 * permanently on and explains everything by being always true. `FramesDuringGcPurge` and the
+	 * in-versus-out rate are printed for that reason, the same treatment `FramesDuringPsoWork` gets.
+	 */
+	int32 FramesDuringGcPurge = 0;
+	int32 HitchesWithGcPurge = 0;
+	int32 StallsWithGcPurge = 0;
+	bool bGcPurgeEverSeen = false;
+
+	/**
+	 * BUCKET 10, LEVEL VISIBILITY. `UWorld::HasAnyLevelMakingVisible` and `HasAnyLevelMakingInvisible`
+	 * (`World.h:1043`, `:1054`), both UE_API in 5.6.1-CSS.
+	 *
+	 * THE 5.6 PAIR, NOT THE 5.5 PAIR, AND THE DIFFERENCE IS A DEAD INSTRUMENT. The older
+	 * `GetCurrentLevelPendingVisibility` and `GetCurrentLevelPendingInvisibility` are still there at
+	 * `World.h:1038` and `:1048`, deprecated, and their bodies are literally `{ return nullptr; }`.
+	 * Either one compiles, links, and reports "no level is streaming" for the rest of time.
+	 *
+	 * This is the GAME-THREAD half of streaming: `AddToWorld` and `RemoveFromWorld` register and
+	 * unregister components incrementally on the game thread, which is where 100% of her hitches were
+	 * measured. The existing `streaming` bucket asks the TEXTURE streamer a different question, and on
+	 * her machine its liveness id has never moved, so it currently answers nothing at all.
+	 *
+	 * THE INPUT THAT WOULD MAKE THIS REPORT A HITCH IT DID NOT CAUSE is sustained travel. A plane or a
+	 * train streams cells continuously, the flag is then true on most frames, and it would claim every
+	 * hitch in the window. Same mitigation as the GC tail: its own frame denominator and the rate
+	 * comparison, printed beside the count and never without it.
+	 *
+	 * `bLevelVisWorldSeen` is the third state. "No world ever reached this meter" and "a world was here
+	 * and never streamed" are different claims, and only one of them is about the game.
+	 */
+	TWeakObjectPtr<class UWorld> MeteredWorld;
+	int32 FramesDuringLevelVis = 0;
+	int32 HitchesWithLevelVis = 0;
+	int32 StallsWithLevelVis = 0;
+	bool bLevelVisEverSeen = false;
+	bool bLevelVisWorldSeen = false;
+
+	/*
+	 * WHAT WAS CONSIDERED AND REFUSED ON 2026-08-15, written down so the next widening does not re-derive
+	 * it. A bucket that cannot move is worse than no bucket, because it prints a confident zero.
+	 *
+	 *   SHADER COMPILE, refused. `GShaderCompilingManager` is declared at `ShaderCompiler.h:1283`, but
+	 *   every queue entry point around it sits inside `#if WITH_EDITOR` (`:1288` to `:1322`), and a
+	 *   cooked shipping build compiles no shaders at all. Its runtime equivalent is pipeline-state
+	 *   creation, which three buckets already cover. The count would be a structural zero.
+	 *
+	 *   PHYSICS, refused. There is no per-frame Chaos counter on a public non-editor surface. The honest
+	 *   routes are the STAT system, compiled out of Shipping, or Insights, which is not present here.
+	 *   Adding a bucket would mean inventing a proxy and then believing it.
+	 *
+	 *   AUDIO, refused, same reason and one step worse: the audio path in this game is Wwise, so even an
+	 *   engine-side stat would be measuring the wrong mixer.
+	 *
+	 *   ACTOR SPAWN BURSTS, deferred rather than refused, and the observable is real:
+	 *   `UWorld::AddOnActorSpawnedHandler` (`World.h:2899`). Two reasons it is not in this pass. It needs
+	 *   a per-world delegate handle that must be removed on every world change or it dangles, the only
+	 *   lifetime hazard among the four candidates. And a factory game spawns actors continuously, so the
+	 *   bucket is worthless without a burst threshold, and there is no measured spawn rate to set one
+	 *   from. Measure first, attribute second: that is the order the streaming bucket got wrong.
+	 */
 
 	/**
 	 * Session context from the Complete delegate. Atomic because it is written on the render thread and read

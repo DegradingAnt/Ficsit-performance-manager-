@@ -106,8 +106,14 @@ FString FPMFormatLeverValue(const float Value)
 	return Text;
 }
 
-float FPMProjectLeverValue(const FFPMStageLever& Lever, const float AssumedBaseline, FString& OutNote)
+float FPMProjectLeverValue(const FFPMStageLever& Lever, const float AssumedBaseline, FString& OutNote,
+                           float* OutBeforeClamp)
 {
+	// Set the pre-clamp answer on EVERY exit path, including the two that return early. A caller that
+	// judges the step's direction reads it, and an out-param left stale on an early return is the
+	// shape that makes a direction verdict silently describe the previous lever.
+	if (OutBeforeClamp) { *OutBeforeClamp = AssumedBaseline; }
+
 	if (!Lever.GroupName.IsEmpty())
 	{
 		OutNote = TEXT("group lever: its target is a TIER, not a value. Use ResolveGroupTarget.");
@@ -128,6 +134,9 @@ float FPMProjectLeverValue(const FFPMStageLever& Lever, const float AssumedBasel
 		OutNote = TEXT("no value arithmetic for this policy");
 		return AssumedBaseline;
 	}
+
+	// The POLICY's own answer, before the range guard. This is the step.
+	if (OutBeforeClamp) { *OutBeforeClamp = Result; }
 
 	if (Lever.bHasClamp)
 	{
@@ -289,14 +298,26 @@ namespace FPMStageInvariants
 	}
 
 	bool StepDirectionsSane(const TArray<FFPMFlatLever>& Levers, FString& OutFailure,
-	                        int32& OutChecked, int32& OutNoPolarity, int32& OutExempt)
+	                        int32& OutChecked, int32& OutNoPolarity, int32& OutExempt,
+	                        int32& OutInBandLandingCases)
 	{
 		OutChecked = 0;
 		OutNoPolarity = 0;
 		OutExempt = 0;
+		OutInBandLandingCases = 0;
+		OutFailure.Reset();
+
+		// The sweep RUNS TO COMPLETION and this carries the verdict. The old code returned on the
+		// first failure, which left OutExempt reading 0 while two exemptions existed and were printed
+		// one line below it -- a count that contradicted the list beside it. OutFailure still holds the
+		// FIRST failure; only the counters changed meaning, from "up to the first break" to "the whole
+		// table".
+		bool bAllHeld = true;
 
 		// A SWEEP, not one baseline. A direction rule that holds at 1.0 and breaks at 0.25 is not a
-		// rule, and a clamp can flip a direction at one end of the range only.
+		// rule. The sweep deliberately reaches OUTSIDE every lever's clamp band, which is why the two
+		// laws below are judged separately -- see the header, and see what one merged verdict did to
+		// K3's r.Lumen.ScreenProbeGather.DownsampleFactor.
 		const float Baselines[] = { 0.0f, 0.25f, 1.0f, 4.0f, 100.0f, 4096.0f };
 
 		for (const FFPMFlatLever& Flat : Levers)
@@ -321,33 +342,76 @@ namespace FPMStageInvariants
 			++OutChecked;
 			const bool bIsBonus = FPMIsBonusTier(Flat.Tier);
 
-			for (const float Baseline : Baselines)
+			// ONE verdict per lever-and-baseline, against whichever of the two laws it breaks. The
+			// STEP is the policy's own arithmetic; the LANDING is what the clamp let through. They are
+			// judged separately because a clamp pulling an out-of-band baseline back into the band is
+			// the clamp obeying its contract, not the tier changing quality.
+			auto Verdict = [&](const float Baseline, const float Value, const TCHAR* Which) -> bool
+			{
+				if (FMath::IsNearlyEqual(Value, Baseline, 1.e-6f)) { return true; }
+
+				const bool bRose = Value > Baseline;
+				const bool bImproved = (Polarity == EFPMLeverPolarity::HigherIsBetter) ? bRose : !bRose;
+				if (bIsBonus == bImproved) { return true; }
+
+				// Only the FIRST failure is reported, but the sweep runs on so the coverage counters
+				// below describe the whole table rather than the prefix before the first break.
+				if (!OutFailure.IsEmpty()) { return false; }
+
+				// The format string is a LITERAL and the varying words are arguments. FString::Printf
+				// static_asserts that its format is a TCHAR ARRAY, and a ternary between two literals
+				// decays to a pointer, so "pick the sentence with ?:" does not compile here.
+				OutFailure = FString::Printf(
+					TEXT("%s %s lever '%s' (%s, %s) %s at the %s: baseline %s -> %s.%s"),
+					bIsBonus ? TEXT("BONUS") : TEXT("CUT"),
+					LexToString(Flat.Tier), *Lever.CVarName, LexToString(Lever.Policy),
+					LexToString(Polarity),
+					bIsBonus ? TEXT("WORSENS") : TEXT("IMPROVES"),
+					Which, *FPMFormatLeverValue(Baseline), *FPMFormatLeverValue(Value),
+					bIsBonus ? TEXT("")
+					         : TEXT(" Only the two named K3 exemptions may do that, and this is not "
+					                "one of them."));
+				return false;
+			};
+
+			// THE SHARED SWEEP, PLUS THIS LEVER'S OWN BAND. The shared baselines deliberately sit
+			// outside every clamp band, and for a narrow band they can miss it ENTIRELY: K3's
+			// r.Lumen.ScreenProbeGather.DownsampleFactor is clamped to [8,32] and not one shared
+			// baseline lands inside it. Law (b) would then have zero cases and be indistinguishable
+			// from a constant true, which is the dead-instrument shape this file exists to avoid. So a
+			// clamped lever is swept at its band's two ends and its middle as well.
+			TArray<float, TInlineAllocator<16>> Sweep;
+			Sweep.Append(Baselines, static_cast<int32>(UE_ARRAY_COUNT(Baselines)));
+			if (Lever.bHasClamp)
+			{
+				Sweep.Add(Lever.ClampMin);
+				Sweep.Add(Lever.ClampMax);
+				Sweep.Add((Lever.ClampMin + Lever.ClampMax) * 0.5f);
+			}
+
+			for (const float Baseline : Sweep)
 			{
 				FString ProjNote;
-				const float Landed = FPMProjectLeverValue(Lever, Baseline, ProjNote);
-				if (FMath::IsNearlyEqual(Landed, Baseline, 1.e-6f)) { continue; }
+				float BeforeClamp = Baseline;
+				const float Landed = FPMProjectLeverValue(Lever, Baseline, ProjNote, &BeforeClamp);
 
-				const bool bRose = Landed > Baseline;
-				const bool bImproved = (Polarity == EFPMLeverPolarity::HigherIsBetter) ? bRose : !bRose;
+				// (a) THE STEP. The law as written, and it has no range: policy arithmetic is judged
+				// at every baseline in the sweep whether or not the clamp would have accepted it.
+				if (!Verdict(Baseline, BeforeClamp, TEXT("STEP (pre-clamp)"))) { bAllHeld = false; }
 
-				if (bIsBonus && !bImproved)
+				// (b) THE LANDING, only where the clamp's own contract applies. A baseline outside
+				// [ClampMin, ClampMax] is an input the clamp exists to reject, so the direction it
+				// lands in says nothing about the tier. Inside the band the contract does apply, and a
+				// clamp that flips the landing there is a real defect and still fails here.
+				const bool bBaselineInBand = !Lever.bHasClamp
+					|| (Baseline >= Lever.ClampMin && Baseline <= Lever.ClampMax);
+				if (bBaselineInBand)
 				{
-					OutFailure = FString::Printf(
-						TEXT("BONUS %s lever '%s' (%s, %s) WORSENS: baseline %s -> %s."),
-						LexToString(Flat.Tier), *Lever.CVarName, LexToString(Lever.Policy),
-						LexToString(Polarity), *FPMFormatLeverValue(Baseline),
-						*FPMFormatLeverValue(Landed));
-					return false;
-				}
-				if (!bIsBonus && bImproved)
-				{
-					OutFailure = FString::Printf(
-						TEXT("CUT %s lever '%s' (%s, %s) IMPROVES: baseline %s -> %s. Only the two "
-						     "named K3 exemptions may do that, and this is not one of them."),
-						LexToString(Flat.Tier), *Lever.CVarName, LexToString(Lever.Policy),
-						LexToString(Polarity), *FPMFormatLeverValue(Baseline),
-						*FPMFormatLeverValue(Landed));
-					return false;
+					if (Lever.bHasClamp) { ++OutInBandLandingCases; }
+					if (!Verdict(Baseline, Landed, TEXT("LANDING (post-clamp, in-band baseline)")))
+					{
+						bAllHeld = false;
+					}
 				}
 			}
 		}
@@ -358,7 +422,7 @@ namespace FPMStageInvariants
 			                  "the tables");
 			return false;
 		}
-		return true;
+		return bAllHeld;
 	}
 
 	bool SameNameSet(const TArray<FString>& A, const TArray<FString>& B, FString& OutDelta)
@@ -394,6 +458,22 @@ const TCHAR* FFPMStageTables::ForbiddenGICVarName()
 	return TEXT("r.Lumen.DiffuseIndirect.Allow");
 }
 
+EFPMGroupMemberExclusion FPMClassifyGroupMember(const FString& Member)
+{
+	// Section 3.4's one floor law. It reads ForbiddenGICVarName rather than repeating the string,
+	// because that accessor's own comment claims to be "one declaration site" and DeriveK4gMembers
+	// used to carry a second copy of the literal -- two copies of a law is how the law drifts.
+	if (Member.Equals(FFPMStageTables::ForbiddenGICVarName(), ESearchCase::IgnoreCase))
+	{
+		return EFPMGroupMemberExclusion::ForbiddenGICVar;
+	}
+	if (FPMUserSettingMap::IsBacked(*Member))
+	{
+		return EFPMGroupMemberExclusion::UserSettingBacked;
+	}
+	return EFPMGroupMemberExclusion::None;
+}
+
 FFPMStageTables& FFPMStageTables::Get()
 {
 	static FFPMStageTables Instance;
@@ -414,15 +494,17 @@ void FFPMStageTables::FlattenLevers(TArray<FFPMFlatLever>& Out) const
 	}
 }
 
-void FFPMStageTables::CollectLadderCVars(TSet<FString>& Out) const
+void FFPMStageTables::CollectLadderCVars(TSet<FString>& Out, int32* OutGIKillSwitchExclusions) const
 {
+	if (OutGIKillSwitchExclusions) { *OutGIKillSwitchExclusions = 0; }
+
 	for (int32 M = 0; M < StageIdx(EFPMGovernorMode::Count); ++M)
 	{
 		const EFPMGovernorMode Mode = static_cast<EFPMGovernorMode>(M);
 		// GIVE and TAKE both, even though one is the reverse of the other. The reversal is proven
 		// elsewhere; a law check that assumed it would be leaning on another check's result.
-		for (const EFPMStageTier Tier : GiveOrder(Mode)) { UnderlyingCVars(Tier, Out); }
-		for (const EFPMStageTier Tier : TakeOrder(Mode)) { UnderlyingCVars(Tier, Out); }
+		for (const EFPMStageTier Tier : GiveOrder(Mode)) { UnderlyingCVars(Tier, Out, OutGIKillSwitchExclusions); }
+		for (const EFPMStageTier Tier : TakeOrder(Mode)) { UnderlyingCVars(Tier, Out, OutGIKillSwitchExclusions); }
 	}
 	// K4g's derived members are not registered levers, so UnderlyingCVars cannot see them. They are
 	// still names a future arming of that tier would write, so the forbidden-cvar law covers them.
@@ -915,18 +997,15 @@ void FFPMStageTables::DeriveK4gMembers()
 			continue;
 		}
 
-		// Section 3.4's one floor law, enforced by construction rather than by a later check: the
-		// member that carries the GI kill switch can never enter this list.
-		if (Member.Equals(TEXT("r.Lumen.DiffuseIndirect.Allow"), ESearchCase::IgnoreCase))
+		// Section 3.4's floor law and Law 1, both from FPMClassifyGroupMember so this branch and
+		// UnderlyingCVars cannot hold different ideas of what a group step may write. This code used
+		// to carry its own copy of the rule; UnderlyingCVars carried none, and the kill switch stayed
+		// reachable through the B5/K3 group levers for exactly as long as that asymmetry lasted.
+		switch (FPMClassifyGroupMember(Member))
 		{
-			++ExcludedByLaw;
-			continue;
-		}
-
-		if (FPMUserSettingMap::IsBacked(*Member))
-		{
-			++ExcludedAsUserSetting;
-			continue;
+		case EFPMGroupMemberExclusion::ForbiddenGICVar:   ++ExcludedByLaw;         continue;
+		case EFPMGroupMemberExclusion::UserSettingBacked: ++ExcludedAsUserSetting; continue;
+		default: break;
 		}
 
 		K4gMembers.Add(Member);
@@ -947,7 +1026,8 @@ void FFPMStageTables::DeriveK4gMembers()
 // The order gate.
 // ------------------------------------------------------------------------------------------------
 
-void FFPMStageTables::UnderlyingCVars(const EFPMStageTier Tier, TSet<FString>& Out) const
+void FFPMStageTables::UnderlyingCVars(const EFPMStageTier Tier, TSet<FString>& Out,
+                                      int32* OutGIKillSwitchExclusions) const
 {
 	const FFPMLeverRegistry& Registry = FFPMLeverRegistry::Get();
 	for (const FFPMStageLever& Lever : LeversIn(Tier))
@@ -960,12 +1040,31 @@ void FFPMStageTables::UnderlyingCVars(const EFPMStageTier Tier, TSet<FString>& O
 		// A group lever's real writes are its alias MEMBERS, so those are its underlying cvars. Only
 		// the REACHABLE tiers count: section 3.4 puts the floor at @2 and the alias table stops at @3,
 		// so @0 and @1 can never be applied and their members are not values this lever can touch.
+		//
+		// ★ AND THE GI KILL SWITCH IS NOT ONE OF THEM. BOTH reachable tiers carry it: BaseScalability.ini
+		// sets r.Lumen.DiffuseIndirect.Allow=1 at GlobalIlluminationQuality@2 (:253) and again at @3
+		// (:282), and 0 only at @0 (:239) and @1 (:246), which the floor law already puts out of reach.
+		// So before this filter existed a B5 or K3 group step expanded to a member list that NAMED the
+		// kill switch, twice per visit, which is what self-test (8) reported.
+		// The law is categorical -- no FPM path may name that cvar, at any value -- so the exclusion
+		// belongs at the expansion, where it removes the write, not at the audit, where it would only
+		// remove the evidence.
+		//
+		// Only ForbiddenGICVar is filtered here, not every EFPMGroupMemberExclusion. A US_*-backed
+		// member is refused at the write boundary by Law 1 anyway, and leaving it in this set can at
+		// worst make CheckOrderInversions report a pair it need not have; that error is loud at the
+		// next boot. Dropping it could hide a real shared write, and that error is silent.
 		for (int32 GroupTier = GIGroupFloorTier(); GroupTier <= GroupCeilingTier(); ++GroupTier)
 		{
 			if (const TArray<FString>* Members = Registry.GetAliasMembers(Lever.GroupName, GroupTier))
 			{
 				for (const FString& Member : *Members)
 				{
+					if (FPMClassifyGroupMember(Member) == EFPMGroupMemberExclusion::ForbiddenGICVar)
+					{
+						if (OutGIKillSwitchExclusions) { ++(*OutGIKillSwitchExclusions); }
+						continue;
+					}
 					Out.Add(Member);
 				}
 			}
@@ -1411,7 +1510,8 @@ bool FFPMStageTables::SelfTest()
 	// injected copy proves the checker refuses the real thing.
 	{
 		TSet<FString> Ladder;
-		CollectLadderCVars(Ladder);
+		int32 KillSwitchExclusions = 0;
+		CollectLadderCVars(Ladder, &KillSwitchExclusions);
 
 		FString Failure;
 		const bool bClean = FPMStageInvariants::ForbiddenGICVarAbsent(
@@ -1439,6 +1539,28 @@ bool FFPMStageTables::SelfTest()
 				TEXT("[FPM] stage tables self-test (8) passed: %d ladder cvar(s) checked, '%s' absent, "
 				     "and the injected copy was REFUSED with: %s"),
 				Ladder.Num(), ForbiddenGICVarName(), *BadFailure);
+
+			// The filter's own coverage, printed whether or not it is comfortable. A clean ladder and a
+			// dead group expansion read identically without this number, so zero is a WARNING rather
+			// than a quiet line.
+			if (KillSwitchExclusions > 0)
+			{
+				UE_LOG(LogFicsitsPerformanceManager, Display,
+					TEXT("[FPM] stage tables self-test (8) coverage: the group expansion met '%s' and "
+					     "dropped it %d time(s). That is the GI floor law doing work, not an empty set "
+					     "reporting clean."),
+					ForbiddenGICVarName(), KillSwitchExclusions);
+			}
+			else
+			{
+				UE_LOG(LogFicsitsPerformanceManager, Warning,
+					TEXT("[FPM] stage tables self-test (8) coverage: the group expansion NEVER met '%s'. "
+					     "Zero is not proof of a clean ladder -- it means no reachable "
+					     "GlobalIlluminationQuality tier carried the kill switch at all. Either "
+					     "BaseScalability.ini changed, or the alias table is empty and the group "
+					     "expansion is dead."),
+					ForbiddenGICVarName());
+			}
 		}
 	}
 
@@ -1449,8 +1571,9 @@ bool FFPMStageTables::SelfTest()
 		int32 Checked = 0;
 		int32 NoPolarity = 0;
 		int32 Exempt = 0;
+		int32 InBandCases = 0;
 		const bool bDirectionsHold = FPMStageInvariants::StepDirectionsSane(
-			Flat, Failure, Checked, NoPolarity, Exempt);
+			Flat, Failure, Checked, NoPolarity, Exempt, InBandCases);
 
 		// Build the violation from a lever that really has a derived polarity, so the mutation is a
 		// genuine law break and not an untestable no-op.
@@ -1472,8 +1595,9 @@ bool FFPMStageTables::SelfTest()
 		int32 BadChecked = 0;
 		int32 BadNoPolarity = 0;
 		int32 BadExempt = 0;
+		int32 BadInBandCases = 0;
 		const bool bViolatedHeld = FPMStageInvariants::StepDirectionsSane(
-			Violated, BadFailure, BadChecked, BadNoPolarity, BadExempt);
+			Violated, BadFailure, BadChecked, BadNoPolarity, BadExempt, BadInBandCases);
 
 		if (!bDirectionsHold || !bMutated || bViolatedHeld)
 		{
@@ -1481,20 +1605,30 @@ bool FFPMStageTables::SelfTest()
 				TEXT("[FPM] stage tables self-test (9) FAILED: shipped directions held=%s (%s); the "
 				     "known-bad copy was built=%s and held=%s (expected a refusal, got '%s'). "
 				     "Coverage: %d lever(s) checked, %d abstained for want of a derivable polarity, "
-				     "%d exempt by name."),
+				     "%d exempt by name, %d in-band landing case(s) for the clamp law."),
 				bDirectionsHold ? TEXT("yes") : TEXT("NO"), *Failure,
 				bMutated ? TEXT("yes") : TEXT("NO"),
 				bViolatedHeld ? TEXT("YES") : TEXT("no"), *BadFailure,
-				Checked, NoPolarity, Exempt);
+				Checked, NoPolarity, Exempt, InBandCases);
 			bOk = false;
 		}
 		else
 		{
 			UE_LOG(LogFicsitsPerformanceManager, Display,
-				TEXT("[FPM] stage tables self-test (9) passed: %d lever(s) checked across a 6-point "
-				     "baseline sweep, %d abstained (no derivable polarity -- an ABSTENTION, not a "
-				     "pass), %d exempt by name. The known-bad copy was REFUSED with: %s"),
-				Checked, NoPolarity, Exempt, *BadFailure);
+				TEXT("[FPM] stage tables self-test (9) passed: %d lever(s) checked across the shared "
+				     "baseline sweep plus each clamped lever's own band, %d abstained (no derivable "
+				     "polarity -- an ABSTENTION, not a pass), %d exempt by name. The STEP law and the "
+				     "in-band LANDING law were both judged, the latter over %d case(s). The known-bad "
+				     "copy was REFUSED with: %s"),
+				Checked, NoPolarity, Exempt, InBandCases, *BadFailure);
+		}
+
+		if (InBandCases == 0)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Warning,
+				TEXT("[FPM] stage tables self-test (9) coverage: the in-band LANDING law judged ZERO "
+				     "cases, so it proved nothing this run. It reads exactly like a pass. Either no "
+				     "lever declares a clamp any more, or the band sweep stopped reaching the band."));
 		}
 
 		for (const FPMStageInvariants::FStepExemption& Exemption : FPMStageInvariants::GStepExemptions)
@@ -1713,7 +1847,17 @@ static FAutoConsoleCommandWithOutputDevice GFPMStageReportCmd(
 	TEXT("FPM.Stage.Report"),
 	TEXT("Stage tables: the B and K tier content, its probe coverage on this machine, every inert "
 	     "tier with its reason, and each mode's give order. Reads only."),
+	// ⚠ THE GATE IS CONSTRUCTED HERE AND NOT INSIDE ReportNow, and the placement is the design.
+	// ReportNow builds its own FPMScopedConsoleEcho, and the gate must come BEFORE the echo so a
+	// refusal costs one line instead of a report. Keeping it in the lambda also leaves every
+	// non-console caller of ReportNow ungated, which is what the automatic summaries need.
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMReportGate Gate(Ar, TEXT("FPM.Stage.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FFPMStageTables::Get().ReportNow(Ar);
 	}));

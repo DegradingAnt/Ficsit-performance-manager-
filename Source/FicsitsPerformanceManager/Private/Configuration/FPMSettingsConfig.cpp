@@ -13,6 +13,7 @@
 #include "Configuration/Properties/WidgetExtension/CP_Integer.h"
 #include "Configuration/Properties/WidgetExtension/CP_Section.h"
 
+#include "Containers/Ticker.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -198,7 +199,16 @@ UFPMSettingsConfig::UFPMSettingsConfig()
 	 */
 	auto BindRow = [this](UConfigProperty* P)
 	{
-		P->OnPropertyValueChanged.AddDynamic(this, &UFPMSettingsConfig::SyncAllToCVars);
+		/*
+		 * RequestSync, NOT SyncAllToCVars DIRECTLY. Binding straight to SyncAllToCVars was the shape
+		 * that shipped 2026-08-15 and it under-counted its own cost: SML fires this delegate once PER
+		 * ROW (MarkDirty(), ConfigProperty.cpp:18-27), and a Section's ResetToDefault cascades a reset to
+		 * every child, each of which calls its own MarkDirty (ConfigPropertySection.cpp:102-118) - so a
+		 * reset touching this page's whole tree fires it six times, not once. SyncAllToCVars walks ALL of
+		 * BoundRows on every call, so that meant six full-table re-syncs instead of one. RequestSync
+		 * coalesces the burst into a single deferred SyncAllToCVars() - see its header comment.
+		 */
+		P->OnPropertyValueChanged.AddDynamic(this, &UFPMSettingsConfig::RequestSync);
 		BoundRows.Add(P);
 	};
 
@@ -421,6 +431,35 @@ void UFPMSettingsConfig::SyncAllToCVars()
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] settings applied: %d row(s) written, %d missing cvar(s), %d that did not stick."),
 		Written, Missing, Mismatched);
+}
+
+void UFPMSettingsConfig::RequestSync()
+{
+	/*
+	 * ⚠ COALESCE ON THE WAY IN, NOT BY QUIETING THE LOG ON THE WAY OUT. The bug this exists to fix was
+	 * never the log line - it was SyncAllToCVars() itself running once per row in a same-frame burst,
+	 * each run re-writing and re-verifying every one of BoundRows. De-duplicating the log message would
+	 * have hidden that the work was still happening N times; this stops the work from happening N times,
+	 * so the log stays an honest count of how many full syncs actually ran.
+	 *
+	 * `bSyncPending` absorbs every firing that lands before the deferred call runs, so a six-row burst
+	 * schedules exactly one tick, not six. Cleared BEFORE calling SyncAllToCVars(), not after, so a row
+	 * that changes again while this pass is running schedules its own follow-up instead of the flag
+	 * getting stuck true forever.
+	 */
+	if (bSyncPending) { return; }
+	bSyncPending = true;
+
+	TWeakObjectPtr<UFPMSettingsConfig> WeakThis(this);
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThis](float) -> bool
+	{
+		if (UFPMSettingsConfig* Self = WeakThis.Get())
+		{
+			Self->bSyncPending = false;
+			Self->SyncAllToCVars();
+		}
+		return false;   // one-shot: coalesce, don't repeat
+	}), 0.0f);   // next tick - explicit, not relied on as a default
 }
 
 #undef LOCTEXT_NAMESPACE

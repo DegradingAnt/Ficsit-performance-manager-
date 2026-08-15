@@ -172,7 +172,18 @@ static FAutoConsoleCommandWithOutputDevice GFPMSettingsReportCmd(
 	TEXT("FPM.Settings.Report"),
 	TEXT("Count FPM's own UFGUserSetting rows, and the game-wide FGUserSetting total beside them, so a "
 	     "zero can be told apart from a broken asset scan."),
+	// ⚠ THE GATE IS ON THE CONSOLE ROUTE ONLY, AND THAT MATTERS HERE MORE THAN ANYWHERE ELSE IN THE
+	// ROLLOUT. `Report()` has a SECOND caller: the world-load ticker at OnWorldLoad above, which passes
+	// no device. Gating inside Report() would let a console report and that automatic summary refuse
+	// each other whenever both land in one frame, which is a plausible collision at world load and not
+	// a driver at all. The lambda is the only place the gate belongs.
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMReportGate Gate(Ar, TEXT("FPM.Settings.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FFPMSettingsAudit::Report(&Ar);
 	}));

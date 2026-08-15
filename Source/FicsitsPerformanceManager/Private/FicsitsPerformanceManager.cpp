@@ -355,9 +355,6 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// vanilla's LoadSynchronous finds them already resident and skips its blocking branch.
 	FPMFixes::Arm(FFPMAssetResidency::Get());
 
-	// Always printed, even when empty - an empty inventory is itself a finding.
-	FPMHookLedger::LogInventory();
-
 	/*
 	 * Binds the user-setting map's automatic read to post-engine-init, so every boot reports which cvars
 	 * the game's own settings save would capture WITHOUT anyone typing a console command. Measured
@@ -430,19 +427,6 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// the connection. Any — a dedicated server has no viewport but still has FactoryGame.log.
 	FPMFixes::Arm(FFPMJoinVersionEcho::Get());
 
-	// The debug feed, on by default while the mod is pre-release. Ant: "i want UI to show when and what
-	// the rain fix thing is doing so i can see that its working." It attaches as soon as a viewport
-	// exists, which is why it can report during a loading screen at all.
-	if (!IsRunningDedicatedServer())
-	{
-		// Ant asked for this three times. It is installed BEFORE the overlay is shown, so the very first
-		// thing she can do with it is turn it off.
-		FPMOverlay::Get().InstallHotkey();
-		FPMOverlay::Get().SetVisible(true);
-		FPMOverlay::Post(TEXT("startup"), FString::Printf(TEXT("FPM %s loaded, %d hook(s) armed"),
-			*VersionName, FPMHookLedger::Records().Num()));
-	}
-
 	// Slice 2. The lever registry: the data model and its enforcement (Law 1's US_*/sg.* refusal,
 	// the anti-ratchet baseline guard, capability probing, the ScalabilityGroup alias table). Ships
 	// with self-test fixture levers only in this slice — the production stage tables are a separate,
@@ -504,6 +488,67 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	 * one; this writes ahead of the crash instead.
 	 */
 	FPMCrashStamp::Register(VersionName);
+
+	/*
+	 * ★ THE HOOK INVENTORY MOVED HERE ON 2026-08-15, AND THAT MOVE IS THE FIX, NOT A REORDERING.
+	 *
+	 * It used to run right after FFPMAssetResidency::Arm(). The agent that found this measured THREE
+	 * later Arm() calls on its own base; on the tree this actually landed in, 2026-08-15, there are
+	 * EIGHTEEN (save-settings-guard, glass-quality, nanite-streaming, third-person, wrist-slot, tow-item,
+	 * blueprint-snap, join-version-echo, lever-registry, stage-tables, give-take-walk, host-tier, and the
+	 * six detectors). Counted, not recalled: 50 FPMFixes::Arm( calls total, 18 of them below the old call
+	 * site. The defect was six times wider than the report that found it.
+	 *
+	 * Ant's FactoryGame.log, from a boot of a larger build of this same mod carrying the same defect,
+	 * showed the shape of the result: dozens of
+	 * "[FPM] hook #N installed AFTER the hook inventory was printed" warnings in one boot, and a coverage
+	 * line whose denominator was not the fix count - it was whatever had armed by the old call site, a
+	 * number with no meaning of its own.
+	 *
+	 * LogInventory() reads two things that only reach their final shape once every Arm() above has run:
+	 * FPMHookLedger::Records() (every hook installed so far) and FPMFixes::Armed() (every fix armed so
+	 * far). Calling it early does not just under-report - it makes a hook that installs late structurally
+	 * indistinguishable from a fix that never touches a hook, because both are absent from Records() at
+	 * print time. Moving the call here, after the last Arm() and after the master switch and crash stamp
+	 * that already followed this same rule, is what makes that distinction possible again: by the time
+	 * LogInventory() runs, arming is over, so an empty row for a fix means the fix genuinely installed no
+	 * hook, not that its hook simply hadn't happened yet.
+	 */
+	FPMHookLedger::LogInventory();
+
+	/*
+	 * ★ THE STARTUP TOAST MOVED HERE ON 2026-08-15, FOR THE REASON THE INVENTORY ABOVE DID, AND IN THE
+	 * ONE READOUT ANT ACTUALLY LOOKS AT. It prints FPMHookLedger::Records().Num(), and that number is
+	 * only final once every FPMFixes::Arm() has run. From its old site, between the join-version echo
+	 * and the lever registry, it counted the hooks of the fixes armed SO FAR and stated the total as
+	 * though arming were over. Same undercount as the inventory line, on screen instead of in the log.
+	 *
+	 * IT SITS AFTER LogInventory() ON PURPOSE, not merely at the end of the function. Post's own rule
+	 * is that the screen and the log must never disagree (FPMOverlay.h:43), and no hook can install
+	 * between these two statements, so the toast's count and the inventory header's count are the same
+	 * number by construction rather than two numbers that happen to agree today. The version itself is
+	 * still announced at the TOP of this function, so a late toast costs the log nothing.
+	 *
+	 * MOVING THE HOTKEY AND SetVisible DOWN WITH IT COSTS NOTHING EITHER, which is why the block stayed
+	 * whole. Neither does anything observable before the first tick: InstallHotkey registers the
+	 * pre-processor at once or retries on the core ticker (FPMOverlay.cpp:108-120), and SetVisible only
+	 * raises a flag and adds a ticker whose Tick does the attaching (FPMOverlay.cpp:262-278). No frame
+	 * renders inside StartupModule, so both behave identically at either site - and keeping them with
+	 * the Post keeps the hotkey installed BEFORE the panel is shown, which is the order Ant asked for.
+	 */
+	if (!IsRunningDedicatedServer())
+	{
+		// The debug feed, on by default while the mod is pre-release. Ant: "i want UI to show when and
+		// what the rain fix thing is doing so i can see that its working." It attaches as soon as a
+		// viewport exists, which is why it can report during a loading screen at all.
+		//
+		// Ant asked for the keybind three times. It is installed BEFORE the overlay is shown, so the
+		// very first thing she can do with the panel is turn it off.
+		FPMOverlay::Get().InstallHotkey();
+		FPMOverlay::Get().SetVisible(true);
+		FPMOverlay::Post(TEXT("startup"), FString::Printf(TEXT("FPM %s loaded, %d hook(s) armed"),
+			*VersionName, FPMHookLedger::Records().Num()));
+	}
 }
 
 void FFicsitsPerformanceManagerModule::ShutdownModule()

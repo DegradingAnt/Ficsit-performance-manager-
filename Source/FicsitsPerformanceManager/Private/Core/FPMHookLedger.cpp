@@ -148,6 +148,26 @@ bool FPMHookLedger::AuditCountingWrappers()
 
 namespace
 {
+	/**
+	 * ⚠ THE CEILING ON EVERY LEDGER WALK THIS REPORT DOES. It is not a formatting preference.
+	 *
+	 * The report prints one line per ledger row and then scans the whole ledger once per armed fix, so
+	 * its cost is rows, plus rows times fixes. NOTHING BOUNDS THE LEDGER. It already holds 81 rows for
+	 * about 27 distinct targets on Ant's client, because arming installed several of them more than
+	 * once, and whatever let that happen can happen again and harder.
+	 *
+	 * 512 is six times the largest ledger ever observed here, so reaching it is itself a defect and the
+	 * report says so out loud. A quiet short list would read as a complete one, which is the failure
+	 * this file's coverage line already exists to prevent.
+	 */
+	constexpr int32 FPMLedgerMaxRowsPerReport = 512;
+
+	/** How many rows one report may walk. Every walk in the report calls this, so none can differ. */
+	int32 FPMLedgerRowsToWalk(int32 TotalRows)
+	{
+		return FMath::Min(TotalRows, FPMLedgerMaxRowsPerReport);
+	}
+
 	/** REACHED for one hook, read atomically. Returns -1 when the slot is missing or unwrapped. */
 	int64 FPMLedgerReachedOf(const FPMHookRecord& Record)
 	{
@@ -158,13 +178,19 @@ namespace
 		return FPlatformAtomics::AtomicRead(&Record.Counter->Reached);
 	}
 
-	/** How many ledger rows this fix owns, and how many of those actually installed. */
+	/** How many rows of the ledger's walkable span this fix owns, and how many of those installed. */
 	void FPMLedgerRowsFor(const TCHAR* FixName, int32& OutRows, int32& OutInstalled)
 	{
 		OutRows = 0;
 		OutInstalled = 0;
-		for (const FPMHookRecord& Record : FPMHookLedger::Records())
+
+		// The SAME expression the printed list uses, not a limit passed in. Two walks with two limits
+		// would make the list and the coverage arithmetic disagree, and nothing would show it.
+		const TArray<FPMHookRecord>& Records = FPMHookLedger::Records();
+		const int32 Last = FPMLedgerRowsToWalk(Records.Num());
+		for (int32 Index = 0; Index < Last; ++Index)
 		{
+			const FPMHookRecord& Record = Records[Index];
 			if (Record.Owner != nullptr && FCString::Strcmp(Record.Owner, FixName) == 0)
 			{
 				++OutRows;
@@ -184,11 +210,17 @@ namespace
 
 void FPMHookLedger::LogInventory()
 {
-	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] ---- hook inventory: %d hook(s), as of this moment ----"), GLedger.Num());
+	const int32 TotalRows = GLedger.Num();
+	const int32 RowsExamined = FPMLedgerRowsToWalk(TotalRows);
 
-	for (const FPMHookRecord& Record : GLedger)
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] ---- hook inventory: %d hook(s), as of this moment ----"), TotalRows);
+
+	// ⚠ INDEXED, NOT A RANGE-FOR, AND EVERY OTHER WALK BELOW STOPS AT THE SAME ROW. See
+	// FPMLedgerMaxRowsPerReport for why the ledger cannot be trusted to stay small.
+	for (int32 Index = 0; Index < RowsExamined; ++Index)
 	{
+		const FPMHookRecord& Record = GLedger[Index];
 		const int64 Reached = FPMLedgerReachedOf(Record);
 
 		if (Reached >= 0)
@@ -214,7 +246,20 @@ void FPMHookLedger::LogInventory()
 		}
 	}
 
-	if (GLedger.Num() == 0)
+	if (TotalRows > RowsExamined)
+	{
+		// PRINTED, NEVER IMPLIED. A shorter list with no explanation reads as a complete one, and every
+		// number below this line is then wrong by an amount nobody can see.
+		UE_LOG(LogFicsitsPerformanceManager, Error,
+			TEXT("[FPM]   CEILING HIT: the ledger holds %d rows and this report walks at most %d, so "
+			     "rows #%d to #%d were NOT printed and are NOT in the coverage arithmetic below. The "
+			     "ceiling exists so one report cannot cost more than a frame can pay. A ledger this "
+			     "large is itself the finding: read the 'hook #N armed' lines in FactoryGame.log for "
+			     "the full list."),
+			TotalRows, FPMLedgerMaxRowsPerReport, RowsExamined, TotalRows - 1);
+	}
+
+	if (TotalRows == 0)
 	{
 		// Not a formatting nicety. An empty inventory printed as an empty list reads as a clean bill
 		// of health, and a silently-empty log is how this project lost four days once already.
@@ -275,8 +320,9 @@ void FPMHookLedger::LogInventory()
 	// A hook whose owner matches no armed fix is a row nobody can attribute. It means an owner string
 	// drifted away from the fix's Name(), and the coverage arithmetic above silently ignores it.
 	TArray<FString> OrphanOwners;
-	for (const FPMHookRecord& Record : GLedger)
+	for (int32 Index = 0; Index < RowsExamined; ++Index)
 	{
+		const FPMHookRecord& Record = GLedger[Index];
 		const bool bMatched = ArmedFixes.ContainsByPredicate([&Record](const IFPMFix* Fix)
 		{
 			return Record.Owner != nullptr && FCString::Strcmp(Record.Owner, Fix->Name()) == 0;
@@ -319,6 +365,11 @@ void FPMHookLedger::LogInventory()
  * player can run mid-session. Output goes through the OUTPUT DEVICE as well as UE_LOG, because
  * Display lines do not echo to the in-game console and a command that looks dead has cost this
  * project whole boot cycles.
+ *
+ * ⚠ AND ON 2026-08-15 IT FROZE THE GAME. This body ran 49,882 times inside ONE engine tick, wrote
+ * 4,240,126 log lines and 739 MB, and stopped only when Ant killed the process. FPMReportGate is the
+ * bound; FPMConsoleEcho.h carries the evidence and the reasoning. The gate is constructed FIRST,
+ * BEFORE the echo, so a refusal costs one line instead of a report.
  */
 static FAutoConsoleCommandWithOutputDevice GHookLedgerReportCmd(
 	TEXT("FPM.Hooks.Report"),
@@ -326,6 +377,12 @@ static FAutoConsoleCommandWithOutputDevice GHookLedgerReportCmd(
 	     "coverage line naming the armed fixes that install no hook."),
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMReportGate Gate(Ar, TEXT("FPM.Hooks.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FPMScopedConsoleEcho Echo(&Ar);
 		FPMHookLedger::LogInventory();
 	}));

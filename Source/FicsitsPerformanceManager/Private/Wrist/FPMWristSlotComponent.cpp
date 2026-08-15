@@ -3,6 +3,7 @@
 #include "Wrist/FPMWristSlotComponent.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMDiag.h"
 #include "Core/FPMHookLedger.h"
 #include "Core/FPMMasterSwitch.h"
@@ -493,8 +494,18 @@ namespace
 		TEXT("FPM.Wrist.Report"),
 		TEXT("Print the wrist-slot catalog, the live component count, every action and refusal "
 		     "counter, and the coverage note that says what each zero means."),
+		// ⚠ FPM.Wrist.SelfTest BELOW IS NOT GATED, AND THAT IS ON PURPOSE. The rollout covers REPORT
+		// commands. A self-test drives the accept/refuse decision and prints a verdict, so refusing it
+		// would mean refusing a test rather than refusing a duplicate answer, and its result is what a
+		// boot check reads. See FPMConsoleEcho.h for the one-report-per-frame bound.
 		FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 		{
+			FPMReportGate Gate(Ar, TEXT("FPM.Wrist.Report"));
+			if (Gate.IsRefused())
+			{
+				return;
+			}
+
 			GFPMWristLogReport(&Ar);
 		}));
 

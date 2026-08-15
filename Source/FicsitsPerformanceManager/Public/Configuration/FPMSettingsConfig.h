@@ -72,12 +72,13 @@ public:
 	UFPMSettingsConfig();
 
 	/**
-	 * Pushes every row on the page into its matching cvar.
+	 * Pushes every row on the page into its matching cvar. Walks `BoundRows` unconditionally — every
+	 * call re-writes and re-verifies ALL of them, not just whichever row prompted it.
 	 *
-	 * ★ ONE HANDLER FOR EVERY ROW, ON PURPOSE. `FOnPropertyValueChanged` carries no argument saying
-	 * WHICH property moved, so per-row handlers would mean one `UFUNCTION` per setting and a hand-written
-	 * binding for each — the drift surface this design exists to remove. Re-pushing all of them costs a
-	 * handful of cvar writes on a human-scale event (someone moved a slider), and it is stateless.
+	 * ★ CALL THIS DIRECTLY WHEN THE WRITE MUST HAVE HAPPENED BEFORE THE NEXT LINE RUNS (the
+	 * POST_INITIALIZATION restore in RootInstance_FicsitsPerformanceManager.cpp is the one place that
+	 * does). For anything reacting to a row CHANGING, bind to `RequestSync` instead — see its comment
+	 * for why binding rows straight to this one was the bug.
 	 *
 	 * ⚠ IT VERIFIES. After writing, each value is read back and a mismatch is logged. A settings page
 	 * that reports success while the cvar refused the write is the dead-instrument shape, and this one
@@ -86,8 +87,37 @@ public:
 	UFUNCTION()
 	void SyncAllToCVars();
 
+	/**
+	 * What every row's `OnPropertyValueChanged` is actually bound to — see `BindRow` in the .cpp.
+	 *
+	 * ★ COALESCES A BURST OF ROWS INTO ONE `SyncAllToCVars()`, NOT ONE EACH. `FOnPropertyValueChanged`
+	 * carries no argument saying WHICH property moved, so per-row handlers would mean one `UFUNCTION`
+	 * per setting and a hand-written binding for each — the drift surface this design exists to remove.
+	 * One shared handler is still right; the bug was WHICH handler. Binding every row straight to
+	 * `SyncAllToCVars` meant N rows moving together ran N full-table syncs back to back, one per row —
+	 * found 2026-08-15 from six identical "settings applied: 6 row(s) written" lines inside one frame in
+	 * Ant's log, i.e. 36 cvar writes and 36 read-back checks where one pass of 6 would do. `MarkDirty()`
+	 * is the only thing in SML's ConfigProperty.cpp that broadcasts `OnPropertyValueChanged`
+	 * (ConfigProperty.cpp:18-27), and `UConfigPropertySection::ResetToDefault` calls it once per CHILD as
+	 * it cascades a reset down the tree (ConfigPropertySection.cpp:102-118) — six leaf rows under one
+	 * root section is exactly six such calls. That is the confirmed mechanism; it does not depend on
+	 * knowing which UI action asked for the reset, and the fix below does not depend on it either.
+	 *
+	 * This defers the actual sync to the next tick and lets `bSyncPending` absorb every additional
+	 * firing that lands before it runs, so a burst of any size still costs exactly one
+	 * `SyncAllToCVars()`. That single deferred pass is not reading stale data: by the time it runs, SML
+	 * has finished setting every row in the burst, so it sees their final values, not a snapshot from
+	 * partway through. A lone row changing (the ordinary case — someone moved one slider) still reaches
+	 * `SyncAllToCVars()` on the very next tick, so a real edit is still applied and still reported.
+	 */
+	UFUNCTION()
+	void RequestSync();
+
 private:
 	/** Every row created, so SyncAllToCVars can walk them without re-deriving the tree. */
 	UPROPERTY()
 	TArray<TObjectPtr<class UConfigProperty>> BoundRows;
+
+	/** Set while a deferred `SyncAllToCVars()` is scheduled, so `RequestSync` can coalesce repeats. */
+	bool bSyncPending = false;
 };

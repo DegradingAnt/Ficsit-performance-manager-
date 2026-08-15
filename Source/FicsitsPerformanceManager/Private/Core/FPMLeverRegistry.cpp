@@ -874,7 +874,15 @@ static FAutoConsoleCommandWithOutputDevice GFPMLeverReportCmd(
 	TEXT("FPM.Lever.Report"),
 	TEXT("Lever registry: registration and probe coverage. Reads only -- writes no console "
 	     "variable, no ini, nothing."),
+	// Gate BEFORE the echo: ReportNow opens its own FPMScopedConsoleEcho, so the claim has to be made
+	// out here. See FPMConsoleEcho.h for why one report per engine frame is the bound.
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		FPMReportGate Gate(Ar, TEXT("FPM.Lever.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FFPMLeverRegistry::Get().ReportNow(Ar);
 	}));

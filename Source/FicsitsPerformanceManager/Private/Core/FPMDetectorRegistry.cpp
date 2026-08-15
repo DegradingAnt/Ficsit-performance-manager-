@@ -3,6 +3,7 @@
 #include "Core/FPMDetectorRegistry.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 #include "Core/FPMOverlay.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/OutputDevice.h"
@@ -148,12 +149,47 @@ void FFPMDetectorRegistry::ReportNow(FOutputDevice* Ar)
 			*Entry.Key, RowsPerMod[Entry.Key], Entry.Value));
 	}
 
+	/*
+	 * ★ THE ONE WALK IN THIS FILE THAT GROWS WHILE YOU PLAY, SO IT IS THE ONE THAT GETS A CEILING.
+	 *
+	 * Every other loop above iterates a per-mod aggregate, which is bounded by how many mods are
+	 * installed. `Rows` is not: `Report()` at line 66 appends one entry per detector sighting and
+	 * nothing trims it, so a long session with a noisy detector makes this listing arbitrarily long.
+	 * That is the shape that turned FPM.Hooks.Report into 4,240,126 lines on 2026-08-15.
+	 *
+	 * ⚠ THE CAP IS ON THE LISTING ONLY. The aggregation loop near the top of this function still walks
+	 * EVERY row, so the counts and the per-mod table stay complete and stay correct. Capping the
+	 * arithmetic instead of the printing would turn a long report into a wrong one, which is the
+	 * strictly worse trade.
+	 *
+	 * ⚠ AND THE DROPPED ROWS SURVIVE NOWHERE ELSE. `Report()` accumulates without logging, so this
+	 * listing is the ONLY place a raw row is ever printed. The ceiling line says so out loud, because a
+	 * reader who assumes the log has the rest would be wrong and would not find out.
+	 *
+	 * 128 is twice the largest listing cap already in this module (FFPMCratesSweep::Report caps its
+	 * candidate list at 64). It is a printing budget, not a measurement threshold: nothing about the
+	 * answer changes with it, only how much of the backing detail is quoted before the per-mod table
+	 * above stops being the thing a reader takes away.
+	 */
 	if (Ar != nullptr)
 	{
-		for (const FAttribution& Row : Rows)
+		const int32 RawRowCap = 128;
+		const int32 Shown = FMath::Min(Rows.Num(), RawRowCap);
+		for (int32 Index = 0; Index < Shown; ++Index)
 		{
+			const FAttribution& Row = Rows[Index];
 			Emit(FString::Printf(TEXT("[FPM] detect:     [%s] %s - %s (%d)"),
 				*Row.DetectorName.ToString(), *Row.ModKey, *Row.Description, Row.Count));
+		}
+
+		const FString Ceiling = FPMCeilingHitLine(Shown, Rows.Num(), TEXT("raw attribution row(s)"),
+			TEXT("The counts and the per-mod table above are still built from EVERY row, so they are "
+			     "complete. Only this raw listing was cut, and the cut rows are printed nowhere else "
+			     "at all: a detector accumulates its rows without logging them. Run FPM.Detect.Clear "
+			     "and reproduce the case you care about to get a listing that fits."));
+		if (!Ceiling.IsEmpty())
+		{
+			Emit(Ceiling);
 		}
 	}
 }
@@ -229,9 +265,15 @@ namespace
 		TEXT("Print the M-DETECT per-mod attribution table: every mod key with its row count and "
 		     "total attributed cost, plus a coverage line naming which of the five detectors have "
 		     "not reported yet this session. Verbose (called from the console, always) also lists "
-		     "every raw row."),
+		     "the raw rows, up to a printed ceiling."),
 		FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 		{
+			FPMReportGate Gate(Ar, TEXT("FPM.Detect.Report"));
+			if (Gate.IsRefused())
+			{
+				return;
+			}
+
 			FFPMDetectorRegistry::ReportNow(&Ar);
 		}));
 

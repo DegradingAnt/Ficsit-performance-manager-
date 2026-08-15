@@ -3,6 +3,7 @@
 #include "Fixes/Vanilla/FPMCratesSweep.h"
 
 #include "FicsitsPerformanceManager.h"
+#include "Core/FPMConsoleEcho.h"
 
 #include "FGCrate.h"
 #include "FGInventoryComponent.h"
@@ -485,9 +486,25 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GFPMCratesReportCmd(
 	     "only, never the UI - see FPMCratesSweep.h for the safety proof), and report the count, the "
 	     "candidates, and a confirm token for FPM.Crates.Remove. NEVER removes anything; ships "
 	     "permanently as the regression guard. Refuses on a dedicated server."),
+	/*
+	 * ⚠ THE GATE IS ON REPORT AND DELIBERATELY NOT ON FPM.Crates.Remove BELOW. Remove is not a report:
+	 * it is already held shut by a confirm token that only a fresh Report can mint, and by a second
+	 * 'confirm' argument. Adding a frame cap there would buy nothing and could refuse the second half
+	 * of a two-step the operator is in the middle of.
+	 *
+	 * ⚠ A REFUSAL HERE COSTS THE TOKEN, NOT JUST THE LISTING. No report means no fresh token, so
+	 * FPM.Crates.Remove has nothing valid to take. That is the safe direction: the failure is "you must
+	 * ask again", never "something was removed on a stale reading".
+	 */
 	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(
 		[](const TArray<FString>& /*Args*/, UWorld* World, FOutputDevice& Ar)
 		{
+			FPMReportGate Gate(Ar, TEXT("FPM.Crates.Report"));
+			if (Gate.IsRefused())
+			{
+				return;
+			}
+
 			FFPMCratesSweep::Report(World, &Ar);
 		}));
 

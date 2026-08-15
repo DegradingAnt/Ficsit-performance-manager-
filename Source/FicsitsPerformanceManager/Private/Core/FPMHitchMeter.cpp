@@ -9,6 +9,10 @@
 
 #include "HAL/IConsoleManager.h"
 #include "ContentStreaming.h"
+// UWorld::HasAnyLevelMakingVisible / HasAnyLevelMakingInvisible, the game-thread half of level streaming.
+#include "Engine/World.h"
+// GLog->AddOutputDevice / RemoveOutputDevice, for the log-volume sink.
+#include "Misc/OutputDeviceRedirector.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/ScopeLock.h"
@@ -51,6 +55,23 @@ static TAutoConsoleVariable<float> CVarHitchSummarySeconds(
 	TEXT("FPM.Hitch.SummarySeconds"), 60.0f,
 	TEXT("Seconds between running summaries. Every summary carries the frame count it was measured over, so "
 	     "a dead meter reads as 0-in-0 rather than as a calm session. Default 60."),
+	ECVF_Default);
+
+/*
+ * THE LOG-BURST BAR IS A CVAR BECAUSE IT IS THE ONE NUMBER IN THIS WIDENING THAT COULD MANUFACTURE A
+ * FALSE ATTRIBUTION, so it has to be arguable rather than buried.
+ *
+ * Set it too low and every frame is a "log burst" and the bucket claims the whole window. The default is
+ * chosen to sit far outside normal traffic rather than on its edge: her 2026-08-15 client log runs in
+ * single-digit lines per frame during play, and the burst that preceded the 409 ms hitch was 17,465 in
+ * ONE frame. Anything between those two numbers separates them, so 200 is a wide margin on both sides
+ * and not a tuned constant.
+ */
+static TAutoConsoleVariable<int32> CVarHitchLogBurstLines(
+	TEXT("FPM.Hitch.LogBurstLines"), 200,
+	TEXT("Log lines written inside one span, at or above which the span is attributed to a LOG BURST. The "
+	     "count is always printed; only the attribution uses this bar. 0 disables the bucket, which then "
+	     "reports its own count with no claim attached. Default 200."),
 	ECVF_Default);
 
 /*
@@ -183,6 +204,15 @@ void FFPMHitchMeter::Arm()
 	FrameBeginRtHandle = FCoreDelegates::OnBeginFrameRT.AddRaw(this, &FFPMHitchMeter::OnFrameBeginRenderThread);
 	FrameEndRtHandle   = FCoreDelegates::OnEndFrameRT.AddRaw(this, &FFPMHitchMeter::OnFrameEndRenderThread);
 
+	// The log-volume bucket. Registered here and removed in Disarm(), so the ZERO RESIDUE rule holds:
+	// nothing of FPM stays attached to GLog after uninstall. Guarded because GLog can be null during very
+	// early startup and during shutdown, and a null deref inside the instrument would take the game with
+	// it for the sake of a counter.
+	if (GLog)
+	{
+		GLog->AddOutputDevice(&LogSink);
+	}
+
 	// Reveal the engine's own per-creation timing line. See the long note above the cvar.
 	// ⚠ Never on a dedicated server: NullRHI builds no pipelines, so this would raise a category that
 	// cannot emit and put a misleading switch in the server log for nothing.
@@ -223,6 +253,13 @@ void FFPMHitchMeter::Arm()
 void FFPMHitchMeter::Disarm()
 {
 	LogSummary(TEXT("shutdown"));
+
+	// Removed before the delegates, and before anything else here can log. `RemoveOutputDevice` on a
+	// device that was never added is a no-op array removal, so the never-armed path is safe too.
+	if (GLog)
+	{
+		GLog->RemoveOutputDevice(&LogSink);
+	}
 
 	if (TickHandle.IsValid())
 	{
@@ -500,6 +537,14 @@ void FFPMHitchMeter::OnWorldLoad(UWorld* World)
 	 * world's startup burst as mid-play.
 	 */
 	SettledRealSeconds.store(FPlatformTime::Seconds() + GFPMPsoSettleSeconds, std::memory_order_relaxed);
+
+	/*
+	 * THE ONLY WORLD REFERENCE THIS METER KEEPS, and it is weak on purpose. `ClassifySpan` runs from the
+	 * core ticker, which outlives every world: a raw pointer here would be read once per frame against a
+	 * world that quit to the menu three seconds ago. `TWeakObjectPtr` turns that from a crash into a
+	 * `nullptr`, and the summary states which of the two it got rather than printing a confident zero.
+	 */
+	MeteredWorld = World;
 }
 
 void FFPMHitchMeter::OnAsyncLoadingFlush()
@@ -578,6 +623,56 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	 */
 	const bool bPsoInSpan = bPsoRunActive.load(std::memory_order_relaxed);
 	if (bPsoInSpan) { ++FramesDuringPso; }
+
+	/*
+	 * BUCKET 8, LOG VOLUME, and it is CONSUMED HERE rather than at the call sites for a reason that is
+	 * about correctness and not about tidiness: this function LOGS. Its HITCH line, and the three summary
+	 * rows that follow it, all pass through the sink. Consuming the counter at the top means this meter's
+	 * own output is counted into the NEXT span, where about four lines cannot cross a 200-line bar. Read
+	 * it any later and the instrument would start attributing hitches to itself.
+	 */
+	const int32 LogLinesInSpan = LogSink.LinesInFrame.Set(0);
+	LogLinesInWindow += LogLinesInSpan;
+	WorstLogLinesInSpan = FMath::Max(WorstLogLinesInSpan, LogLinesInSpan);
+	const int32 LogBurstBar = CVarHitchLogBurstLines.GetValueOnAnyThread();
+	const bool bLogBurstInSpan = LogBurstBar > 0 && LogLinesInSpan >= LogBurstBar;
+
+	/*
+	 * BUCKET 9, THE GC TAIL. Two free functions, no editor guard, no allocation, no lock: each reads a
+	 * global the collector maintains (`UObjectGlobals.h:937`, `:944`).
+	 *
+	 * The existing `gc` bucket counts the PreGarbageCollect broadcast, which is the START of a
+	 * collection. Unhashing and purging run on LATER frames, as game-thread work, and until now fell into
+	 * no bucket at all. `bGcPurgeEverSeen` is session-scoped and never reset, so a window holding a zero
+	 * can distinguish "the tail was quiet this minute" from "this pair has never once been true".
+	 */
+	const bool bGcPurgeInSpan = IsIncrementalPurgePending() || IsIncrementalUnhashPending();
+	if (bGcPurgeInSpan)
+	{
+		++FramesDuringGcPurge;
+		bGcPurgeEverSeen = true;
+	}
+
+	/*
+	 * BUCKET 10, LEVEL VISIBILITY. The game-thread half of streaming: AddToWorld and RemoveFromWorld
+	 * register and unregister a streamed level's components incrementally, on the game thread, which is
+	 * where every one of her measured hitches was bound.
+	 *
+	 * The 5.6 predicates, NOT the 5.5 accessors. `GetCurrentLevelPendingVisibility` and
+	 * `GetCurrentLevelPendingInvisibility` still compile (`World.h:1038`, `:1048`) and return literal
+	 * `nullptr`, so a bucket built on them would be born dead and confident.
+	 */
+	bool bLevelVisInSpan = false;
+	if (const UWorld* World = MeteredWorld.Get())
+	{
+		bLevelVisWorldSeen = true;
+		bLevelVisInSpan = World->HasAnyLevelMakingVisible() || World->HasAnyLevelMakingInvisible();
+		if (bLevelVisInSpan)
+		{
+			++FramesDuringLevelVis;
+			bLevelVisEverSeen = true;
+		}
+	}
 
 	/*
 	 * ★ THE STREAMER'S BACKLOG — the seventh bucket, sampled HERE because this runs once per span and
@@ -694,9 +789,15 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	// inside the span and belongs beside the flush and sync-load terms. In-flight async PSO work is a
 	// LEVEL, like the run flag, and is the weaker claim of the two -- so it is last, and the summary
 	// reports it as a rate rather than a count.
+	//
+	// The three added on 2026-08-15 sit at the end in ascending order of doubt, matching the ordering rule
+	// already used above. The log burst is an EVENT and the strongest of the three. The GC tail and the
+	// level-visibility flag are LEVELS, so each carries its own frame denominator into the summary, and
+	// neither is allowed to lower the unattributed count without printing the rate that justifies it.
 	const bool bAttributed = FlushesInSpan > 0 || SyncLoadsInSpan > 0 || GcInSpan > 0 || bPsoInSpan
 		|| StreamingInSpan > 0
-		|| PsoCreatesInSpan > 0 || bPsoWorkInSpan;
+		|| PsoCreatesInSpan > 0 || bPsoWorkInSpan
+		|| bLogBurstInSpan || bGcPurgeInSpan || bLevelVisInSpan;
 
 	const float ThresholdMs = CVarHitchThresholdMs.GetValueOnAnyThread();
 	const float CeilingMs   = CVarHitchIgnoreAboveMs.GetValueOnAnyThread();
@@ -722,6 +823,9 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 		if (PsoCreatesInSpan > 0) { ++StallsWithPsoCreate; }
 		if (bPsoWorkInSpan)       { ++StallsWithPsoWork; }
 		if (StreamingInSpan > 0)  { ++StallsWithStreaming; }
+		if (bLogBurstInSpan)      { ++StallsWithLogBurst; }
+		if (bGcPurgeInSpan)       { ++StallsWithGcPurge; }
+		if (bLevelVisInSpan)      { ++StallsWithLevelVis; }
 		if (!bAttributed)         { ++StallsUnattributed; }
 		return;
 	}
@@ -740,6 +844,9 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	if (PsoCreatesInSpan > 0) { ++HitchesWithPsoCreate; }
 	if (bPsoWorkInSpan)       { ++HitchesWithPsoWork; }
 	if (StreamingInSpan > 0)  { ++HitchesWithStreaming; }
+	if (bLogBurstInSpan)      { ++HitchesWithLogBurst; }
+	if (bGcPurgeInSpan)       { ++HitchesWithGcPurge; }
+	if (bLevelVisInSpan)      { ++HitchesWithLevelVis; }
 	if (!bAttributed)         { ++HitchesUnattributed; }
 
 	/*
@@ -819,6 +926,22 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 			PrecompileTasks, PrecacheRequests);
 	}
 
+	/*
+	 * The three fields added on 2026-08-15, each worded at the strength of its evidence.
+	 *
+	 * The log count prints whenever it crosses the bar, as a COUNT and not a verdict, because a burst can
+	 * be the consequence of a stall as easily as its cause. The other two say "during", the same wording
+	 * the PSO run gets, because both are levels that can span a whole window.
+	 */
+	FString LogPart;
+	if (bLogBurstInSpan)
+	{
+		LogPart = FString::Printf(TEXT(" | LOG BURST: %d line(s) written in this span"), LogLinesInSpan);
+	}
+	const TCHAR* GcPurgePart  = bGcPurgeInSpan  ? TEXT(" | during a GC unhash/purge tail") : TEXT("");
+	const TCHAR* LevelVisPart = bLevelVisInSpan
+		? TEXT(" | during level visibility work (AddToWorld/RemoveFromWorld)") : TEXT("");
+
 	const TCHAR* UnattributedPart = bAttributed ? TEXT("") : TEXT(" | UNATTRIBUTED");
 
 	// ★ THE FIRST FIELD ANYONE READING A HITCH LINE SHOULD LOOK AT, because it says which half of the
@@ -841,9 +964,10 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 
 	UE_LOG(LogFicsitsPerformanceManager, Warning,
 		TEXT("[FPM] HITCH %.1f ms%s%s - %d async-load flush(es), %d GC pass(es) in this span, %d "
-		     "package(s) still loading%s%s%s%s%s%s"),
+		     "package(s) still loading%s%s%s%s%s%s%s%s%s"),
 		SpanMs, bClosedByLoad ? TEXT(" (closed by a world load)") : TEXT(""), *ThreadPart,
 		FlushesInSpan, GcInSpan, GetNumAsyncPackages(), *SyncPart, *PsoCreatePart, *PsoWorkPart, PsoPart,
+		*LogPart, GcPurgePart, LevelVisPart,
 		UnattributedPart, *Packages);
 }
 
@@ -876,6 +1000,10 @@ bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 		SyncLoadsInFrame.Set(0);
 		GcInFrame.Set(0);
 		PsoCreatesInFrame.Set(0);
+		// The fifth in-frame counter, discarded for the same stated reason as the other four: a loading
+		// screen writes a great many log lines, and folding them into the first playable span would
+		// manufacture a LOG BURST attribution on the one span most likely to hitch anyway.
+		LogSink.LinesInFrame.Set(0);
 
 		// The work-or-wait accumulators too, and an in-flight frame start with them. A loading screen's
 		// game-thread time folded into the first playable span would make it read as game-thread bound no
@@ -977,44 +1105,39 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		// BOTH halves, always, and never folded together. The async-flush count alone was structurally
 		// blind to sync loads, so reporting it on its own is what made a partial zero look like a whole one.
 		// Abbreviated from prose to a labelled list purely for width — the counters are unchanged.
+		/*
+		 * THE UNATTRIBUTED COUNT IS THE LAST ITEM OF THE CAUSE LIST, NOT A SEPARATE CLAUSE BEHIND IT, and
+		 * that placement is the whole fix. It was already printed, further along this same string, behind
+		 * a 130-character streaming-liveness bracket. On 2026-08-15 Ant read the line, saw
+		 * `0 flush, 1 sync, 0 gc, 0 cold-pso, 0 pso-work, 0 pso-precompile, 0 streaming` against four
+		 * hitches, and reported that three of the four were unreported. She was reading a list that
+		 * LOOKED complete because the number completing it was off the end of the row.
+		 *
+		 * Inside the list it is unmissable, and the list now adds up in front of the reader. A count in
+		 * the log that nobody can find is worth about what a count that was never taken is worth.
+		 */
 		Head += FString::Printf(
-			TEXT(" | worst %.1f ms, mean %.1f ms | cause: %d flush, %d sync, %d gc, %d cold-pso, "
-			     "%d pso-work, %d pso-precompile, %d streaming"),
-			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc, HitchesWithPsoCreate,
-			HitchesWithPsoWork, HitchesWithPso, HitchesWithStreaming);
-
-		/*
-		 * ★ THE STREAMING BUCKET'S OWN LIVENESS LINE, printed beside its count and never without it.
-		 *
-		 * `GetNumWantingResourcesID()` moves only when the streaming system updates. If it has never
-		 * moved, a zero backlog means "nothing is feeding this readout", which is a completely different
-		 * statement from "the streamer was never behind" — and it is the statement that would otherwise
-		 * be silently mistaken for the good news.
-		 */
-		if (!bStreamingIdEverMoved)
-		{
-			Head += FString::Printf(
-				TEXT(" [⚠ streaming bucket UNPROVEN: GetNumWantingResourcesID has never moved, so its %d "
-				     "is 'not measured', not 'never behind']"), HitchesWithStreaming);
-		}
-		else
-		{
-			Head += FString::Printf(
-				TEXT(" [streaming live, worst backlog %d resource(s), behind on %d frame(s)]"),
-				StreamingWantingWorst, FramesDuringStreaming);
-		}
-
-		/*
-		 * ★ THE UNATTRIBUTED SHARE IS THE NUMBER THIS WIDENING LIVES OR DIES BY, so it is printed as a
-		 * PERCENTAGE and not left to be worked out from the four counters above.
-		 *
-		 * Design `:1218` asks for exactly this: "an unattributed-stall RATE, printed, so 'most stalls
-		 * anonymous' becomes a number that can fall." Without it, adding a fifth bucket reads as progress
-		 * whether or not the anonymous share actually moved -- and on 0.6.0 that share was 21 of 21.
-		 * `Hitches > 0` is guaranteed inside this branch, so the division is safe.
-		 */
-		Head += FString::Printf(TEXT(" | %d UNATTRIBUTED (%.0f%% of hitches)"),
+			TEXT(" | worst %.1f ms, mean %.1f ms | cause: %d flush, %d sync, %d gc, %d gc-purge, "
+			     "%d cold-pso, %d pso-work, %d pso-precompile, %d streaming, %d level-vis, %d log-burst, "
+			     "%d UNATTRIBUTED (%.0f%%)"),
+			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc, HitchesWithGcPurge,
+			HitchesWithPsoCreate, HitchesWithPsoWork, HitchesWithPso, HitchesWithStreaming,
+			HitchesWithLevelVis, HitchesWithLogBurst,
 			HitchesUnattributed, 100.0 * HitchesUnattributed / Hitches);
+
+		/*
+		 * EVERY LIVENESS BRACKET NOW LIVES ON THE `detail` ROW, and moving them there is what paid for the
+		 * three new fields above without making this row wider than it already was.
+		 *
+		 * The streaming bracket alone was 130 characters sitting between the cause list and the number the
+		 * cause list needs. This row is the one Ant reads on screen, and the note above the three-row split
+		 * says why width here is a real cost rather than a style preference. A capability statement is
+		 * context for a zero, not the reading itself, so it belongs beside the other capability statements.
+		 *
+		 * The unattributed share still carries its PERCENTAGE, and design `:1218` still asks for exactly
+		 * that: "an unattributed-stall RATE, printed, so 'most stalls anonymous' becomes a number that can
+		 * fall." It has moved INTO the cause list above, not away.
+		 */
 
 		/*
 		 * ★ WHERE THE TIME WENT, printed beside WHAT caused it, because the two answer different
@@ -1083,15 +1206,116 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
 			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
 	}
+	/*
+	 * THE STREAMING BUCKET'S OWN LIVENESS LINE, printed beside its count and never without it. Moved off
+	 * the headline row on 2026-08-15 for width; the reasoning below is unchanged.
+	 *
+	 * `GetNumWantingResourcesID()` moves only when the streaming system updates. If it has never moved, a
+	 * zero backlog means "nothing is feeding this readout", which is a completely different statement from
+	 * "the streamer was never behind", and it is the statement that would otherwise be silently mistaken
+	 * for the good news. Gated on `FramesInWindow` so the empty shutdown summary stays quiet.
+	 */
+	if (FramesInWindow > 0)
+	{
+		Pso += bStreamingIdEverMoved
+			? FString::Printf(
+				TEXT(" | streaming live, worst backlog %d resource(s), behind on %d frame(s)"),
+				StreamingWantingWorst, FramesDuringStreaming)
+			: FString::Printf(
+				TEXT(" | streaming bucket UNPROVEN: GetNumWantingResourcesID has never moved, so its %d "
+				     "is 'not measured', not 'never behind'"), HitchesWithStreaming);
+	}
+
+	/*
+	 * THE GC TAIL AS A RATE, for the reason the two PSO levels already document: a level flatters itself.
+	 * "3 hitches during a purge tail" means nothing if the tail covered the window, and it is a finding if
+	 * it covered forty frames. The in-versus-out comparison is the only form in which a level bucket is
+	 * allowed to lower the unattributed count on the row above.
+	 */
+	if (FramesDuringGcPurge > 0)
+	{
+		const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuringGcPurge)
+			? FramesInWindow - static_cast<uint64>(FramesDuringGcPurge)
+			: 0;
+		const int32 HitchesOutside = Hitches - HitchesWithGcPurge;
+		Pso += FString::Printf(
+			TEXT(" | GC unhash/purge tail pending on %d frame(s): %d hitch(es) there (%.2f%%) vs %d in "
+			     "the other %llu (%.2f%%)"),
+			FramesDuringGcPurge, HitchesWithGcPurge, 100.0 * HitchesWithGcPurge / FramesDuringGcPurge,
+			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
+			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
+	}
+	else if (!bGcPurgeEverSeen && FramesInWindow > 0)
+	{
+		// The session-scoped flag is what makes this honest. A quiet minute and a bucket that has never
+		// once been true print the same 0, and only one of them is news about the game.
+		Pso += FString::Printf(
+			TEXT(" | gc-purge bucket has NEVER been true this session: IsIncrementalPurgePending and "
+			     "IsIncrementalUnhashPending both read false on every frame so far, so its %d is 'the tail "
+			     "was never caught running', not 'the tail is cheap'"), HitchesWithGcPurge);
+	}
+
+	/*
+	 * LEVEL VISIBILITY, same treatment and the same reason, plus a THIRD state the GC tail does not need:
+	 * this bucket depends on a world reaching the meter through OnWorldLoad. "No world" and "a world that
+	 * never streamed" print the same zero and mean opposite things.
+	 */
+	if (FramesDuringLevelVis > 0)
+	{
+		const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuringLevelVis)
+			? FramesInWindow - static_cast<uint64>(FramesDuringLevelVis)
+			: 0;
+		const int32 HitchesOutside = Hitches - HitchesWithLevelVis;
+		Pso += FString::Printf(
+			TEXT(" | level visibility work on %d frame(s): %d hitch(es) there (%.2f%%) vs %d in the other "
+			     "%llu (%.2f%%)"),
+			FramesDuringLevelVis, HitchesWithLevelVis, 100.0 * HitchesWithLevelVis / FramesDuringLevelVis,
+			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
+			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
+	}
+	else if (FramesInWindow > 0)
+	{
+		Pso += bLevelVisWorldSeen
+			? FString(TEXT(" | level-vis bucket has never been true this session: a world is reachable and "
+			               "HasAnyLevelMakingVisible/Invisible read false on every frame so far"))
+			: FString(TEXT(" | level-vis bucket is BLIND: no world has reached this meter through "
+			               "OnWorldLoad, so its 0 is 'not measured', not 'nothing streamed'"));
+	}
+
+	/*
+	 * LOG VOLUME, and unlike the two above it prints EVERY window rather than only when it fires, because
+	 * the count itself is the diagnostic. The bar is printed with it so a zero reads as "below the bar"
+	 * rather than as "nothing logged", and the session total is the bucket's liveness proof: zero there
+	 * means nothing ever reached the sink, which is a fault in this meter and not a quiet session.
+	 */
+	if (FramesInWindow > 0)
+	{
+		if (LogSink.LinesTotal.GetValue() == 0)
+		{
+			Pso += TEXT(" | log-volume bucket DEAD: not one line has reached the sink this session, so it "
+			            "is not registered on GLog rather than the log being quiet");
+		}
+		else
+		{
+			Pso += FString::Printf(
+				TEXT(" | log volume: %lld line(s) this window, worst %d in one span, bar %d, %d session "
+				     "total"),
+				static_cast<long long>(LogLinesInWindow), WorstLogLinesInSpan,
+				CVarHitchLogBurstLines.GetValueOnAnyThread(), LogSink.LinesTotal.GetValue());
+		}
+	}
+
 	if (LoadStalls > 0)
 	{
 		// The stalls carry their own flush count. Folding them into the hitch figure would overstate the
 		// hitch rate; dropping the count entirely is what review finding B caught.
 		Pso += FString::Printf(
-			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc, %d cold-pso, %d pso-work, "
-			     "%d pso-precompile, %d UNATTRIBUTED), not counted as hitches"),
+			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc, %d gc-purge, %d cold-pso, "
+			     "%d pso-work, %d pso-precompile, %d level-vis, %d log-burst, %d UNATTRIBUTED), not "
+			     "counted as hitches"),
 			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread(), LoadStallsWithFlush, StallsWithSyncLoad,
-			StallsWithGc, StallsWithPsoCreate, StallsWithPsoWork, StallsWithPso, StallsUnattributed);
+			StallsWithGc, StallsWithGcPurge, StallsWithPsoCreate, StallsWithPsoWork, StallsWithPso,
+			StallsWithLevelVis, StallsWithLogBurst, StallsUnattributed);
 	}
 	Pso += FString::Printf(
 		TEXT(" | session totals: %d flush(es), %d sync load(s), %d GC pass(es), %d cold PSO creation(s)"),
@@ -1197,6 +1421,23 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	PeakPrecacheRequests = 0;
 	HitchesUnattributed = 0;
 	StallsUnattributed = 0;
+	// The three buckets added 2026-08-15. Their per-window tallies reset here; the three SESSION-scoped
+	// facts do NOT, and that is deliberate. `bGcPurgeEverSeen`, `bLevelVisEverSeen` and
+	// `bLevelVisWorldSeen` answer "could this bucket ever report anything", which is a question about the
+	// whole session, and clearing them every minute would make every window claim the bucket is dead.
+	// `LogSink.LinesTotal` is session-scoped for the same reason. `LogSink.LinesInFrame` is not touched
+	// here either: `ClassifySpan` consumes it every span, so it is already near zero, and clearing it on a
+	// window boundary could discard lines written between the last span and this line.
+	HitchesWithLogBurst = 0;
+	StallsWithLogBurst = 0;
+	WorstLogLinesInSpan = 0;
+	LogLinesInWindow = 0;
+	FramesDuringGcPurge = 0;
+	HitchesWithGcPurge = 0;
+	StallsWithGcPurge = 0;
+	FramesDuringLevelVis = 0;
+	HitchesWithLevelVis = 0;
+	StallsWithLevelVis = 0;
 	// ⚠ The work-or-wait ACCUMULATORS are not reset here — `ClassifySpan` exchanges them every span, and
 	// clearing them on a window boundary could discard a frame that has already been measured but whose
 	// span has not closed. Only the per-window verdict tallies reset.

@@ -170,5 +170,14 @@ static FAutoConsoleCommandWithOutputDevice GNaniteReportCmd(
 	 */
 	FConsoleCommandWithOutputDeviceDelegate::CreateStatic([](FOutputDevice& Ar)
 	{
+		// The one-per-frame cap. This report's own listing is a fixed set of lines, so the gate is here
+		// for the CALL RATE and nothing else: it is the driver that was expensive on 2026-08-15, not
+		// the body. See FPMConsoleEcho.h.
+		FPMReportGate Gate(Ar, TEXT("FPM.Nanite.Report"));
+		if (Gate.IsRefused())
+		{
+			return;
+		}
+
 		FFPMNaniteStreamingGuard::LogReport(&Ar);
 	}));
