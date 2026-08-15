@@ -66,6 +66,23 @@ enum class EFPMLeverPolicy : uint8
 FICSITSPERFORMANCEMANAGER_API const TCHAR* LexToString(EFPMLeverPolicy Policy);
 
 /**
+ * ★ DOES THIS POLICY COMPARE AGAINST A BASELINE? One declaration site, per section 5.2.
+ *
+ * Three places need this answer and each had grown its own copy of the list: the registry's Law-3
+ * refusal (RefuseIfUnsafeToWrite), the stage tables' choice of BaselineSource at registration, and
+ * the apply pass, which must capture a baseline before its first Hold or refuse the lever. A fourth
+ * policy added to the enum with two of the three lists updated is a silent Law-3 hole, and this
+ * project's own record says a fix in one branch is not a fix.
+ *
+ * Absolute writes its target outright and ScalabilityGroup's target is a TIER, so neither needs one.
+ */
+inline bool FPMPolicyNeedsBaseline(const EFPMLeverPolicy Policy)
+{
+	return Policy == EFPMLeverPolicy::MaxOf || Policy == EFPMLeverPolicy::MinOf
+		|| Policy == EFPMLeverPolicy::BaseScale || Policy == EFPMLeverPolicy::BaseDelta;
+}
+
+/**
  * ★ WHAT A LEVER SPENDS. Task vocabulary: "CURRENCY: what a lever costs. gpu_ms, vram_mb, cpu_ms."
  *
  * Flags, not a single value, because a lever can spend on more than one axis at once (a VRAM-

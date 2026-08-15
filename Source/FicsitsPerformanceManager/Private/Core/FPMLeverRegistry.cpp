@@ -132,10 +132,9 @@ bool FFPMLeverRegistry::RefuseIfUnsafeToWrite(const FFPMLeverDefinition& Def, FS
 	// baseline comes from. EFPMLeverBaselineSource offers no "read it live" option at all -- see
 	// its own doc comment -- so this check only ever catches "forgot to declare one", never "chose
 	// the unsafe one", because the unsafe one is not a value that exists to choose.
-	const bool bNeedsBaseline =
-		Def.Policy == EFPMLeverPolicy::MaxOf || Def.Policy == EFPMLeverPolicy::MinOf ||
-		Def.Policy == EFPMLeverPolicy::BaseScale || Def.Policy == EFPMLeverPolicy::BaseDelta;
-	if (bNeedsBaseline && Def.BaselineSource == EFPMLeverBaselineSource::NotApplicable)
+	// The policy list itself lives at ONE site (FPMPolicyNeedsBaseline, FPMLeverTypes.h) because
+	// three files need it and three copies is three chances to miss a new policy.
+	if (FPMPolicyNeedsBaseline(Def.Policy) && Def.BaselineSource == EFPMLeverBaselineSource::NotApplicable)
 	{
 		OutReason = FString::Printf(
 			TEXT("policy %s compares against a baseline but BaselineSource is NotApplicable -- "
@@ -295,7 +294,7 @@ void FFPMLeverRegistry::ProbeOne(FFPMLeverDefinition& Def) const
 	{
 		// ScalabilityGroup with no probe: availability is "does the alias table have at least one
 		// tier for this group", which RefreshAliasTable populates before this runs.
-		const TMap<int32, TArray<FString>>* Tiers = AliasTable.Find(Def.GroupName);
+		const TMap<int32, FAliasTier>* Tiers = AliasTable.Find(Def.GroupName);
 		Def.Availability = (Tiers && Tiers->Num() > 0)
 			? EFPMLeverAvailability::Available
 			: EFPMLeverAvailability::Absent;
@@ -334,19 +333,25 @@ void FFPMLeverRegistry::RefreshAliasTable()
 
 	for (const FString& Group : Groups)
 	{
-		TMap<int32, TArray<FString>> PerTier;
+		TMap<int32, FAliasTier> PerTier;
 		for (int32 Tier = 0; Tier <= 3; ++Tier)
 		{
 			const FString Section = FString::Printf(TEXT("%s@%d"), *Group, Tier);
 			if (const FConfigSection* Sec = GConfig->GetSection(*Section, false, GScalabilityIni))
 			{
-				TArray<FString> Members;
-				Members.Reserve(Sec->Num());
+				// ★ ONE WALK FILLS BOTH VIEWS. The names drive "what does this tier contain" and the
+				// values drive the apply pass's group step. Building them in separate loops -- or worse,
+				// in separate functions -- is how two copies of one table start disagreeing.
+				FAliasTier Built;
+				Built.Names.Reserve(Sec->Num());
+				Built.Values.Reserve(Sec->Num());
 				for (const auto& KVP : *Sec)
 				{
-					Members.Add(KVP.Key.ToString());
+					const FString MemberName = KVP.Key.ToString();
+					Built.Names.Add(MemberName);
+					Built.Values.Add(MemberName, KVP.Value.GetValue());
 				}
-				PerTier.Add(Tier, MoveTemp(Members));
+				PerTier.Add(Tier, MoveTemp(Built));
 			}
 		}
 
@@ -363,8 +368,23 @@ void FFPMLeverRegistry::RefreshAliasTable()
 
 const TArray<FString>* FFPMLeverRegistry::GetAliasMembers(const FString& GroupName, const int32 Tier) const
 {
-	const TMap<int32, TArray<FString>>* Tiers = AliasTable.Find(GroupName);
-	return Tiers ? Tiers->Find(Tier) : nullptr;
+	const TMap<int32, FAliasTier>* Tiers = AliasTable.Find(GroupName);
+	if (!Tiers) { return nullptr; }
+	const FAliasTier* Found = Tiers->Find(Tier);
+	return Found ? &Found->Names : nullptr;
+}
+
+bool FFPMLeverRegistry::GetAliasMemberValue(const FString& GroupName, const int32 Tier,
+                                            const FString& Member, FString& OutValue) const
+{
+	const TMap<int32, FAliasTier>* Tiers = AliasTable.Find(GroupName);
+	if (!Tiers) { return false; }
+	const FAliasTier* Found = Tiers->Find(Tier);
+	if (!Found) { return false; }
+	const FString* Value = Found->Values.Find(Member);
+	if (!Value) { return false; }
+	OutValue = *Value;
+	return true;
 }
 
 // ------------------------------------------------------------------------------------------------

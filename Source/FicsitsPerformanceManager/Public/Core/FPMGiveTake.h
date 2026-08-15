@@ -51,16 +51,19 @@
  * ─────────────────────────────────────────────────────────────────────────────────────────────
  * ⚠ WHAT THIS FILE DOES NOT BUILD. The signals that fill FFPMSteeringInputs (section 3.6, its own
  * Slice-2 bullet), the bench that fills FFPMTierMeasurement (section 4), mode selection and the UI
- * (section 6), CPU relief (section 3.7 -- a separate lever on a separate signal, and this walk must
- * never touch it), and THE APPLY PASS.
+ * (section 6), and CPU relief (section 3.7 -- a separate lever on a separate signal, and this walk
+ * must never touch it).
  *
- * The apply pass is named here rather than left as an omission: turning a decision into cvar writes
- * needs policy arithmetic (MaxOf/MinOf/BaseScale/BaseDelta) against a BASELINE, and Law 2 wants that
- * baseline from a shipped vanilla-defaults table which does not exist yet for engine r.* cvars
- * (FPMLeverTypes.h says so on EFPMLeverBaselineSource::ShippedTable). The guarded CapturedOnce path
- * exists and every stage lever already declares it, so the apply pass is a next step with a clear
- * shape, not a redesign. Building it today would mean either inventing a defaults table or live
- * reading a baseline, and the second is the exact ratchet Law 3 forbids.
+ * ★ THE APPLY PASS IS BUILT, AND IT IS SOMEBODY ELSE'S FILE. FPMStageApply.h executes a decision:
+ * one owner per TIER IDENTITY, holds at 0x07 through FPMCVarWriter, released by the engine's own
+ * tagged Unset. The split is deliberate and this class depends on it -- Decide() never moves the
+ * ladder position, so a caller applies FIRST and calls Commit() only if the apply actually changed
+ * something. An apply that is refused (resolution, which section 8 owns) or that finds every lever
+ * unavailable must not leave this walk believing a tier is engaged.
+ *
+ * The baseline problem that held the apply pass up is closed the way this header predicted: through
+ * FFPMLeverRegistry::CaptureBaselineOnce, captured before the first Hold and never re-read, rather
+ * than through an invented defaults table or a live read.
  */
 
 /**

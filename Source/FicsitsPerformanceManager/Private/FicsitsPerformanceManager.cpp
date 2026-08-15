@@ -17,6 +17,8 @@
 #include "Core/FPMLeverRegistry.h"
 #include "Core/FPMStageTables.h"
 #include "Core/FPMGiveTake.h"
+#include "Core/FPMStageApply.h"
+#include "Core/FPMSteerSignal.h"
 #include "Core/FPMOverlay.h"
 #include "Core/FPMSaveSettingsInterceptor.h"
 #include "Core/FPMUserSettingMap.h"
@@ -444,6 +446,20 @@ void FFicsitsPerformanceManagerModule::StartupModule()
 	// NeverOnDedicatedServer on both: these are GPU-side quality levers and a server has no renderer.
 	FPMFixes::Arm(FFPMStageTables::Get());
 	FPMFixes::Arm(FFPMGiveTakeWalk::Get());
+
+	// Slice 2, the third half -- THE APPLY PASS, the thing that turns a decision into a real write.
+	// It arms AFTER the registry because it registers two self-test fixture levers at Arm() and they
+	// have to be in the registry before the registry's world-load probe pass classifies them; a
+	// fixture registered later sits at Availability::Unknown for ever and its own known-positive
+	// would be skipped while the self-test reported a pass. It arms after the walk so its world-load
+	// self-test runs against tables and orders that have already proven themselves.
+	FPMFixes::Arm(FFPMStageApply::Get());
+
+	// Slice 2, section 3.6: the steering signal. It MEASURES -- the smoothed frame mean, the budgets
+	// derived from the target frame rate, the 1% low telemetry -- and fills FFPMSteeringInputs for
+	// the walk. It decides nothing and writes no console variable, so its position in this list only
+	// has to be after the walk it reports alongside.
+	FPMFixes::Arm(FFPMSteerSignal::Get());
 
 	// Slice 4, §5.9: the host probe + tier line. Any — an authoritative world (dedicated/listen/
 	// singleplayer) declares FULL immediately and self-tests its own registration; a client waits up

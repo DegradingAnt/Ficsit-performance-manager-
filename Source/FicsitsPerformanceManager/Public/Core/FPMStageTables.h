@@ -28,7 +28,7 @@
  * ⚠ WHAT THIS FILE DOES NOT DO
  *
  * It does not decide WHEN a tier moves (FPMGiveTake.h), it does not APPLY a value (see FPMGiveTake.h's
- * own note on why the apply pass is not built yet), it does not own the resolution lever or R+ (§8,
+ * own note on the apply pass, which lives in FPMStageApply), it does not own the resolution lever or R+ (§8,
  * a Slice-3 investigation), and it does not select a mode (§14's "modes" bullet, with its config keys
  * and UI states). It owns: the lever content, the per-mode give/take ORDERS, the GI floor clamp, the
  * K4g derivation, and the order self-check that proves the orders are internally consistent.
@@ -161,8 +161,9 @@ struct FICSITSPERFORMANCEMANAGER_API FFPMFlatLever
  * returns the value the lever would land on. It reads no console variable, it writes no console
  * variable, and it touches FPMCVarWriter not at all.
  *
- * ⚠ THIS IS NOT THE APPLY PASS, and the difference is the baseline. The apply pass needs a baseline
- * from the shipped vanilla-defaults table (Law 3), and no such table exists yet for engine r.* cvars.
+ * ⚠ THIS IS NOT THE APPLY PASS, and the difference is the baseline. The apply pass (FPMStageApply)
+ * takes its baseline from FFPMLeverRegistry::CaptureBaselineOnce -- captured before FPM's first Hold
+ * of that cvar and never re-read, which is Law 3's guarded source.
  * This function refuses to have an opinion about where the baseline came from: it is a parameter. The
  * dry walk passes a declared SYNTHETIC baseline, and the direction invariant passes a SWEEP of
  * baselines, because an invariant that holds at one baseline and not another is not an invariant.

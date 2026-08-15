@@ -6,8 +6,10 @@
 // UWidget::GetCachedWidget, the per-instance route to the engine's own tick verdict.
 #include "Components/Widget.h"
 #include "UObject/UObjectIterator.h"
-// FAutoConsoleCommand for FPM.Detect.WidgetTick. Declared rather than left to arrive through the UMG
-// and Slate headers above: it did arrive that way, and depending on that is the IWYU anti-pattern.
+// FAutoConsoleCommand for FPM.Detect.WidgetTick. Declared rather than left to arrive transitively
+// through the UMG and Slate headers above. The version before this one did not declare it and did
+// compile, so it does arrive from somewhere; WHICH header is unverified, and leaning on an include
+// nobody has named is the IWYU anti-pattern.
 #include "HAL/IConsoleManager.h"
 // SWidget::GetCanTick / SetCanTick, the flag that verdict is written to and read from.
 #include "Widgets/SWidget.h"

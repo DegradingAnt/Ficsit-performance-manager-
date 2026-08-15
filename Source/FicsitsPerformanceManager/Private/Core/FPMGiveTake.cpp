@@ -1605,10 +1605,11 @@ void FFPMGiveTakeWalk::Arm()
 	DecisionsThisSession = 0;
 
 	UE_CLOG(FPMDiag::IsOn(FPMDiag::EChannel::Steering), LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM] give/take walk armed. NOTHING DRIVES IT YET: the signals that fill its inputs "
-		     "(section 3.6) and the bench that fills its per-tier measurements (section 4) are "
-		     "separate Slice-2 items, and the apply pass that would execute a decision is not built. "
-		     "FPM.Stage.Simulate exercises it by hand; the self-test runs at world load."));
+		TEXT("[FPM] give/take walk armed. The apply pass that executes a decision IS built "
+		     "(FPM.Stage.Apply). What still does not exist is a DRIVER: the signals that fill these "
+		     "inputs (section 3.6) and the bench that fills the per-tier measurements (section 4) are "
+		     "separate items, and without a bench profile every stage tier is refused by design. "
+		     "FPM.Stage.Simulate exercises the decision by hand; the self-test runs at world load."));
 }
 
 void FFPMGiveTakeWalk::OnWorldLoad(UWorld* World)
@@ -1678,8 +1679,9 @@ void FFPMGiveTakeWalk::ReportNow(FOutputDevice& Ar) const
 
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM]   NOTHING DRIVES THIS WALK YET. The decision count above is whatever "
-		     "FPM.Stage.Simulate and the self-test produced, never live steering, because the signals, "
-		     "the bench and the apply pass are separate items."));
+		     "FPM.Stage.Simulate and the self-test produced, never live steering: the signals and the "
+		     "bench are separate items. The apply pass exists -- FPM.Stage.Apply.Report says what a "
+		     "driver is still waiting for."));
 }
 
 void FFPMGiveTakeWalk::SimulateAndPrint(const TArray<FString>& Args, FOutputDevice& Ar)
@@ -1815,7 +1817,8 @@ void FFPMGiveTakeWalk::SimulateAndPrint(const TArray<FString>& Args, FOutputDevi
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM]   WHY: %s"), *Decision.Reason);
 	UE_LOG(LogFicsitsPerformanceManager, Display,
-		TEXT("[FPM]   Nothing was applied. This walk decides; the apply pass is not built."));
+		TEXT("[FPM]   Nothing was applied by THIS command. It decides only. FPM.Stage.Apply is the "
+		     "pass that writes a decision, and it is a separate, deliberate keystroke."));
 }
 
 static FAutoConsoleCommandWithOutputDevice GFPMWalkReportCmd(

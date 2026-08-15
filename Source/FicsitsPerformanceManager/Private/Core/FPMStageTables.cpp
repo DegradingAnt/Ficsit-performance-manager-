@@ -74,13 +74,6 @@ namespace
 	constexpr int64 StageVram11500MB = 11500;
 	constexpr int64 StageVram15000MB = 15000;
 
-	/** Policies that compare against a baseline. Mirrors the registry's own list; repeated here only
-	 *  to CHOOSE a BaselineSource before registration, and the registry still refuses if it is wrong. */
-	bool StageNeedsBaseline(const EFPMLeverPolicy Policy)
-	{
-		return Policy == EFPMLeverPolicy::MaxOf || Policy == EFPMLeverPolicy::MinOf
-			|| Policy == EFPMLeverPolicy::BaseScale || Policy == EFPMLeverPolicy::BaseDelta;
-	}
 }
 
 const TCHAR* LexToString(const EFPMLeverPolarity Polarity)
@@ -622,7 +615,7 @@ void FFPMStageTables::RegisterOne(const EFPMStageTier Tier, FFPMStageLever Lever
 	// where FFPMLeverRegistry::CaptureBaselineOnce refuses to read while FPM already holds the cvar.
 	// That refusal IS the anti-ratchet guard: without it a second capture reads our own previous
 	// write back as the player's baseline.
-	Def.BaselineSource = StageNeedsBaseline(Def.Policy)
+	Def.BaselineSource = FPMPolicyNeedsBaseline(Def.Policy)
 		? EFPMLeverBaselineSource::CapturedOnce
 		: EFPMLeverBaselineSource::NotApplicable;
 
@@ -1690,7 +1683,8 @@ void FFPMStageTables::Arm()
 	UE_LOG(LogFicsitsPerformanceManager, Display,
 		TEXT("[FPM] stage tables armed: %d lever(s) accepted by the registry, %d refused. K4g is "
 		     "derived at world load, and the self-test runs there too (it needs the alias table). "
-		     "NOTHING IS APPLIED FROM HERE -- these tables say WHAT a tier moves, never WHEN."),
+		     "NOTHING IS APPLIED FROM HERE -- these tables say WHAT a tier moves, never WHEN. "
+		     "FPMStageApply is the pass that writes one."),
 		Total, RefusedByRegistry.Num());
 
 	for (const FString& Refusal : RefusedByRegistry)

@@ -111,6 +111,22 @@ public:
 	 *  never "what tier are we at now". */
 	const TArray<FString>* GetAliasMembers(const FString& GroupName, int32 Tier) const;
 
+	/**
+	 * ★ THE VALUE BaseScalability.ini PRESCRIBES FOR ONE MEMBER AT ONE TIER.
+	 *
+	 * A group step is not a write to the group -- FPMCVarWriter clause 2 refuses every `sg.*` write --
+	 * so the only way to MOVE a scalability group is to write the values its target tier prescribes to
+	 * the members themselves. The names alone cannot do that, which is why this exists.
+	 *
+	 * ⚠ NAMES AND VALUES ARE FILLED IN ONE LOOP, from one walk of one config section, so they cannot
+	 * drift apart. That is deliberate: two structures built separately from the same source is exactly
+	 * the shape that made a fix in one branch not a fix.
+	 *
+	 * @return false when the group, the tier or the member is not in the table. OutValue is untouched.
+	 */
+	bool GetAliasMemberValue(const FString& GroupName, int32 Tier, const FString& Member,
+	                         FString& OutValue) const;
+
 	/** What FPM itself currently asks for -- FPMCVarWriter's own ledger, not a cvar read. False
 	 *  means "we are not holding this lever's cvar", not "nobody is". See the class doc comment. */
 	bool GetOurHold(FName LeverName, FString& OutValue) const;
@@ -169,8 +185,18 @@ private:
 
 	TMap<FName, FFPMLeverDefinition> Levers;
 
-	/** GroupName -> Tier -> member cvar names. */
-	TMap<FString, TMap<int32, TArray<FString>>> AliasTable;
+	/** ONE TIER OF ONE SCALABILITY GROUP. Names and values are built together, in one pass over one
+	 *  config section, so the two views of the same tier cannot disagree. `Names` keeps the section's
+	 *  own order (a TMap would not), because a tier's members are applied in the order the game's own
+	 *  table lists them. */
+	struct FAliasTier
+	{
+		TArray<FString> Names;
+		TMap<FString, FString> Values;
+	};
+
+	/** GroupName -> Tier -> that tier's members and their prescribed values. */
+	TMap<FString, TMap<int32, FAliasTier>> AliasTable;
 
 	/** Name + reason, for refused registrations. The definitions themselves are never stored --
 	 *  see RegisterWritable's comment. */
