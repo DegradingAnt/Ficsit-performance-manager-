@@ -8,10 +8,12 @@
 #include "Core/FPMOverlay.h"
 
 #include "HAL/IConsoleManager.h"
-#include "ContentStreaming.h"
 // UWorld::HasAnyLevelMakingVisible / HasAnyLevelMakingInvisible, the game-thread half of level streaming.
 #include "Engine/World.h"
-// GLog->AddOutputDevice / RemoveOutputDevice, for the log-volume sink.
+// GLog->AddOutputDevice / RemoveOutputDevice, and the FOutputDevice the log-volume sink derives from.
+// OutputDevice.h arrives through the redirector header anyway (OutputDeviceRedirector.h:10); it is
+// named here because this file DEFINES a class deriving from it, which is the case IWYU is about.
+#include "Misc/OutputDevice.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CoreDelegates.h"
@@ -142,6 +144,80 @@ constexpr double GFPMPsoSettleSeconds = 30.0;
  * function: the caller then logged a flat "raised to Verbose" regardless of whether any registered exec
  * consumed the command. Fixed 2026-08-15 - callers now check this and report honestly.
  */
+/*
+ * THE LOG-VOLUME SINK, and it exists because the largest unattributed hitch in Ant's 2026-08-15 session
+ * was FPM's own logging.
+ *
+ * `FactoryGame.log`, 20:57:13.046: `HITCH 409.2 ms | GAME-THREAD BOUND ... | UNATTRIBUTED`. The 17,484 log
+ * lines immediately before it are 5,826 `[FPM] indoor fog:` lines, 5,826 `631 write(s)` lines and 5,813
+ * `NOT ONE write` lines. All 5,826 of the first group carry the SAME frame index `[903]`, so roughly
+ * 17,465 UE_LOG calls happened inside ONE game-thread frame and not one bucket in this meter could say
+ * so. A hitch caused by the diagnostics is the worst kind of anonymous hitch, because the instrument is
+ * standing on the evidence and reporting nothing.
+ *
+ * BOTH THREAD PREDICATES RETURN TRUE, AND THAT IS WHAT MAKES THIS LIVE RATHER THAN DEAD.
+ * `FOutputDeviceRedirector` only calls a device inline when the device declares itself thread safe
+ * (`OutputDevice.h:196`, `:204`). A device that says no gets its lines BUFFERED and replayed later, on
+ * another thread, in another frame, so the count would land in whichever span happened to drain the
+ * buffer: precisely the span it did not belong to. Counting is the only work done here, so inline is safe
+ * as well as necessary.
+ *
+ * NOTHING INSIDE `Serialize` MAY LOG. One UE_LOG here re-enters the redirector and the recursion is
+ * unbounded. A relaxed load and two counter increments, nothing else, ever.
+ */
+class FFPMLogLineSink final : public FOutputDevice
+{
+public:
+	/** Toggled rather than unregistered. See `FPMHitchLogSink()` below for why that distinction matters. */
+	std::atomic<bool> bArmed{false};
+
+	/** Consumed by `ClassifySpan` with `Set(0)`, the same read-and-reset idiom as every span counter here. */
+	FThreadSafeCounter LinesInFrame;
+
+	/** Session total, and the bucket's liveness proof: zero here means nothing ever reached the sink. */
+	FThreadSafeCounter LinesTotal;
+
+	virtual void Serialize(const TCHAR*, ELogVerbosity::Type, const FName&) override
+	{
+		if (!bArmed.load(std::memory_order_relaxed)) { return; }
+		LinesInFrame.Increment();
+		LinesTotal.Increment();
+	}
+
+	virtual bool CanBeUsedOnAnyThread() const override { return true; }
+	virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
+};
+
+/*
+ * REGISTERED ONCE, NEVER UNREGISTERED, NEVER DELETED, AND THAT IS THE FIX RATHER THAN LAZINESS. Taken
+ * from `FPMChatRelay.cpp:256`, which is this module's own answer to the same question after a 2026-08-02
+ * review:
+ *
+ *     "unhooking stops FUTURE dispatches, but it does not drain a Serialize() already running on another
+ *      thread ... Freeing the object under an in-flight call is a use-after-free whose window is exactly
+ *      a log storm, i.e. the busiest possible moment."
+ *
+ * The first draft of this bucket held the sink BY VALUE inside `FFPMHitchMeter`, which walks straight
+ * back into that: the meter is destroyed at module shutdown, and shutdown is not a quiet time for the
+ * log. A leaked process-lifetime object with an atomic arm flag removes the question instead of
+ * answering it.
+ *
+ * ZERO RESIDUE IS NOT AT RISK HERE, and the distinction is worth stating because the rule outranks
+ * features. Residue means persistent change the player keeps after uninstall: a settings entry, a file,
+ * a cvar written into their save. This is one process-lifetime allocation inside a session, disarmed to
+ * an early return the moment the meter disarms, and gone when the game exits.
+ */
+static FFPMLogLineSink& FPMHitchLogSink()
+{
+	// Magic static: thread-safe initialisation, and the pointer rather than the object so that static
+	// destruction at process exit cannot pull the device out from under a Serialize on another thread.
+	static FFPMLogLineSink* Sink = new FFPMLogLineSink();
+	return *Sink;
+}
+
+/** Whether the sink reached GLog. A false here is why the summary can say BLIND rather than print a 0. */
+static bool GFPMLogSinkRegistered = false;
+
 static bool FPMSetEnginePsoHitchLogging(bool bVerbose)
 {
 	if (GLog == nullptr) { return false; }
@@ -159,6 +235,56 @@ FFPMHitchMeter& FFPMHitchMeter::Get()
 {
 	static FFPMHitchMeter Instance;
 	return Instance;
+}
+
+bool FFPMHitchMeter::BacklogSelfTest()
+{
+	/*
+	 * ★ THE SHIPPING TYPE, NOT A COPY OF IT. A self-test that re-implements the logic it is testing
+	 * proves only that two copies agree, and it keeps passing while the copy that actually runs goes
+	 * constant. `FFPMBacklogSpan` here is the same type `ClassifySpan` drives every span.
+	 */
+	FFPMBacklogSpan Probe;
+
+	// Known-negative: a span in which nothing was in flight must close at zero.
+	Probe.Sample(0);
+	Probe.Sample(0);
+	const bool bNegativeOk = Probe.Close() == 0;
+
+	// Known-positive: one non-zero sample must survive to the close, and must close as the PEAK rather
+	// than as the last value read. The 2 is sampled after the 7 for exactly that reason.
+	Probe.Sample(0);
+	Probe.Sample(7);
+	Probe.Sample(2);
+	const bool bPositiveOk = Probe.Close() == 7;
+
+	// The close must reset, or every later span silently inherits this one's peak and the bucket
+	// attributes every remaining hitch in the session to a backlog that ended long ago.
+	Probe.Sample(0);
+	const bool bResetOk = Probe.Close() == 0;
+
+	const bool bPassed = bNegativeOk && bPositiveOk && bResetOk;
+
+	const FString Msg = FString::Printf(
+		TEXT("[FPM] hitch meter: async-load backlog self-test %s - known-negative %s, known-positive %s, "
+		     "close-resets %s. COVERAGE: this proves the CLASSIFIER only. Whether the SOURCE moves is a "
+		     "separate question, and it is answered every summary by the delegate cross-check on the "
+		     "detail row."),
+		bPassed ? TEXT("PASSED") : TEXT("FAILED"),
+		bNegativeOk ? TEXT("ok") : TEXT("FAILED"),
+		bPositiveOk ? TEXT("ok") : TEXT("FAILED"),
+		bResetOk    ? TEXT("ok") : TEXT("FAILED"));
+
+	if (bPassed)
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Display, TEXT("%s"), *Msg);
+	}
+	else
+	{
+		UE_LOG(LogFicsitsPerformanceManager, Warning, TEXT("%s"), *Msg);
+	}
+
+	return bPassed;
 }
 
 void FFPMHitchMeter::Arm()
@@ -204,14 +330,16 @@ void FFPMHitchMeter::Arm()
 	FrameBeginRtHandle = FCoreDelegates::OnBeginFrameRT.AddRaw(this, &FFPMHitchMeter::OnFrameBeginRenderThread);
 	FrameEndRtHandle   = FCoreDelegates::OnEndFrameRT.AddRaw(this, &FFPMHitchMeter::OnFrameEndRenderThread);
 
-	// The log-volume bucket. Registered here and removed in Disarm(), so the ZERO RESIDUE rule holds:
-	// nothing of FPM stays attached to GLog after uninstall. Guarded because GLog can be null during very
-	// early startup and during shutdown, and a null deref inside the instrument would take the game with
-	// it for the sake of a counter.
-	if (GLog)
+	// The log-volume bucket. Attached once and left attached for the process; only the arm flag moves.
+	// See the note above `FPMHitchLogSink()` for why removal is the dangerous half of this pair. Guarded
+	// because GLog can be null during very early startup, and a registration that never happened is
+	// reported as BLIND by the summary rather than printed as a confident zero.
+	if (GLog && !GFPMLogSinkRegistered)
 	{
-		GLog->AddOutputDevice(&LogSink);
+		GLog->AddOutputDevice(&FPMHitchLogSink());
+		GFPMLogSinkRegistered = true;
 	}
+	FPMHitchLogSink().bArmed.store(true, std::memory_order_relaxed);
 
 	// Reveal the engine's own per-creation timing line. See the long note above the cvar.
 	// ⚠ Never on a dedicated server: NullRHI builds no pipelines, so this would raise a category that
@@ -239,6 +367,11 @@ void FFPMHitchMeter::Arm()
 		}
 	}
 
+	// Every boot, and before the armed line, so a broken classifier is visible ABOVE the claim that the
+	// meter is running. The return value is deliberately unused: the log line IS the report, and
+	// refusing to arm over a failed self-test would remove the instrument that reveals the failure.
+	BacklogSelfTest();
+
 	// Not gated by the channel: this is the stated Arm()-line exception in FPMDiag.h, and it is the line
 	// that distinguishes "measured nothing" from "never measured".
 	UE_LOG(LogFicsitsPerformanceManager, Display,
@@ -254,12 +387,10 @@ void FFPMHitchMeter::Disarm()
 {
 	LogSummary(TEXT("shutdown"));
 
-	// Removed before the delegates, and before anything else here can log. `RemoveOutputDevice` on a
-	// device that was never added is a no-op array removal, so the never-armed path is safe too.
-	if (GLog)
-	{
-		GLog->RemoveOutputDevice(&LogSink);
-	}
+	// DISARMED, NOT REMOVED. `RemoveOutputDevice` would stop future dispatches without draining a
+	// `Serialize` already running on another thread, and this file logs hardest exactly when it is
+	// shutting down. The flag makes every subsequent call a relaxed load and a return.
+	FPMHitchLogSink().bArmed.store(false, std::memory_order_relaxed);
 
 	if (TickHandle.IsValid())
 	{
@@ -586,6 +717,16 @@ void FFPMHitchMeter::OnSyncLoadPackage(const FString& PackageName)
 
 void FFPMHitchMeter::OnAsyncLoadPackage(FStringView PackageName)
 {
+	// ★ COUNTED BEFORE THE GATE, AND UNCONDITIONALLY, because this counter is the INDEPENDENT half of
+	// the backlog bucket's liveness proof. It comes from the engine's request-side delegate, while the
+	// bucket itself samples the loader's own in-flight counter. Two surfaces that must agree, and
+	// their disagreement is the only thing that can tell a healthy zero from a dead readout.
+	//
+	// It sits ABOVE the verbose gate on purpose: gated, it would go silent at the default level and
+	// take the liveness proof with it. One atomic increment per async load, the same cost class as the
+	// flush and sync-load counters that already run unconditionally.
+	AsyncLoadEventsTotal.Increment();
+
 	// ⚠ THE GATE IS THE POINT. This fires for EVERY async load in the session, on whichever thread issued
 	// it. At level 1 the cost is one int compare and a return; only at verbose do we pay for a string copy
 	// and a lock. FPMDiag.h states this shape as the required one, after 0.58.54 froze the game by building
@@ -631,7 +772,7 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	 * own output is counted into the NEXT span, where about four lines cannot cross a 200-line bar. Read
 	 * it any later and the instrument would start attributing hitches to itself.
 	 */
-	const int32 LogLinesInSpan = LogSink.LinesInFrame.Set(0);
+	const int32 LogLinesInSpan = FPMHitchLogSink().LinesInFrame.Set(0);
 	LogLinesInWindow += LogLinesInSpan;
 	WorstLogLinesInSpan = FMath::Max(WorstLogLinesInSpan, LogLinesInSpan);
 	const int32 LogBurstBar = CVarHitchLogBurstLines.GetValueOnAnyThread();
@@ -675,33 +816,23 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	}
 
 	/*
-	 * ★ THE STREAMER'S BACKLOG — the seventh bucket, sampled HERE because this runs once per span and
-	 * the value is a LEVEL rather than an event. See the long note in the header for why it exists.
+	 * ★ THE LOADER'S BACKLOG, the seventh bucket, sampled HERE because this runs once per span and the
+	 * value is a LEVEL rather than an event. See the long note in the header for why the bucket exists,
+	 * and for why its first source was thrown away on 2026-08-15: `GetNumWantingResourcesID()` is a dead
+	 * engine field with no writer anywhere in Engine/Source, so this bucket's own overlay line read
+	 * UNPROVEN every session and was right to.
 	 *
-	 * Two plain int32 getters on a process-global collection. `GetNumWantingResources()` is the backlog
-	 * depth; `GetNumWantingResourcesID()` moves only when the streaming system actually updates, which is
-	 * what makes a zero backlog distinguishable from a readout nothing is feeding.
+	 * One plain int32 getter. `GetNumAsyncPackages()` is how many packages the loader has in flight right
+	 * now, and it is backed by an atomic counter with real writers on both loader paths.
 	 */
-	int32 StreamingInSpan = 0;
-	{
-		FStreamingManagerCollection& Streaming = IStreamingManager::Get();
-		const int32 Wanting   = Streaming.GetNumWantingResources();
-		const int32 WantingId = Streaming.GetNumWantingResourcesID();
+	const int32 PackagesInFlight = GetNumAsyncPackages();
+	AsyncBacklogSpan.Sample(PackagesInFlight);
+	AsyncBacklogWorst        = FMath::Max(AsyncBacklogWorst, PackagesInFlight);
+	SessionAsyncBacklogWorst = FMath::Max(SessionAsyncBacklogWorst, PackagesInFlight);
+	if (PackagesInFlight > 0) { ++FramesDuringAsyncLoad; }
 
-		if (LastStreamingWantingId != -1 && WantingId != LastStreamingWantingId)
-		{
-			bStreamingIdEverMoved = true;
-		}
-		LastStreamingWantingId = WantingId;
-
-		StreamingWantingPeakInSpan = FMath::Max(StreamingWantingPeakInSpan, Wanting);
-		StreamingWantingWorst      = FMath::Max(StreamingWantingWorst, Wanting);
-		if (Wanting > 0) { ++FramesDuringStreaming; }
-
-		// Consumed: the peak belongs to the span that just closed.
-		StreamingInSpan = StreamingWantingPeakInSpan;
-		StreamingWantingPeakInSpan = 0;
-	}
+	// Consumed: the peak belongs to the span that just closed.
+	const int32 BacklogInSpan = AsyncBacklogSpan.Close();
 
 	/*
 	 * ★ THE COLD-CREATION COUNT — consumed here, not at the call sites. Set() returns the old value and
@@ -795,7 +926,7 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	// level-visibility flag are LEVELS, so each carries its own frame denominator into the summary, and
 	// neither is allowed to lower the unattributed count without printing the rate that justifies it.
 	const bool bAttributed = FlushesInSpan > 0 || SyncLoadsInSpan > 0 || GcInSpan > 0 || bPsoInSpan
-		|| StreamingInSpan > 0
+		|| BacklogInSpan > 0
 		|| PsoCreatesInSpan > 0 || bPsoWorkInSpan
 		|| bLogBurstInSpan || bGcPurgeInSpan || bLevelVisInSpan;
 
@@ -822,7 +953,7 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 		if (bPsoInSpan)           { ++StallsWithPso; }
 		if (PsoCreatesInSpan > 0) { ++StallsWithPsoCreate; }
 		if (bPsoWorkInSpan)       { ++StallsWithPsoWork; }
-		if (StreamingInSpan > 0)  { ++StallsWithStreaming; }
+		if (BacklogInSpan > 0)    { ++StallsWithAsyncLoad; }
 		if (bLogBurstInSpan)      { ++StallsWithLogBurst; }
 		if (bGcPurgeInSpan)       { ++StallsWithGcPurge; }
 		if (bLevelVisInSpan)      { ++StallsWithLevelVis; }
@@ -843,7 +974,7 @@ void FFPMHitchMeter::ClassifySpan(double SpanMs, int32 FlushesInSpan, bool bClos
 	if (bPsoInSpan)           { ++HitchesWithPso; }
 	if (PsoCreatesInSpan > 0) { ++HitchesWithPsoCreate; }
 	if (bPsoWorkInSpan)       { ++HitchesWithPsoWork; }
-	if (StreamingInSpan > 0)  { ++HitchesWithStreaming; }
+	if (BacklogInSpan > 0)    { ++HitchesWithAsyncLoad; }
 	if (bLogBurstInSpan)      { ++HitchesWithLogBurst; }
 	if (bGcPurgeInSpan)       { ++HitchesWithGcPurge; }
 	if (bLevelVisInSpan)      { ++HitchesWithLevelVis; }
@@ -1003,7 +1134,7 @@ bool FFPMHitchMeter::Tick(float /* SmoothedEngineDeltaDoNotUse */)
 		// The fifth in-frame counter, discarded for the same stated reason as the other four: a loading
 		// screen writes a great many log lines, and folding them into the first playable span would
 		// manufacture a LOG BURST attribution on the one span most likely to hitch anyway.
-		LogSink.LinesInFrame.Set(0);
+		FPMHitchLogSink().LinesInFrame.Set(0);
 
 		// The work-or-wait accumulators too, and an in-flight frame start with them. A loading screen's
 		// game-thread time folded into the first playable span would make it read as game-thread bound no
@@ -1066,6 +1197,36 @@ void FFPMHitchMeter::LogSyncPackages()
 		TEXT("[FPM]   ... and %d more package(s) not shown."), Ranked.Num() - Show);
 }
 
+/*
+ * THE RATE COMPARISON, WRITTEN ONCE. Four buckets in this file are LEVELS rather than events: the PSO
+ * precompile run, async PSO work, the GC unhash/purge tail and level visibility. A level flatters itself,
+ * which is why every one of them reports as a rate. "18 hitches during it" is true, useless, and easy to
+ * mistake for a finding when the level covered the whole window. "18 in 40 frames inside it against 3 in
+ * 4,200 outside" is the finding.
+ *
+ * It was written out four times, which is four copies of the same underflow guard on
+ * `FramesInWindow - FramesDuring` and four separate chances to divide by the wrong denominator. The caller
+ * supplies the words; the arithmetic lives here and is the same arithmetic every time.
+ *
+ * The caller also owns the `FramesDuring > 0` gate rather than this function owning it. A bucket that did
+ * not fire this window has a LIVENESS statement to make instead of a rate, and only the caller knows which
+ * of the two or three states it is in. The division guard below is belt and braces for a future caller
+ * that forgets, not the real gate.
+ */
+static FString FPMLevelRateTail(int32 FramesDuring, int32 HitchesDuring, int32 HitchesInWindow,
+                                uint64 FramesInWindow)
+{
+	const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuring)
+		? FramesInWindow - static_cast<uint64>(FramesDuring)
+		: 0;
+	const int32 HitchesOutside = HitchesInWindow - HitchesDuring;
+	return FString::Printf(
+		TEXT(": %d hitch(es) there (%.2f%%) vs %d in the other %llu (%.2f%%)"),
+		HitchesDuring, FramesDuring > 0 ? 100.0 * HitchesDuring / FramesDuring : 0.0,
+		HitchesOutside, static_cast<unsigned long long>(FramesOutside),
+		FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
+}
+
 void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 {
 	/*
@@ -1118,10 +1279,10 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		 */
 		Head += FString::Printf(
 			TEXT(" | worst %.1f ms, mean %.1f ms | cause: %d flush, %d sync, %d gc, %d gc-purge, "
-			     "%d cold-pso, %d pso-work, %d pso-precompile, %d streaming, %d level-vis, %d log-burst, "
+			     "%d cold-pso, %d pso-work, %d pso-precompile, %d async-load, %d level-vis, %d log-burst, "
 			     "%d UNATTRIBUTED (%.0f%%)"),
 			WorstHitchMs, MeanMs, HitchesWithFlush, HitchesWithSyncLoad, HitchesWithGc, HitchesWithGcPurge,
-			HitchesWithPsoCreate, HitchesWithPsoWork, HitchesWithPso, HitchesWithStreaming,
+			HitchesWithPsoCreate, HitchesWithPsoWork, HitchesWithPso, HitchesWithAsyncLoad,
 			HitchesWithLevelVis, HitchesWithLogBurst,
 			HitchesUnattributed, 100.0 * HitchesUnattributed / Hitches);
 
@@ -1174,16 +1335,8 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	 */
 	if (FramesDuringPso > 0)
 	{
-		const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuringPso)
-			? FramesInWindow - static_cast<uint64>(FramesDuringPso)
-			: 0;
-		const int32 HitchesOutside = Hitches - HitchesWithPso;
-		Pso += FString::Printf(
-			TEXT(" | PSO precompile overlapped %d span(s): %d hitch(es) there (%.2f%%) vs %d in the other "
-			     "%llu (%.2f%%)"),
-			FramesDuringPso, HitchesWithPso, 100.0 * HitchesWithPso / FramesDuringPso,
-			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
-			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
+		Pso += FString::Printf(TEXT(" | PSO precompile overlapped %d span(s)"), FramesDuringPso)
+			+ FPMLevelRateTail(FramesDuringPso, HitchesWithPso, Hitches, FramesInWindow);
 	}
 
 	/*
@@ -1194,36 +1347,62 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	 */
 	if (FramesDuringPsoWork > 0)
 	{
-		const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuringPsoWork)
-			? FramesInWindow - static_cast<uint64>(FramesDuringPsoWork)
-			: 0;
-		const int32 HitchesOutside = Hitches - HitchesWithPsoWork;
 		Pso += FString::Printf(
 			TEXT(" | async PSO work overlapped %d span(s) (peak %d precompile task(s), %d precache "
-			     "request(s)): %d hitch(es) there (%.2f%%) vs %d in the other %llu (%.2f%%)"),
-			FramesDuringPsoWork, PeakPrecompileTasks, PeakPrecacheRequests, HitchesWithPsoWork,
-			100.0 * HitchesWithPsoWork / FramesDuringPsoWork,
-			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
-			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
+			     "request(s))"),
+			FramesDuringPsoWork, PeakPrecompileTasks, PeakPrecacheRequests)
+			+ FPMLevelRateTail(FramesDuringPsoWork, HitchesWithPsoWork, Hitches, FramesInWindow);
 	}
 	/*
-	 * THE STREAMING BUCKET'S OWN LIVENESS LINE, printed beside its count and never without it. Moved off
-	 * the headline row on 2026-08-15 for width; the reasoning below is unchanged.
+	 * THE BACKLOG BUCKET'S OWN LIVENESS LINE, printed beside its count and never without it. Moved off the
+	 * headline row on 2026-08-15 for width, and REBUILT the same day because the question it used to ask
+	 * could only ever be answered no.
 	 *
-	 * `GetNumWantingResourcesID()` moves only when the streaming system updates. If it has never moved, a
-	 * zero backlog means "nothing is feeding this readout", which is a completely different statement from
-	 * "the streamer was never behind", and it is the statement that would otherwise be silently mistaken
-	 * for the good news. Gated on `FramesInWindow` so the empty shutdown summary stays quiet.
+	 * IT NOW COMPARES TWO INDEPENDENT ENGINE SURFACES, because one number alone cannot tell a healthy zero
+	 * from a readout nothing feeds. `AsyncLoadEventsTotal` is the engine's request-side delegate;
+	 * `SessionAsyncBacklogWorst` is the loader's own in-flight counter as this meter sampled it. Neither
+	 * is derived from the other, so a disagreement between them is real information.
+	 *
+	 * The version this replaced asked the dead `GetNumWantingResourcesID()` whether it had moved. A field
+	 * with no writer can only answer no, so the bucket certified itself UNPROVEN forever and its count was
+	 * unreadable. Gated on `FramesInWindow` so the empty shutdown summary stays quiet.
 	 */
 	if (FramesInWindow > 0)
 	{
-		Pso += bStreamingIdEverMoved
-			? FString::Printf(
-				TEXT(" | streaming live, worst backlog %d resource(s), behind on %d frame(s)"),
-				StreamingWantingWorst, FramesDuringStreaming)
-			: FString::Printf(
-				TEXT(" | streaming bucket UNPROVEN: GetNumWantingResourcesID has never moved, so its %d "
-				     "is 'not measured', not 'never behind'"), HitchesWithStreaming);
+		const int32 LoadEvents = AsyncLoadEventsTotal.GetValue();
+		if (LoadEvents == 0)
+		{
+			Pso += FString::Printf(
+				TEXT(" | async-load bucket: NO async package load was reported at all this session, so its %d "
+				     "is 'nothing to measure', not 'never behind'"), HitchesWithAsyncLoad);
+		}
+		else if (SessionAsyncBacklogWorst == 0)
+		{
+			Pso += FString::Printf(
+				TEXT(" | async-load bucket UNPROVEN: %d load(s) reported but the per-frame sample never caught "
+				     "one in flight. Either every load finished inside a single frame, or the sample is not "
+				     "reading what the delegate reports. Both are open"), LoadEvents);
+		}
+		else
+		{
+			Pso += FString::Printf(
+				TEXT(" | async-load live, worst backlog %d package(s) this window (%d this session), loading on "
+				     "%d frame(s), %d load(s) reported"),
+				AsyncBacklogWorst, SessionAsyncBacklogWorst, FramesDuringAsyncLoad, LoadEvents);
+
+			/*
+			 * ★ AND AS A RATE, for the reason the four levels above it already document, and because this
+			 * one is the WORST offender of the set: a world load keeps packages in flight for thousands of
+			 * consecutive frames. Without the comparison this bucket would "attribute" almost every
+			 * world-load hitch by being permanently on, and would take the unattributed percentage down
+			 * with it while proving nothing. A bucket that lowers the honest number by flattering itself is
+			 * worse than the empty bucket it replaced.
+			 */
+			if (FramesDuringAsyncLoad > 0)
+			{
+				Pso += FPMLevelRateTail(FramesDuringAsyncLoad, HitchesWithAsyncLoad, Hitches, FramesInWindow);
+			}
+		}
 	}
 
 	/*
@@ -1234,16 +1413,8 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	 */
 	if (FramesDuringGcPurge > 0)
 	{
-		const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuringGcPurge)
-			? FramesInWindow - static_cast<uint64>(FramesDuringGcPurge)
-			: 0;
-		const int32 HitchesOutside = Hitches - HitchesWithGcPurge;
-		Pso += FString::Printf(
-			TEXT(" | GC unhash/purge tail pending on %d frame(s): %d hitch(es) there (%.2f%%) vs %d in "
-			     "the other %llu (%.2f%%)"),
-			FramesDuringGcPurge, HitchesWithGcPurge, 100.0 * HitchesWithGcPurge / FramesDuringGcPurge,
-			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
-			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
+		Pso += FString::Printf(TEXT(" | GC unhash/purge tail pending on %d frame(s)"), FramesDuringGcPurge)
+			+ FPMLevelRateTail(FramesDuringGcPurge, HitchesWithGcPurge, Hitches, FramesInWindow);
 	}
 	else if (!bGcPurgeEverSeen && FramesInWindow > 0)
 	{
@@ -1262,24 +1433,28 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	 */
 	if (FramesDuringLevelVis > 0)
 	{
-		const uint64 FramesOutside = FramesInWindow > static_cast<uint64>(FramesDuringLevelVis)
-			? FramesInWindow - static_cast<uint64>(FramesDuringLevelVis)
-			: 0;
-		const int32 HitchesOutside = Hitches - HitchesWithLevelVis;
-		Pso += FString::Printf(
-			TEXT(" | level visibility work on %d frame(s): %d hitch(es) there (%.2f%%) vs %d in the other "
-			     "%llu (%.2f%%)"),
-			FramesDuringLevelVis, HitchesWithLevelVis, 100.0 * HitchesWithLevelVis / FramesDuringLevelVis,
-			HitchesOutside, static_cast<unsigned long long>(FramesOutside),
-			FramesOutside > 0 ? 100.0 * HitchesOutside / static_cast<double>(FramesOutside) : 0.0);
+		Pso += FString::Printf(TEXT(" | level visibility work on %d frame(s)"), FramesDuringLevelVis)
+			+ FPMLevelRateTail(FramesDuringLevelVis, HitchesWithLevelVis, Hitches, FramesInWindow);
 	}
-	else if (FramesInWindow > 0)
+	else if (FramesInWindow > 0 && !bLevelVisWorldSeen)
 	{
-		Pso += bLevelVisWorldSeen
-			? FString(TEXT(" | level-vis bucket has never been true this session: a world is reachable and "
-			               "HasAnyLevelMakingVisible/Invisible read false on every frame so far"))
-			: FString(TEXT(" | level-vis bucket is BLIND: no world has reached this meter through "
-			               "OnWorldLoad, so its 0 is 'not measured', not 'nothing streamed'"));
+		Pso += TEXT(" | level-vis bucket is BLIND: no world has reached this meter through OnWorldLoad, "
+		            "so its 0 is 'not measured', not 'nothing streamed'");
+	}
+	else if (FramesInWindow > 0 && !bLevelVisEverSeen)
+	{
+		/*
+		 * THE SESSION FLAG, NOT THE WINDOW COUNTER, AND THE DIFFERENCE IS A FALSE CLAIM. The first draft
+		 * of this branch tested `bLevelVisWorldSeen`, which only says a world exists. A window that
+		 * happened to be quiet, straight after a window in which the bucket fired, would then have
+		 * printed "has never been true this session" about a bucket that had already proved itself.
+		 *
+		 * Once `bLevelVisEverSeen` is set, a quiet window prints NOTHING here. That is correct rather
+		 * than a gap: the bucket is proven, so its zero needs no defence, and repeating a capability
+		 * statement every minute is how the detail row got too wide in the first place.
+		 */
+		Pso += TEXT(" | level-vis bucket has never been true this session: a world is reachable and "
+		            "HasAnyLevelMakingVisible/Invisible have read false on every frame so far");
 	}
 
 	/*
@@ -1290,10 +1465,18 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	 */
 	if (FramesInWindow > 0)
 	{
-		if (LogSink.LinesTotal.GetValue() == 0)
+		if (!GFPMLogSinkRegistered)
 		{
-			Pso += TEXT(" | log-volume bucket DEAD: not one line has reached the sink this session, so it "
-			            "is not registered on GLog rather than the log being quiet");
+			// Three states, not two, for the same reason level-vis needs three. "Never registered" is a
+			// fault in this meter; "registered and silent" would be a fault in the log; a count is the
+			// only one of the three that is news about the game.
+			Pso += TEXT(" | log-volume bucket is BLIND: GLog was unavailable when the meter armed, so the "
+			            "sink was never attached and its 0 is 'not measured'");
+		}
+		else if (FPMHitchLogSink().LinesTotal.GetValue() == 0)
+		{
+			Pso += TEXT(" | log-volume bucket DEAD: the sink is attached to GLog and not one line has "
+			            "reached it this session, which is a fault in this meter, not a quiet log");
 		}
 		else
 		{
@@ -1301,7 +1484,7 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 				TEXT(" | log volume: %lld line(s) this window, worst %d in one span, bar %d, %d session "
 				     "total"),
 				static_cast<long long>(LogLinesInWindow), WorstLogLinesInSpan,
-				CVarHitchLogBurstLines.GetValueOnAnyThread(), LogSink.LinesTotal.GetValue());
+				CVarHitchLogBurstLines.GetValueOnAnyThread(), FPMHitchLogSink().LinesTotal.GetValue());
 		}
 	}
 
@@ -1311,11 +1494,11 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 		// hitch rate; dropping the count entirely is what review finding B caught.
 		Pso += FString::Printf(
 			TEXT(" | %d load stall(s) over %.0f ms (%d flush, %d sync, %d gc, %d gc-purge, %d cold-pso, "
-			     "%d pso-work, %d pso-precompile, %d level-vis, %d log-burst, %d UNATTRIBUTED), not "
-			     "counted as hitches"),
+			     "%d pso-work, %d pso-precompile, %d async-load, %d level-vis, %d log-burst, "
+			     "%d UNATTRIBUTED), not counted as hitches"),
 			LoadStalls, CVarHitchIgnoreAboveMs.GetValueOnAnyThread(), LoadStallsWithFlush, StallsWithSyncLoad,
 			StallsWithGc, StallsWithGcPurge, StallsWithPsoCreate, StallsWithPsoWork, StallsWithPso,
-			StallsWithLevelVis, StallsWithLogBurst, StallsUnattributed);
+			StallsWithAsyncLoad, StallsWithLevelVis, StallsWithLogBurst, StallsUnattributed);
 	}
 	Pso += FString::Printf(
 		TEXT(" | session totals: %d flush(es), %d sync load(s), %d GC pass(es), %d cold PSO creation(s)"),
@@ -1425,9 +1608,10 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	// facts do NOT, and that is deliberate. `bGcPurgeEverSeen`, `bLevelVisEverSeen` and
 	// `bLevelVisWorldSeen` answer "could this bucket ever report anything", which is a question about the
 	// whole session, and clearing them every minute would make every window claim the bucket is dead.
-	// `LogSink.LinesTotal` is session-scoped for the same reason. `LogSink.LinesInFrame` is not touched
-	// here either: `ClassifySpan` consumes it every span, so it is already near zero, and clearing it on a
-	// window boundary could discard lines written between the last span and this line.
+	// The sink counters follow the same rule. `LinesTotal` is session-scoped for the same reason, and
+	// `LinesInFrame` is not touched here either: `ClassifySpan` consumes it every span, so it is already
+	// near zero, and clearing it on a window boundary could discard lines written between the last
+	// span and this line.
 	HitchesWithLogBurst = 0;
 	StallsWithLogBurst = 0;
 	WorstLogLinesInSpan = 0;
@@ -1438,6 +1622,20 @@ void FFPMHitchMeter::LogSummary(const TCHAR* Reason)
 	FramesDuringLevelVis = 0;
 	HitchesWithLevelVis = 0;
 	StallsWithLevelVis = 0;
+	// ⚠ THE WHOLE BACKLOG BUCKET RESETS HERE, AND NOT ONE OF ITS FOUR PREDECESSORS DID.
+	// `StallsWithStreaming` was incremented at the stall branch and read nowhere, so nothing revealed
+	// that it never reset either; it started being PRINTED on 2026-08-15 and would have climbed on its
+	// own forever. `HitchesWithStreaming`, `FramesDuringStreaming` and `StreamingWantingWorst` had the
+	// same hole while being printed all along, so the hitch row carried a SESSION total in a list
+	// where every neighbouring count was per-window.
+	//
+	// `SessionAsyncBacklogWorst` is the one that survives the reset, and it is named for it: the
+	// liveness cross-check reads that one, so a quiet window cannot un-prove a source an earlier
+	// window already proved live.
+	FramesDuringAsyncLoad = 0;
+	HitchesWithAsyncLoad = 0;
+	StallsWithAsyncLoad = 0;
+	AsyncBacklogWorst = 0;
 	// ⚠ The work-or-wait ACCUMULATORS are not reset here — `ClassifySpan` exchanges them every span, and
 	// clearing them on a window boundary could discard a frame that has already been measured but whose
 	// span has not closed. Only the per-window verdict tallies reset.

@@ -302,9 +302,10 @@ void FFPMIndoorFog::Arm()
 void FFPMIndoorFog::Disarm()
 {
 	/*
-	 * ⚠ RESTORE BEFORE UNHOOKING, not after. The restore needs the fog component, and resolving it
-	 * costs nothing here — but doing it in this order also means that if the restore throws the fix
-	 * off the happy path, the hook is still installed and the next frame corrects the value anyway.
+	 * The restore comes first because it is the OBLIGATION and the unhook is only cleanup; both run on
+	 * the game thread inside this one call, so no frame can slip between them and the order buys no
+	 * safety on its own. Putting the obligation at the top is what stops an early return being added
+	 * later above it.
 	 */
 	if (GFPMFogHolding)
 	{
@@ -318,7 +319,9 @@ void FFPMIndoorFog::Disarm()
 		GFPMFogHolding = false;
 	}
 
-	// IsValid() guarded: the editor path returns an invalid handle, and UNSUBSCRIBE on one is not free.
+	// IsValid() guarded because an editor build never installed one: FPMHookLedger::Install returns an
+	// empty FDelegateHandle without calling SML at all (FPMHookLedger.cpp:60-70), so there is nothing
+	// to remove and no hook name to look up.
 	if (GFPMFogTickHandle.IsValid())
 	{
 		UNSUBSCRIBE_METHOD(UFGAtmosphereUpdater::Tick, GFPMFogTickHandle);

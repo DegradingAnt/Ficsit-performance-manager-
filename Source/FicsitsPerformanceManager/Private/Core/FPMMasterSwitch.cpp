@@ -10,12 +10,20 @@
 
 namespace
 {
+	/*
+	 * ⚠ EVERY WARNING GLYPH BELOW AND IN THIS FILE IS A LITERAL, NEVER `\xE2\x9A\xA0`.
+	 *
+	 * `TEXT()` makes a WIDE string, so those three bytes became three separate UTF-16 characters and
+	 * the log printed "â " where the warning sign belonged. Her 2026-08-15 log has it at 20:33:01.935.
+	 * `FPMFixContract.cpp` writes the same glyph as a literal and prints it correctly in the same log
+	 * at 20:33:25.515, which is what settles it rather than an argument about encodings.
+	 */
 	static TAutoConsoleVariable<int32> CVarFPMEnabled(
 		TEXT("FPM.Enabled"), 1,
 		TEXT("Master switch. 1 = on (default), 0 = off.\n"
 		     "OFF disarms every fix AND RELEASES every console variable FPM wrote, restoring each one's "
 		     "prior value and prior SetBy priority - it does not merely stop writing new ones.\n"
-		     "ON re-arms. \xE2\x9A\xA0 A fix whose work happens at world load comes back armed but INERT until "
+		     "ON re-arms. ⚠ A fix whose work happens at world load comes back armed but INERT until "
 		     "the next world load; re-arming does not replay one."),
 		ECVF_Default);
 
@@ -79,7 +87,7 @@ namespace
 			FPMCVarWriter::Get().ReleaseAll(TEXT("FPM.Enabled 0"));
 
 			UE_LOG(LogFicsitsPerformanceManager, Display,
-				TEXT("[FPM] MASTER SWITCH: OFF complete. FPM.Enabled 1 turns it back on. \xE2\x9A\xA0 Fixes "
+				TEXT("[FPM] MASTER SWITCH: OFF complete. FPM.Enabled 1 turns it back on. ⚠ Fixes "
 				     "whose work happens at world load will come back armed but inert until the next "
 				     "one."));
 		}
@@ -88,15 +96,31 @@ namespace
 			UE_LOG(LogFicsitsPerformanceManager, Display,
 				TEXT("[FPM] MASTER SWITCH: ON. Re-arming."));
 
-			FPMFixes::RearmAll();
-
 			/*
-			 * ★ AND THEN HONOUR THE PER-FIX TOGGLES AGAIN, which is not optional.
+			 * ★ ARM TO THE DESIRED STATE DIRECTLY. DO NOT `RearmAll()` FIRST.
 			 *
-			 * `RearmAll` arms EVERYTHING in the registry — including fixes the user had individually
-			 * turned off before flipping the master switch. Without this line, `FPM.Enabled 0` followed
-			 * by `FPM.Enabled 1` would silently re-enable every fix the user had disabled, while their
-			 * toggles still read 0. The settings surface would then be lying about the running state.
+			 * This used to be `FPMFixes::RearmAll()` followed by `ReapplyAll()`. `RearmAll` arms
+			 * EVERYTHING in the registry, so the pair armed every opt-out fix and then disarmed it
+			 * again a few hundred microseconds later. The end state was right and the route was not.
+			 *
+			 * ⚠ MEASURED IN ANT'S 2026-08-15 LOG, not reasoned about. Two `FPM.Enabled 0` -> `1` cycles
+			 * (20:33:25 and 20:53:53) each produced `re-armed 50 of 50 registered fix(es)` followed by
+			 * eight `DISARMED by toggle` lines, the eight `DefaultArmed() == false` fixes. Three of
+			 * those eight install hooks, and each cycle therefore installed and immediately removed a
+			 * funchook detour on `UNetDriver::ProcessRemoteFunction`, `FNetGUIDCache::SupportsObject`
+			 * and `UFGGameUserSettings::ApplyNonResolutionSettings`. `ProcessRemoteFunction` is the
+			 * universal RPC path; patching it twice for nothing is not free, and the gate is OFF BY
+			 * DEFAULT precisely because it was measured not worth its detour.
+			 *
+			 * ⚠ AND IT CORRUPTED AN INSTRUMENT PERMANENTLY. `FPMHookLedger` has no retire path, so each
+			 * transient install left a row behind that no armed fix owns. After two cycles her log's
+			 * `FPM.Hooks.Report` carried six such rows and printed `coverage: 3 hook owner(s) match no
+			 * ARMED fix: no-owner-rpc-gate, net-guid-census, upscaler-preset`, a true warning about a
+			 * fault this line created. The ledger's own defect is separate and still open; this stops
+			 * feeding it.
+			 *
+			 * The per-fix toggles were ALREADY the authority here: `ReapplyAll` ran second and won.
+			 * Asking them alone reaches the same end state without the round trip.
 			 */
 			FPMFixToggles::ReapplyAll();
 		}
@@ -260,14 +284,60 @@ void FPMFixToggles::Install()
 
 void FPMFixToggles::ReapplyAll()
 {
+	int32 Armed = 0;
+	int32 HeldOff = 0;
+	int32 NoToggle = 0;
+
 	for (IFPMFix* Fix : FPMFixes::Registered())
 	{
 		if (Fix == nullptr) { continue; }
+
 		if (IConsoleVariable** Var = GFPMFixToggleCVars.Find(FString(Fix->Name())))
 		{
 			ApplyOneToggle(Fix, *Var);
 		}
+		else if (FPMMasterSwitch::IsEnabled())
+		{
+			/*
+			 * ⚠ NO TOGGLE MEANS NO OPINION, NOT "LEAVE IT OFF". `Install()` skips a fix whose cvar
+			 * failed to register (a name collision, logged there), and this is the only other route
+			 * back to armed after the master switch turned everything off. Without this branch such a
+			 * fix would stay disarmed for the rest of the session while `FPM.Fix.List` showed no reason
+			 * why. `FPMFixes::RearmAll()` used to be what covered it and the ON path no longer calls
+			 * that. Falling back to `DefaultArmed()` gives the fix the same state boot gave it.
+			 *
+			 * ⚠ GATED ON THE MASTER SWITCH, exactly as `ApplyOneToggle` is. Today the only caller is the
+			 * ON path, so the guard cannot fire. It is here because a future caller that forgets would
+			 * otherwise arm a fix inside a mod the user has turned OFF, and that is the one failure this
+			 * whole namespace exists to refuse.
+			 */
+			++NoToggle;
+			FPMFixes::SetArmed(*Fix, Fix->DefaultArmed());
+		}
+
+		if (FPMFixes::IsArmed(*Fix)) { ++Armed; } else { ++HeldOff; }
 	}
+
+	/*
+	 * ★ SAY WHAT WAS NOT ARMED, because this is the line that replaced `RearmAll`'s own "re-armed N of
+	 * M" and a quieter replacement would read as a smaller job. After `FPM.Enabled 1` the mod is NOT
+	 * fully on, and a reader deciding whether FPM is running needs the second number to see that.
+	 *
+	 * ⚠ "HELD OFF" NAMES NO CAUSE, DELIBERATELY. A fix can end this loop disarmed because its own
+	 * toggle reads 0, or because `ApplyOneToggle` refused a 1 while the master switch is off. Today
+	 * only the ON path calls this, so it is always the first, but a line that asserts the reason would
+	 * be asserting something this function does not actually distinguish. `FPM.Fix.List` prints each
+	 * toggle beside its armed state and answers the "which and why" properly.
+	 *
+	 * ⚠ The OnWorldLoad caveat is carried over verbatim from `RearmAll`. Re-arming does not replay a
+	 * world load, so a fix whose work happens there is armed and inert until the next one, and dropping
+	 * that sentence would have made this report half-true.
+	 */
+	UE_LOG(LogFicsitsPerformanceManager, Display,
+		TEXT("[FPM] fix toggles applied: %d armed, %d held OFF, %d had no toggle and fell back to its "
+		     "default. FPM.Fix.List names them. ⚠ Fixes whose work happens in OnWorldLoad are armed but "
+		     "INERT until the next world load - this does not replay one."),
+		Armed, HeldOff, NoToggle);
 }
 
 static FAutoConsoleCommandWithOutputDevice GFPMFixListCmd(

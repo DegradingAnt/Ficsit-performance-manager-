@@ -27,9 +27,12 @@
  * seventeen hooks stayed installed, and the fix inventory would have read zero armed — the inventory
  * lying being the one thing `FPMHookLedger` exists to prevent.
  *
- * ★ IT IS REVERSIBLE, and that needed a registry change. `DisarmAll` empties the armed list, and the
- * arm sequence lives in `StartupModule`, so without `FPMFixes::RearmAll()` an OFF would have been
- * permanent for the session.
+ * ★ IT IS REVERSIBLE, and that needed a registry change. `DisarmAll` empties the armed list and the
+ * arm sequence lives in `StartupModule`, so without a second route back an OFF would have been
+ * permanent for the session. That route is `FPMFixToggles::ReapplyAll()`, which arms each registered
+ * fix to what its own toggle asks for. It was `FPMFixes::RearmAll()` until 2026-08-15; that armed
+ * everything unconditionally and had to be undone by the toggles a moment later, and the undoing left
+ * unowned rows in `FPMHookLedger` for the rest of the session.
  *
  * ⚠ WHAT ON DOES NOT RESTORE, stated because a half-true report is worse than none: a fix whose real
  * work happens in `OnWorldLoad` comes back ARMED BUT INERT until the next world load. Re-arming does
@@ -83,6 +86,18 @@ namespace FPMFixToggles
 	/** `FPM.Fix.<Name>` for every registered fix, plus `FPM.Fix.List`. Called by `Install()`. */
 	void Install();
 
-	/** Re-reads every toggle and applies it. Used after the master switch turns back ON. */
+	/**
+	 * Re-reads every toggle and applies it, arming and disarming to match. This is the ONLY thing the
+	 * master switch's ON path calls.
+	 *
+	 * ★ IT IS THE WHOLE RE-ARM, NOT A CORRECTION APPLIED AFTER ONE. The ON path used to call
+	 * `FPMFixes::RearmAll()` first, which armed every registered fix including the `DefaultArmed() ==
+	 * false` ones, and this function then disarmed them again. That round trip installed and removed
+	 * real funchook detours and left permanently unowned rows in `FPMHookLedger`. See the comment at
+	 * the call site for the measurement.
+	 *
+	 * A registered fix with no toggle (its cvar failed to register) falls back to `DefaultArmed()`,
+	 * which is what `RearmAll` used to give it.
+	 */
 	void ReapplyAll();
 }

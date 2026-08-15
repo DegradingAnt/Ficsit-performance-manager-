@@ -5,10 +5,6 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "HAL/ThreadSafeCounter.h"
-// FOutputDevice, for the log-volume sink declared below. Included rather than forward-declared because
-// the sink is held BY VALUE: a pointer would need an owner, a delete, and a null check on every sample,
-// to save one include of a header Core already pulls in almost everywhere.
-#include "Misc/OutputDevice.h"
 
 #include <atomic>
 
@@ -86,47 +82,6 @@ struct FFPMBacklogSpan
 
 	/** @return the peak of the span that just closed, then resets. "Behind" is a return above zero. */
 	int32 Close() { const int32 Closed = Peak; Peak = 0; return Closed; }
-};
-
-/**
- * THE LOG-VOLUME SINK, and it exists because the largest unattributed hitch in Ant's 2026-08-15 session
- * was FPM's own logging.
- *
- * `FactoryGame.log`, 20:57:13.046: `HITCH 409.2 ms | GAME-THREAD BOUND ... | UNATTRIBUTED`. The 17,484
- * log lines immediately before it are 5,826 `[FPM] indoor fog:` lines, 5,826 `631 write(s)` lines and
- * 5,813 `NOT ONE write` lines. All 5,826 of the first group carry the SAME frame index `[903]`, so
- * roughly 17,465 UE_LOG calls happened inside ONE game-thread frame and not one bucket in this meter
- * could say so. A hitch caused by the diagnostics is the worst kind of anonymous hitch, because the
- * instrument is standing on the evidence and reporting nothing.
- *
- * BOTH THREAD PREDICATES RETURN TRUE, AND THAT IS WHAT MAKES THIS LIVE RATHER THAN DEAD.
- * `FOutputDeviceRedirector` only calls a device inline when the device declares itself thread safe
- * (`OutputDevice.h:196`, `:204`). A device that says no gets its lines BUFFERED and replayed later, on
- * another thread, in another frame, so the count would land in whichever span happened to drain the
- * buffer: precisely the span it did not belong to. Counting is the only work done here, so inline is
- * safe as well as necessary.
- *
- * NOTHING INSIDE `Serialize` MAY LOG. One UE_LOG here re-enters the redirector and the recursion is
- * unbounded. Two counter increments, nothing else, ever.
- */
-class FFPMLogLineSink final : public FOutputDevice
-{
-public:
-	virtual void Serialize(const TCHAR*, ELogVerbosity::Type, const FName&) override
-	{
-		LinesInFrame.Increment();
-		LinesTotal.Increment();
-	}
-
-	/** See the class note: false on either of these counts the line into the wrong span. */
-	virtual bool CanBeUsedOnAnyThread() const override { return true; }
-	virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
-
-	/** Consumed by `ClassifySpan` with `Set(0)`, the same read-and-reset idiom as every span counter here. */
-	FThreadSafeCounter LinesInFrame;
-
-	/** Session total, and the bucket's liveness proof: zero here means nothing ever reached the sink. */
-	FThreadSafeCounter LinesTotal;
 };
 
 class FICSITSPERFORMANCEMANAGER_API FFPMHitchMeter final : public IFPMFix
@@ -697,8 +652,14 @@ private:
 	 * THE METER'S OWN OUTPUT LANDS IN THE NEXT SPAN, NOT THIS ONE. `ClassifySpan` consumes the counter
 	 * before it emits its HITCH line, and `LogSummary` runs after that, so this meter contributes about
 	 * four lines to the FOLLOWING span. Four against a threshold of two hundred cannot self-attribute.
+	 *
+	 * THE SINK ITSELF IS NOT A MEMBER, AND `FPMChatRelay.cpp:256` IS WHY. A registered `FOutputDevice`
+	 * that is destroyed when its owner is destroyed is a use-after-free waiting for a log storm, because
+	 * `RemoveOutputDevice` stops future dispatches without draining a `Serialize` already running on
+	 * another thread. This module already hit that once and settled it: the device is leaked for the
+	 * process lifetime and toggled by an atomic instead. So it lives in the .cpp as a leaked singleton
+	 * and only these per-window tallies are members here.
 	 */
-	FFPMLogLineSink LogSink;
 	int32 HitchesWithLogBurst = 0;
 	int32 StallsWithLogBurst = 0;
 	int32 WorstLogLinesInSpan = 0;
