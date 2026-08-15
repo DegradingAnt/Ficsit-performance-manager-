@@ -146,23 +146,63 @@ bool FFPMLeverRegistry::RefuseIfUnsafeToWrite(const FFPMLeverDefinition& Def, FS
 	return false;
 }
 
+namespace
+{
+	/**
+	 * ⚠ SEVERITY, NOT SUPPRESSION. Every refusal in this file routes through here.
+	 *
+	 * The message is IDENTICAL either way and the caller still records it in RefusedRegistrations,
+	 * so nothing is hidden and the evidence that a guard fired always survives. Only the VERBOSITY
+	 * moves, and only for a self-test fixture, whose refusal is the EXPECTED result. A PRODUCTION
+	 * lever refused anywhere in this file is a real defect and stays at Error.
+	 *
+	 * WHY IT EXISTS. The self-test feeds this registry deliberately-bad levers so the guards can be
+	 * seen to fire. Every refusal logged at Error, UAT counts Error lines, and on 2026-08-15 that
+	 * turned `Failure - 3 error(s)` into Error_UnknownCookFailure: A PASSING SELF-TEST FAILED THE
+	 * BUILD.
+	 *
+	 * WHY IT IS A HELPER AND NOT AN INLINE BRANCH. The first fix branched at ONE site and left the
+	 * identical shape at four others, twelve lines away. A review found them. One chokepoint means a
+	 * new refusal cannot be added with the old shape by accident, and the message cannot drift
+	 * between two copies of itself.
+	 */
+	void LogLeverRefusal(bool bIsSelfTestFixture, const FString& Line)
+	{
+		if (bIsSelfTestFixture)
+		{
+			UE_LOG(LogFicsitsPerformanceManager, Display,
+				TEXT("[FPM] lever registry: %s [self-test fixture: this refusal is the PASS]"), *Line);
+			return;
+		}
+		UE_LOG(LogFicsitsPerformanceManager, Error, TEXT("[FPM] lever registry: %s"), *Line);
+	}
+
+	/** The fixture test on a bare name, for the refusal paths that have no FFPMLeverDefinition yet. */
+	bool IsSelfTestName(const FName LeverName)
+	{
+		return LeverName.ToString().StartsWith(FPMLeverSelfTestPrefix(), ESearchCase::CaseSensitive);
+	}
+}
+
 const FFPMLeverDefinition* FFPMLeverRegistry::RegisterWritable(FFPMLeverDefinition Definition)
 {
+	// M2: derived, never hand-set. See FPMLeverSelfTestPrefix's comment in FPMLeverTypes.h.
+	// ★ DERIVED BEFORE THE REFUSAL, not after. It used to be set only on the SUCCESS path below,
+	// which meant a refused fixture was indistinguishable from a refused production lever.
+	Definition.bIsSelfTestFixture = IsSelfTestName(Definition.Name);
+
 	FString Reason;
 	if (RefuseIfUnsafeToWrite(Definition, Reason))
 	{
 		const FString Line = FString::Printf(TEXT("'%s' refused as WRITABLE: %s"),
 			*Definition.Name.ToString(), *Reason);
-		UE_LOG(LogFicsitsPerformanceManager, Error, TEXT("[FPM] lever registry: %s"), *Line);
+		LogLeverRefusal(Definition.bIsSelfTestFixture, Line);
 		RefusedRegistrations.Add(Line);
 		return nullptr;
 	}
 
 	Definition.bWritable = true;
 	Definition.Availability = EFPMLeverAvailability::Unknown;
-	// M2: derived, never hand-set. See FPMLeverSelfTestPrefix's comment in FPMLeverTypes.h.
-	Definition.bIsSelfTestFixture =
-		Definition.Name.ToString().StartsWith(FPMLeverSelfTestPrefix(), ESearchCase::CaseSensitive);
 	const FName Key = Definition.Name;
 	FFPMLeverDefinition& Stored = Levers.Add(Key, MoveTemp(Definition));
 
@@ -176,20 +216,24 @@ const FFPMLeverDefinition* FFPMLeverRegistry::RegisterWritable(FFPMLeverDefiniti
 
 const FFPMLeverDefinition* FFPMLeverRegistry::RegisterReadOnly(FFPMLeverDefinition Definition)
 {
+	// ★ DERIVED BEFORE THE REFUSAL, same as RegisterWritable. This function carried the identical
+	// defect twelve lines from the one that was fixed first, and a review caught it. It is inert
+	// today only because RegisterReadOnly currently has no call sites, which is exactly the kind of
+	// "harmless" that stops being harmless the day someone calls it.
+	Definition.bIsSelfTestFixture = IsSelfTestName(Definition.Name);
+
 	if (Definition.Backing == EFPMLeverBacking::Cvar && Definition.CVarNames.Num() == 0)
 	{
 		const FString Line = FString::Printf(
 			TEXT("'%s' refused as READ-ONLY: Backing is Cvar but CVarNames is empty"),
 			*Definition.Name.ToString());
-		UE_LOG(LogFicsitsPerformanceManager, Error, TEXT("[FPM] lever registry: %s"), *Line);
+		LogLeverRefusal(Definition.bIsSelfTestFixture, Line);
 		RefusedRegistrations.Add(Line);
 		return nullptr;
 	}
 
 	Definition.bWritable = false;
 	Definition.Availability = EFPMLeverAvailability::Unknown;
-	Definition.bIsSelfTestFixture =
-		Definition.Name.ToString().StartsWith(FPMLeverSelfTestPrefix(), ESearchCase::CaseSensitive);
 	const FName Key = Definition.Name;
 	FFPMLeverDefinition& Stored = Levers.Add(Key, MoveTemp(Definition));
 
@@ -373,22 +417,27 @@ bool FFPMLeverRegistry::GetCVarRequestedValue(const FName LeverName, FString& Ou
 
 bool FFPMLeverRegistry::CaptureBaselineOnce(const FName LeverName)
 {
+	// ★ ALL FOUR refusal paths below route through LogLeverRefusal. A review found that the first
+	// fix branched only the ratchet guard and left these three logging unconditional Error, which
+	// is the same shape that cost a cook. None of the five current fixtures reaches them, so nothing
+	// was broken today, but "currently unreachable" is not a fix.
 	FFPMLeverDefinition* Def = Levers.Find(LeverName);
 	if (!Def)
 	{
-		UE_LOG(LogFicsitsPerformanceManager, Error,
-			TEXT("[FPM] lever registry: CaptureBaselineOnce('%s') -- unknown lever"),
-			*LeverName.ToString());
+		// No Def to read the flag from, so derive it from the NAME. A lookup that misses cannot
+		// tell you what it was looking for, except by its name.
+		LogLeverRefusal(IsSelfTestName(LeverName), FString::Printf(
+			TEXT("CaptureBaselineOnce('%s') -- unknown lever"), *LeverName.ToString()));
 		return false;
 	}
 
 	if (Def->BaselineSource != EFPMLeverBaselineSource::CapturedOnce)
 	{
-		UE_LOG(LogFicsitsPerformanceManager, Error,
-			TEXT("[FPM] lever registry: CaptureBaselineOnce('%s') refused -- BaselineSource is not "
-			     "CapturedOnce. ShippedTable levers take their baseline from a compiled table "
-			     "(not this call); NotApplicable levers have no baseline to capture at all."),
-			*LeverName.ToString());
+		LogLeverRefusal(Def->bIsSelfTestFixture, FString::Printf(
+			TEXT("CaptureBaselineOnce('%s') refused -- BaselineSource is not CapturedOnce. "
+			     "ShippedTable levers take their baseline from a compiled table (not this call); "
+			     "NotApplicable levers have no baseline to capture at all."),
+			*LeverName.ToString()));
 		return false;
 	}
 
@@ -400,9 +449,8 @@ bool FFPMLeverRegistry::CaptureBaselineOnce(const FName LeverName)
 
 	if (Def->CVarNames.Num() == 0)
 	{
-		UE_LOG(LogFicsitsPerformanceManager, Error,
-			TEXT("[FPM] lever registry: CaptureBaselineOnce('%s') refused -- no cvar to read"),
-			*LeverName.ToString());
+		LogLeverRefusal(Def->bIsSelfTestFixture, FString::Printf(
+			TEXT("CaptureBaselineOnce('%s') refused -- no cvar to read"), *LeverName.ToString()));
 		return false;
 	}
 	const FString& CVarName = Def->CVarNames[0];
@@ -412,11 +460,15 @@ bool FFPMLeverRegistry::CaptureBaselineOnce(const FName LeverName)
 	// exists to prevent. Capture before the first Hold, or never.
 	if (FPMCVarWriter::Get().IsHeld(*CVarName))
 	{
-		UE_LOG(LogFicsitsPerformanceManager, Error,
-			TEXT("[FPM] lever registry: REFUSING to capture baseline for '%s' -- FPM already holds "
-			     "'%s'. Reading it now would risk reading our OWN prior write back as the baseline "
-			     "(the ratchet failure). Capture baselines before the first Hold, never after."),
-			*LeverName.ToString(), *CVarName);
+		// The self-test drives this guard ON PURPOSE, by holding a probe cvar and then asking for a
+		// baseline. That refusal is the PASS. A PRODUCTION lever here is a real ordering defect.
+		// Message built ONCE, so the two severities cannot drift apart -- a review flagged the
+		// earlier version for carrying two verbatim copies of it.
+		LogLeverRefusal(Def->bIsSelfTestFixture, FString::Printf(
+			TEXT("REFUSING to capture baseline for '%s' -- FPM already holds '%s'. Reading it now "
+			     "would risk reading our OWN prior write back as the baseline (the ratchet "
+			     "failure). Capture baselines before the first Hold, never after."),
+			*LeverName.ToString(), *CVarName));
 		return false;
 	}
 
