@@ -233,6 +233,36 @@ The first build failed: I called `SupportsRemoveAtSwap()`, lifted from the local
 `InstancedStaticMesh.cpp:3801`. The real accessor is `SupportsRemoveSwap()`. Worth recording because the
 engine's own doc comment at `:460` is ALSO wrong — it names `SetRemoveSwapEnabled()`, which does not
 exist. Read the declaration, not the prose beside it, and not a variable that merely sounds like it.
+## 2026-08-15 03:52 — CONFIG — GameVersion tracks the game again, and the starter project is on CL502094
+
+- **What:**     `GameVersion` in the descriptor moves `>=495413` -> `>=502094`. Separately, the SML
+                starter project was merged up to upstream `d2162c999b "Update headers to CL502094"`
+                and everything in the tree was rebuilt against those headers.
+- **Why:**      SML's Sam, in the modding Discord on 2026-08-12: *"The CL502094 patch recently
+                released on both branches has broken certain mods that work with buildings, but SML
+                itself remains functional and doesn't need a new version. To avoid any complications,
+                just update your starter project again before building/releasing."* Ant: *"we need to
+                do that before anything else."* Our descriptor still claimed compatibility from a
+                changelist seven releases stale, and every binary in the tree had been built against
+                pre-502094 headers.
+- **Files:**    `FicsitsPerformanceManager.uplugin` (GameVersion only). The starter-project merge is
+                a separate repo — `SatisfactoryModLoader`, branch
+                `cook-config/shader-threads-and-vulkan-skip`, merge commit `84aa7f1a6b`, pushed to
+                `D:/main/satisfactory` and verified there.
+                **No version bump** — `CONTRIBUTING.md:79` bumps when a change ships, and this has
+                not shipped. It rides the next package with the FriendlyName change.
+- **Revert:**   Restore `>=495413` and `git revert 84aa7f1a6b` in the SML tree. Only do so if the
+                merged headers turn out to break something, which the rebuild argues against.
+- **Verified:** `Source/FactoryGame/currentVersion.txt` reads **502094**, matching the installed
+                game's CL 502094. Merge had **zero conflicts** and Ant's Vulkan cook-config survived
+                intact (`Config/DefaultEngine.ini:746-760`, comment included) — checked because the
+                docs warn that file conflicts. Post-merge `FactoryGameSteam Win64 Shipping` build:
+                `Result: Succeeded`, 156.5s, and FPM's Steam Shipping DLL is stamped 03:49.
+                ⚠ **ONLY THE STEAM TARGET IS FRESH.** `FactoryServer-...-Shipping.dll` is still
+                stamped 18:27 and `FactoryGameEGS-...` 23:06 — both built against the OLD headers.
+                The dedicated server runs Linux, so a server deploy before rebuilding that target
+                would ship pre-502094 code. NOT boot-tested.
+
 ## 2026-08-15 02:50 — SPEC — one display name, spelled the way Ant ruled it
 
 - **What:**     `Ficsit's Performance Manager` is now the only display name. Four surfaces carried
